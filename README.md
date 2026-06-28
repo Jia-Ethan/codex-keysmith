@@ -1,7 +1,7 @@
-# Codex破限 5.5 / codex-instruct-5.5
+# codex-keysmith
 
-> Codex CLI 指令文件部署工具：通过 `model_instructions_file` 配置项安装 GPT-5.5 unrestricted-mode 指令文件。  
-> Codex CLI instruction-file deployer for GPT-5.5 unrestricted-mode prompts.
+> Codex CLI instruction-file installer for local configuration.
+> 一个面向 Codex CLI 的本地指令文件安装器，用于把 Markdown 指令文件写入指定的 `.codex` 配置目录，并更新 `model_instructions_file`。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue)](https://python.org)
@@ -10,26 +10,24 @@
 
 ## 这是什么 / What
 
-这是一个面向 Codex CLI 的本地指令文件部署脚本。脚本会把 Markdown 指令文件写入指定的 `.codex` 目录，并在 `config.toml` 顶层设置：
+`codex-keysmith` 是一个面向 Codex CLI 的本地配置辅助脚本。它会把 Markdown 指令文件写入指定的 `.codex` 目录，并在 `config.toml` 顶层设置：
 
 ```toml
 model_instructions_file = "./gpt5.5-unrestricted.md"
 ```
 
-默认使用仓库内置的 GPT-5.5 unrestricted-mode 指令，也可以通过 `--file` 指定自己的 `.md` 文件。
+默认使用仓库内置的示例指令文件，也可以通过 `--file` 指定自己的 `.md` 文件。
 
-This tool installs a Markdown instruction file into a Codex CLI config directory and points `model_instructions_file` to it. It uses the bundled GPT-5.5 unrestricted-mode prompt by default, or a custom `.md` file via `--file`.
-
-## 与 5.4 版本的区别 / vs 5.4
-
-| | 5.4 (CTF沙箱) | 5.5 (无限制模式) |
-|---|---|---|
-| 策略 | CTF 竞赛沙箱间接绕过 | 直接声明 unrestricted developer mode |
-| 风格 | 安全研究导向，方法论详细 | 极简指令，覆盖面广 |
-| 长度 | ~180 行 | ~40 行，7 条核心指令 |
-| 适用 | GPT-5.4 Codex CLI | GPT-5.5 Codex CLI |
+`codex-keysmith` installs a Markdown instruction file into a Codex CLI config directory and points `model_instructions_file` to it. It can use the bundled example instruction file, or a custom `.md` file via `--file`.
 
 ## 快速开始 / Quick Start
+
+下载仓库并进入目录：
+
+```bash
+git clone https://github.com/Jia-Ethan/codex-keysmith.git
+cd codex-keysmith
+```
 
 先预览，不写入任何文件：
 
@@ -49,7 +47,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --yes
 
 | 参数 | 说明 |
 |------|------|
-| `--file`, `-f` | 使用外部 `.md` 指令文件；不传时使用内置 GPT-5.5 指令 |
+| `--file`, `-f` | 使用外部 `.md` 指令文件；不传时使用仓库内置示例指令 |
 | `--name`, `-n` | 输出文件名，不含 `.md`；默认 `gpt5.5-unrestricted` |
 | `--dry-run` | 预览将写入的文件与配置项，不实际修改 |
 | `--yes` | 确认写入；未提供时即使不传 `--dry-run` 也只预览 |
@@ -80,9 +78,11 @@ config.toml.bak_20260628_120000
 gpt5.5-unrestricted.md.bak_20260628_120000
 ```
 
+这个配置会改变本机 Codex CLI 后续加载的指令文件。建议先使用 `--dry-run` 确认目标目录和写入路径，再使用 `--yes`。
+
 ## 还原 / Undo
 
-如果要回滚，优先使用自动生成的备份：
+如果要回滚，优先使用自动生成的备份。恢复前请先确认备份文件的时间戳和内容对应本次写入：
 
 ```bash
 # 示例：恢复 config.toml 备份
@@ -115,7 +115,7 @@ python3 codex-instruct.py --dry-run
 ## 项目结构 / Layout
 
 ```text
-codex-instruct-5.5/
+codex-keysmith/
 ├── codex-instruct.py
 ├── examples/
 │   └── gpt5.5-unrestricted.md
@@ -129,11 +129,10 @@ codex-instruct-5.5/
 
 ## 风险说明 / Disclaimer
 
-本工具使用 Codex CLI 的公开配置机制，不修改二进制、不劫持网络、不篡改进程。它会改变本机 Codex CLI 加载的模型指令文件；请先使用 `--dry-run` 确认目标目录，再使用 `--yes` 写入。
+本工具使用 Codex CLI 的公开配置机制，不修改二进制、不劫持网络、不篡改进程。它会改变本机 Codex CLI 加载的模型指令文件，并可能影响后续 Codex 会话。请先使用 `--dry-run` 确认目标 `.codex` 目录和写入路径，再使用 `--yes` 写入。
 
-This tool uses Codex CLI configuration only. It does not patch binaries, intercept network traffic, or tamper with running processes. It changes which model instruction file Codex CLI loads; review with `--dry-run` before writing with `--yes`.
+This tool uses Codex CLI configuration only. It does not patch binaries, intercept network traffic, or tamper with running processes. It changes which model instruction file Codex CLI loads and may affect later Codex sessions. Review the target `.codex` directory and planned writes with `--dry-run` before writing with `--yes`.
 
 ## License
 
 MIT
-
