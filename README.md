@@ -1,41 +1,74 @@
 # codex-keysmith
 
-> Codex CLI instruction-file installer for local configuration.
-> 一个面向 Codex CLI 的本地指令文件安装器，用于把 Markdown 指令文件写入指定的 `.codex` 配置目录，并更新 `model_instructions_file`。
+<p align="center">
+  <strong>Codex CLI instruction-file installer for local configuration.</strong>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue)](https://python.org)
+<p align="center">
+  <a href="#简体中文">简体中文</a> ·
+  <a href="#english">English</a> ·
+  <a href="LICENSE">License</a>
+</p>
+
+<p align="center">
+  <img alt="Codex" src="https://img.shields.io/badge/Codex-CLI-555555">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-6DB33F">
+  <img alt="Status" src="https://img.shields.io/badge/status-public%20tool-0099CC">
+</p>
+
+> **Status boundary / 状态边界**
+>
+> This repository packages a small Codex CLI helper for installing a local Markdown instruction file through `model_instructions_file`. It defaults to preview-only behavior, requires `--yes` before writing, backs up touched files, and is meant for local experimentation with Codex CLI instructions. It is not a Codex fork, not a binary patcher, not a network interceptor, and not a guarantee that a custom instruction file will improve model behavior.
+>
+> 本仓库打包的是一个很小的 Codex CLI 本地指令文件安装工具。它通过 `model_instructions_file` 配置项挂载 Markdown 指令文件，默认只预览，必须显式添加 `--yes` 才写入，并会备份被触碰的文件。它不是 Codex 分叉版，不修改二进制，不劫持网络，也不保证自定义指令一定改善模型表现。
+
+## 友链 / Community
+
+本项目接受 LINUX DO 社区佬友监督与反馈：[LINUX DO](https://linux.do)
 
 ---
 
-## 这是什么 / What
+## 简体中文
 
-`codex-keysmith` 是一个面向 Codex CLI 的本地配置辅助脚本。它会把 Markdown 指令文件写入指定的 `.codex` 目录，并在 `config.toml` 顶层设置：
+### 项目定位
+
+`codex-keysmith` 是一个 Codex CLI 指令文件部署小工具，用来把本地 Markdown 指令文件安装到 `.codex` 配置目录，并在 `config.toml` 顶层设置：
 
 ```toml
 model_instructions_file = "./gpt5.5-unrestricted.md"
 ```
 
-默认使用仓库内置的示例指令文件，也可以通过 `--file` 指定自己的 `.md` 文件。
+它适合处理这样的场景：你已经有一份想让 Codex CLI 加载的本地 `.md` 指令文件，不想每次手动复制文件、编辑 `config.toml`、备份旧配置、再自己记录回滚路径。
 
-`codex-keysmith` installs a Markdown instruction file into a Codex CLI config directory and points `model_instructions_file` to it. It can use the bundled example instruction file, or a custom `.md` file via `--file`.
+仓库内置了一份 GPT-5.5 unrestricted-mode 示例文件。这个示例只是默认材料；你也可以通过 `--file` 使用自己的 `.md` 指令文件。
 
-## 快速开始 / Quick Start
+### 它会做什么
 
-下载仓库并进入目录：
+执行写入时，脚本只会处理目标 Codex 配置目录：
 
-```bash
-git clone https://github.com/Jia-Ethan/codex-keysmith.git
-cd codex-keysmith
+1. 将指令文件写入 `<codex-dir>/<name>.md`；
+2. 备份并更新 `<codex-dir>/config.toml`；
+3. 如果同名 `.md` 文件已经存在，先备份旧文件再覆盖；
+4. 将 `model_instructions_file` 指向新的指令文件；
+5. 在没有 `--yes` 时只显示预览，不写入文件。
+
+备份文件会放在原文件旁边，例如：
+
+```text
+config.toml.bak_20260628_120000
+gpt5.5-unrestricted.md.bak_20260628_120000
 ```
 
-先预览，不写入任何文件：
+### 快速开始
+
+先预览，不修改任何文件：
 
 ```bash
 python3 codex-instruct.py --dry-run
 ```
 
-确认目标目录后，显式指定 `.codex` 目录并添加 `--yes` 执行写入：
+确认目标目录后，显式指定 `.codex` 目录并添加 `--yes`：
 
 ```bash
 python3 codex-instruct.py --codex-dir ~/.codex --yes
@@ -43,11 +76,33 @@ python3 codex-instruct.py --codex-dir ~/.codex --yes
 
 重启 Codex CLI 后生效。
 
-## 参数 / Options
+### 使用自己的指令文件
+
+```bash
+python3 codex-instruct.py \
+  --file ./my_prompt.md \
+  --name my-rules \
+  --codex-dir ~/.codex \
+  --yes
+```
+
+这会把 `./my_prompt.md` 写入为：
+
+```text
+~/.codex/my-rules.md
+```
+
+并在 `config.toml` 中设置：
+
+```toml
+model_instructions_file = "./my-rules.md"
+```
+
+### 参数说明
 
 | 参数 | 说明 |
-|------|------|
-| `--file`, `-f` | 使用外部 `.md` 指令文件；不传时使用仓库内置示例指令 |
+|---|---|
+| `--file`, `-f` | 使用外部 `.md` 指令文件；不传时使用内置示例 |
 | `--name`, `-n` | 输出文件名，不含 `.md`；默认 `gpt5.5-unrestricted` |
 | `--dry-run` | 预览将写入的文件与配置项，不实际修改 |
 | `--yes` | 确认写入；未提供时即使不传 `--dry-run` 也只预览 |
@@ -55,54 +110,39 @@ python3 codex-instruct.py --codex-dir ~/.codex --yes
 
 ### 文件名限制
 
-`--name` 只能包含字母、数字、点、下划线和连字符，例如：
+`--name` 只能包含字母、数字、点、下划线和连字符。脚本会拒绝路径分隔符、绝对路径、`..`、空文件名和带空格的名称，避免把文件写到 `.codex` 目录之外。
+
+可以使用：
 
 ```bash
 python3 codex-instruct.py --name my-rules --codex-dir ~/.codex --yes
 ```
 
-脚本会拒绝包含路径分隔符、绝对路径、`..` 或空文件名的输入，避免写入 `.codex` 目录之外的位置。
-
-## 会修改什么 / What changes
-
-执行写入时，脚本只修改指定或检测到的 Codex 配置目录：
-
-1. 写入指令文件：`<codex-dir>/<name>.md`
-2. 备份并更新：`<codex-dir>/config.toml`
-3. 若同名 `.md` 已存在，先备份旧文件再覆盖
-
-备份文件会放在原文件旁边，格式类似：
-
-```text
-config.toml.bak_20260628_120000
-gpt5.5-unrestricted.md.bak_20260628_120000
-```
-
-这个配置会改变本机 Codex CLI 后续加载的指令文件。建议先使用 `--dry-run` 确认目标目录和写入路径，再使用 `--yes`。
-
-## 还原 / Undo
-
-如果要回滚，优先使用自动生成的备份。恢复前请先确认备份文件的时间戳和内容对应本次写入：
+会被拒绝：
 
 ```bash
-# 示例：恢复 config.toml 备份
-cp ~/.codex/config.toml.bak_YYYYMMDD_HHMMSS ~/.codex/config.toml
+python3 codex-instruct.py --name ../x --dry-run
+python3 codex-instruct.py --name /tmp/x --dry-run
+```
 
-# 如需恢复旧指令文件
+### 回滚方式
+
+优先使用自动生成的备份恢复：
+
+```bash
+cp ~/.codex/config.toml.bak_YYYYMMDD_HHMMSS ~/.codex/config.toml
 cp ~/.codex/gpt5.5-unrestricted.md.bak_YYYYMMDD_HHMMSS ~/.codex/gpt5.5-unrestricted.md
 ```
 
-也可以手动还原：
+也可以手动处理：
 
 ```bash
 # 1. 删除或恢复 config.toml 中的 model_instructions_file 行
-# 2. 删除 ~/.codex/gpt5.5-unrestricted.md
+# 2. 删除对应的 ~/.codex/<name>.md 指令文件
 # 3. 重启 Codex CLI
 ```
 
-## 验证 / Verify
-
-脚本级检查：
+### 验证
 
 ```bash
 python3 -m py_compile codex-instruct.py
@@ -110,9 +150,17 @@ python3 -m pytest tests
 python3 codex-instruct.py --dry-run
 ```
 
-配置生效后，重启 Codex CLI，再检查行为是否符合你的指令文件预期。
+如果你只是想确认脚本不会写入文件，运行 `--dry-run` 即可。
 
-## 项目结构 / Layout
+### 当前限制
+
+- 目前是单文件 Python CLI，还没有打包成 `pip install` 工具。
+- 目前没有 `status`、`restore`、`uninstall` 子命令；回滚需要手动使用备份文件。
+- 目前主要围绕 `model_instructions_file` 做全局配置写入，还没有提供 profile 隔离模式。
+- TOML 写入采用保守的顶层键处理方式，没有引入完整 TOML 编辑库。
+- Windows 路径做了基础兼容，但仍欢迎实际使用反馈。
+
+### 项目结构
 
 ```text
 codex-keysmith/
@@ -127,12 +175,58 @@ codex-keysmith/
 └── LICENSE
 ```
 
-## 风险说明 / Disclaimer
+---
 
-本工具使用 Codex CLI 的公开配置机制，不修改二进制、不劫持网络、不篡改进程。它会改变本机 Codex CLI 加载的模型指令文件，并可能影响后续 Codex 会话。请先使用 `--dry-run` 确认目标 `.codex` 目录和写入路径，再使用 `--yes` 写入。
+## English
 
-This tool uses Codex CLI configuration only. It does not patch binaries, intercept network traffic, or tamper with running processes. It changes which model instruction file Codex CLI loads and may affect later Codex sessions. Review the target `.codex` directory and planned writes with `--dry-run` before writing with `--yes`.
+### What is this?
 
-## License
+`codex-keysmith` is a small helper for installing a local Markdown instruction file into a Codex CLI configuration directory and pointing `model_instructions_file` at it.
+
+It is intended for users who already have a local instruction file and want a safer workflow than manually copying files, editing `config.toml`, and tracking backups by hand.
+
+The repository includes a GPT-5.5 unrestricted-mode example instruction file. That file is only the default example; you can pass your own `.md` file with `--file`.
+
+### Quick start
+
+Preview first:
+
+```bash
+python3 codex-instruct.py --dry-run
+```
+
+Write only after explicitly confirming with `--yes`:
+
+```bash
+python3 codex-instruct.py --codex-dir ~/.codex --yes
+```
+
+Use a custom instruction file:
+
+```bash
+python3 codex-instruct.py \
+  --file ./my_prompt.md \
+  --name my-rules \
+  --codex-dir ~/.codex \
+  --yes
+```
+
+### Safety defaults
+
+- Preview-only unless `--yes` is provided.
+- Backs up `config.toml` before updating it.
+- Backs up an existing same-name `.md` file before overwriting it.
+- Rejects unsafe `--name` values such as paths, absolute paths, `..`, empty names, and names with spaces.
+- Does not patch Codex binaries, intercept network traffic, or modify running processes.
+
+### Verification
+
+```bash
+python3 -m py_compile codex-instruct.py
+python3 -m pytest tests
+python3 codex-instruct.py --dry-run
+```
+
+### License
 
 MIT
