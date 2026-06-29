@@ -1,0 +1,8 @@
+# Example-only prompt pack reference for Hermes-style profiles.
+prompt_pack:
+  name: ctf-security-research
+  file: ../../examples/prompt-packs/ctf-security-research.md
+  install_command_preview: python3 codex-instruct.py install --pack ctf-security-research --codex-dir ~/.codex --dry-run
+  install_command_apply: python3 codex-instruct.py install --pack ctf-security-research --codex-dir ~/.codex --yes
+  status_command: python3 codex-instruct.py status --codex-dir ~/.codex
+  uninstall_preview: python3 codex-instruct.py uninstall --codex-dir ~/.codex --delete-prompt

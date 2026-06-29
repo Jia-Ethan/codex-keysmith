@@ -1,0 +1,32 @@
+# Example-only Hermes-style profile. Do not paste secrets here.
+profile:
+  name: codex-prompt-pack-example
+  description: Connect a Codex model_instructions_file prompt pack to a Hermes-style agent profile.
+  version: 0.1.0
+
+runtime:
+  provider: openai-compatible
+  model: replace-with-your-model
+  temperature: 0.2
+
+codex:
+  config_dir: ~/.codex
+  config_file: ~/.codex/config.toml
+  instruction_file: ~/.codex/ctf-security-research.md
+  managed_by: codex-keysmith
+
+prompt_pack:
+  name: ctf-security-research
+  source: ../examples/codex-prompt-pack/prompt-pack-reference.yaml
+  installed_as: ctf-security-research.md
+  guarantee: "example instructions only; behavior is model-dependent"
+
+tool_boundaries:
+  filesystem: local-workspace
+  network: user-approved
+  secrets: never-store-in-profile
+  destructive_actions: preview-and-confirm
+
+verification:
+  status_command: python3 codex-instruct.py status --codex-dir ~/.codex
+  rollback_command: python3 codex-instruct.py restore --codex-dir ~/.codex --backup YYYYMMDD_HHMMSS --yes
