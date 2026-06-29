@@ -23,6 +23,14 @@
 >
 > 本仓库打包的是一个很小的 Codex CLI 本地指令文件安装工具。它通过 `model_instructions_file` 配置项挂载 Markdown 指令文件，默认只预览，必须显式添加 `--yes` 才写入，并会备份被触碰的文件。它不是 Codex 分叉版，不修改二进制，不劫持网络，也不保证自定义指令一定改善模型表现。
 
+## 复制给智能体安装
+
+把下面这段话复制到 Codex、Claude Code、Cursor Agent 或其他智能体：
+
+```text
+请使用 https://github.com/Jia-Ethan/codex-keysmith 帮我安全安装 Codex 的本地 model_instructions_file。先阅读 README 和脚本，默认只静态审计，不要直接写入；写入前展示将修改的文件并等我确认；确认后先备份再安装。不要修改 Codex 二进制、网络、运行进程，也不要保存任何 token、cookie 或私密配置。
+```
+
 ## 友链 / Community
 
 本项目接受 LINUX DO 社区佬友监督与反馈：[LINUX DO](https://linux.do)
