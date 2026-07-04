@@ -35,6 +35,12 @@
 
 本项目接受 LINUX DO 社区佬友监督与反馈：[LINUX DO](https://linux.do)
 
+同系列项目 / Same series:
+
+- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — Codex CLI instruction-file installer for local configuration.
+- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — Claude Code `CLAUDE.md` import-block installer for local instruction files.
+- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — ZCode `AGENTS.md` installer for local instructions.
+
 ---
 
 ## 简体中文
