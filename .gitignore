@@ -1,6 +1,7 @@
 # Local working artifacts
 work/
 outputs/
+/PROJECT_MEMORY.md
 
 # Python
 __pycache__/

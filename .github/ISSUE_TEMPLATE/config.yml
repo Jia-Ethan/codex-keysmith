@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Private security report / 私密安全报告
+    url: https://github.com/Jia-Ethan/codex-keysmith/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories.
