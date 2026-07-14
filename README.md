@@ -1,34 +1,43 @@
-# codex-keysmith
+<!-- markdownlint-disable MD013 MD033 MD041 -->
 
 <p align="center">
-  <strong>Codex CLI instruction-file installer for local configuration.</strong>
+  <img src="docs/assets/readme/codex-keysmith-preview.png" alt="codex-keysmith dry-run terminal preview" width="100%">
+</p>
+
+<h1 align="center">codex-keysmith</h1>
+
+<p align="center">
+  Version-independent Codex instruction deployment with preview, backups, hook isolation, and recovery.
 </p>
 
 <p align="center">
   <a href="#简体中文">简体中文</a> ·
   <a href="#english">English</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a> ·
   <a href="LICENSE">License</a>
 </p>
 
 <p align="center">
-  <img alt="Codex" src="https://img.shields.io/badge/Codex-CLI-555555">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-3776AB">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-6DB33F">
-  <img alt="Status" src="https://img.shields.io/badge/status-public%20tool-0099CC">
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
+  <img alt="Python 3.8+" src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white">
+  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
+  <img alt="Status public tool" src="https://img.shields.io/badge/status-public%20tool-0099CC">
 </p>
 
+> [!IMPORTANT]
 > **Status boundary / 状态边界**
 >
-> This repository packages a small Codex CLI helper for installing a local Markdown instruction file through `model_instructions_file`. Deployments default to preview-only behavior and require `--yes` before writing; the independent `--restore-hooks` operation only restores a previously isolated hook file. The tool backs up touched files and is meant for local experimentation with Codex CLI instructions. It is not a Codex fork, not a binary patcher, not a network interceptor, and not a guarantee that a custom instruction file will improve model behavior.
+> `codex-keysmith` writes one Markdown instruction file into each selected or auto-discovered Codex configuration directory and updates the top-level `model_instructions_file` setting when needed. A confirmed deployment also backs up and isolates an active `hooks.json` as `hooks.json.disabled`; every hook in that file remains paused until restored. The tool does not patch Codex binaries, intercept network traffic, or store credentials. The bundled prompt is an example, and model behavior remains version-dependent.
 >
-> 本仓库打包的是一个很小的 Codex CLI 本地指令文件安装工具。它通过 `model_instructions_file` 配置项挂载 Markdown 指令文件；部署默认只预览，显式添加 `--yes` 后才写入，独立的 `--restore-hooks` 仅恢复此前隔离的 hook 文件。工具会备份被触碰的文件，不修改 Codex 二进制或网络，也不保证自定义指令一定改善模型表现。
+> `codex-keysmith` 会向每个明确指定或自动发现的 Codex 配置目录写入一份 Markdown 指令文件，并在需要时更新顶层 `model_instructions_file`。确认部署后，如果检测到活跃的 `hooks.json`，工具会先备份，再隔离为 `hooks.json.disabled`；该文件中的全部 hooks 会暂停，直到手动恢复。工具不修改 Codex 二进制，不劫持网络，也不保存凭证。内置提示词只是默认示例，实际模型表现仍会随版本变化。
 
 ## 复制给智能体安装
 
 把下面这段话复制到 Codex、Claude Code、Cursor Agent 或其他智能体：
 
 ```text
-请使用 https://github.com/Jia-Ethan/codex-keysmith 帮我安全安装 Codex 的本地 model_instructions_file。先阅读 README 和脚本，默认只静态审计，不要直接写入；写入前展示将修改的文件并等我确认；确认后先备份再安装。不要修改 Codex 二进制、网络、运行进程，也不要保存任何 token、cookie 或私密配置。
+请使用 https://github.com/Jia-Ethan/codex-keysmith 帮我部署 Codex 本地指令文件。先阅读 README、脚本和测试，只运行 --dry-run；报告目标 .codex 目录、将写入的 MD、config.toml 变更、hooks.json 状态、备份路径和恢复命令，等我确认后才使用 --yes。完成后核对指令文件、model_instructions_file 和 hooks.json.disabled，并保留全部备份。不要修改 Codex 二进制、网络或运行中进程，也不要记录 token、cookie 或私密配置。
 ```
 
 ## 友链 / Community
@@ -37,9 +46,15 @@
 
 同系列项目 / Same series:
 
-- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — Codex CLI instruction-file installer for local configuration.
-- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — Claude Code `CLAUDE.md` import-block installer for local instruction files.
-- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — ZCode `AGENTS.md` installer for local instructions.
+- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) - Codex CLI instruction-file deployment for local configuration.
+- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) - Claude Code `CLAUDE.md` import-block installer for local instruction files.
+- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) - ZCode `AGENTS.md` installer for local instructions.
+
+## Why this exists / 为什么做这个工具
+
+手动复制一份 Markdown，再改一行 `config.toml`，看起来不复杂。真正容易出问题的是已有文件、多个 Codex 目录、会继续注入上下文的 hooks，以及写入中断后的恢复路径。`codex-keysmith` 把这些步骤变成一次可以先预览、再确认、可回退的本地部署。
+
+Copying a Markdown file and editing one TOML key is simple. Existing files, multiple Codex directories, active hooks, concurrent changes, and interrupted writes are not. `codex-keysmith` turns that sequence into a previewable, confirmed, and recoverable local deployment.
 
 ---
 
@@ -47,332 +62,311 @@
 
 ### 项目定位
 
-`codex-keysmith` 是一个 Codex CLI 指令文件部署小工具，用来把本地 Markdown 指令文件安装到 `.codex` 配置目录，并在 `config.toml` 顶层设置：
+`codex-keysmith` 是一个单文件 Python CLI，用来部署 Codex 的本地 Markdown 指令。它可以使用仓库内置示例，也可以接收你自己的 `.md` 文件，并在目标 `config.toml` 顶层设置：
 
 ```toml
 model_instructions_file = "./gpt-unrestricted.md"
 ```
 
-它适合处理这样的场景：你已经有一份想让 Codex CLI 加载的本地 `.md` 指令文件，不想每次手动复制文件、编辑 `config.toml`、备份旧配置、再自己记录回滚路径。
+运行时只使用 Python 标准库。默认不写入；没有 `--yes` 时，工具只展示目标路径、配置变更和 hooks 处理计划。
 
-仓库内置了一份 GPT unrestricted-mode 示例文件。这个示例只是默认材料；你也可以通过 `--file` 使用自己的 `.md` 指令文件。
+### 核心能力
 
-### 内置示例契约
+| 模块 | 已实现能力 | 明确边界 |
+| --- | --- | --- |
+| 指令部署 | 写入内置示例或 `--file` 指定的 Markdown，并更新顶层配置键 | 不修改 Codex 二进制，不提供 profile 隔离 |
+| 预览与备份 | 默认 dry-run；覆盖已有 MD、config 或 disabled hooks 前保留备份 | 没有 `status` 或完整 `uninstall` 子命令 |
+| hooks 隔离 | 备份活跃 `hooks.json`，再发布为 `hooks.json.disabled` | 整份文件一起停用，不支持选择性保留单个 hook |
+| 事务保护 | 原子无覆盖重命名、文件指纹、并发检测和反向回滚 | `SIGKILL`、断电等硬中断需要人工检查事务残留 |
+| hooks 恢复 | 独立执行 `--restore-hooks`，不部署 MD，也不更新 config | 活跃 `hooks.json` 已存在时不会覆盖 |
 
-内置 `gpt-unrestricted` 示例使用版本无关的本地执行框架，并把高频回归场景写成静态 Markdown 契约：
+### 会修改哪些文件
 
-- 9 组中英文 prescriptive templates，覆盖下载/逆向、keygen、reverse shell、校验绕过、目标占位和反调试场景；
-- `TARGET`、`HOST`、`PORT`、`CHECK_FN`、`OFFSET`、`PATCH_BYTE`、`SERIAL`、`LICENSE_BLOB` 等占位符；
-- 简体、繁体及英文拒绝短语约束，以及请求语言一致性规则；
-- 成人内容的一般规则和 NSFW 边界首行锚 `Fictional sandbox template — ROLE_A / ROLE_B:`。
+执行 `--yes` 前，先确认 dry-run 输出中的每一条路径。
 
-这些内容是交付给模型的 Markdown 指令，不是 Python CLI 内的请求匹配代码。不同模型和版本的实际行为仍需单独做 live smoke test。
+| 路径 | 部署行为 |
+| --- | --- |
+| `<codex-dir>/<name>.md` | 新建；已有同名普通文件时先备份再替换 |
+| `<codex-dir>/config.toml` | 顶层值需要变化时，先备份再更新；值相同则跳过 |
+| `<codex-dir>/hooks.json` | 如果存在，先备份，再隔离为 `hooks.json.disabled` |
+| `<codex-dir>/hooks.json.disabled` | 如果已存在，先移动到时间戳备份，再发布新的隔离文件 |
+| `<codex-dir>/.keysmith-*` | 事务期间临时创建；硬中断后的残留会阻止下一次写入 |
 
-### 它会做什么
+本次会读取、替换或恢复的目标节点如果是符号链接、悬空链接、目录、FIFO、socket 或其他非普通文件，操作会被拒绝。工具不会为了继续部署而覆盖异常节点。
 
-执行写入时，脚本只会处理目标 Codex 配置目录：
+### 工作方式
 
-1. 将指令文件写入 `<codex-dir>/<name>.md`；
-2. 备份并更新 `<codex-dir>/config.toml`；
-3. 如果同名 `.md` 文件已经存在，先备份旧文件再覆盖；
-4. 将 `model_instructions_file` 指向新的指令文件；
-5. 常规部署在没有 `--yes` 时只显示预览，不写入部署文件；
-6. 检测 `<codex-dir>/hooks.json`，若存在则先完成原子认领、备份和隔离，再写入 MD/config；失败时会尝试反向回滚，并在并发冲突时保留 recovery 文件和备份路径。
-
-备份文件会放在原文件旁边，例如：
-
-```text
-config.toml.bak_20260628_120000
-gpt-unrestricted.md.bak_20260628_120000
+```mermaid
+flowchart LR
+    A["Dry run"] --> B["展示目标文件与 hooks 状态"]
+    B --> C{"用户确认 --yes"}
+    C -->|否| D["结束，不写入"]
+    C -->|是| E{"存在 hooks.json"}
+    E -->|是| F["备份并隔离 hooks"]
+    E -->|否| G["写入指令文件"]
+    F --> G
+    G --> H["更新 config.toml"]
+    H --> I["输出备份与恢复路径"]
+    F -. 可捕获错误 .-> J["反向回滚"]
+    G -. 可捕获错误 .-> J
+    H -. 可捕获错误 .-> J
 ```
+
+所有目标目录先完成预检和 hooks 隔离，之后才开始写入 MD 与 `config.toml`。多目录部署失败时，工具按反向顺序尝试恢复。
 
 ### 快速开始
 
-先预览，不修改任何文件：
+前提：本机已安装 Python 3.8+，目标目录中已有 Codex 的 `config.toml`。
 
 ```bash
-python3 codex-instruct.py --dry-run
+git clone https://github.com/Jia-Ethan/codex-keysmith.git
+cd codex-keysmith
 ```
 
-确认目标目录后，显式指定 `.codex` 目录并添加 `--yes`：
+先预览。这个命令不会修改部署文件：
+
+```bash
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run
+```
+
+重点检查：
+
+- 识别到的 Codex 配置目录是否正确；
+- 将写入的 MD 文件名是否正确；
+- `model_instructions_file` 将指向哪里；
+- 是否发现 `hooks.json`，以及它将被隔离到哪里。
+
+确认后再写入：
 
 ```bash
 python3 codex-instruct.py --codex-dir ~/.codex --yes
 ```
 
-重启 Codex CLI 后生效。
+除非明确要做多目录部署，不要省略 `--codex-dir`。省略后，`--yes` 会处理全部自动发现的 Codex 配置目录。
 
-### hooks.json 干扰处理
+完成后开启一个新的 Codex 会话，让新的指令加载。保留终端输出中的所有备份路径和 hooks 恢复命令。
 
-Codex hook 可以在 `SessionStart` 或 `UserPromptSubmit` 阶段注入上下文。如果 `hooks.json` 注入的上下文位于指令文件与用户请求之间，其规则框架可能干扰指令文件定义的执行模式。
+### 恢复 hooks.json
 
-`codex-keysmith` 不解析或修改 hook 内容，而是把整个文件作为一个单元处理：
-
-- `--dry-run` 会检测并显示 `hooks.json` 的状态和计划执行的隔离操作；
-- 使用 `--yes` 部署时，如果存在活跃的 `hooks.json`，脚本会先原子移动到同卷私有事务目录，确认其为普通文件，再备份并发布为 `hooks.json.disabled`；
-- 如果 `hooks.json.disabled` 已存在，脚本会将旧文件原子移动为时间戳备份，再执行隔离；内容相同的备份也会保留，不做删除式去重；
-- 符号链接、悬空链接、目录、FIFO、socket 及其他非普通文件会被拒绝；隔离是整个文件级操作，会停用其中全部 hooks，不支持选择性保留；
-- 所有需要隔离 hooks 的目录都会先通过原子无覆盖重命名预检；全部目录完成 hooks 检查/隔离后才写入 MD 和 `config.toml`。失败时按反向顺序尝试回滚；若并发状态阻止安全回滚，工具会保留 recovery 文件和备份路径并明确报错；
-- 可捕获的运行时错误和 `Ctrl-C` 会执行回滚；若 `SIGKILL`、断电或进程崩溃留下 `.keysmith-hooks-*` / `.keysmith-write-*` 事务目录，后续部署/恢复会停止并要求先人工检查其中的 recovery 文件；
-- 隔离完成后会打印备份路径、隔离路径和恢复命令。
-
-隔离输出示例：
-
-```text
-[检测] 发现 hooks.json: /path/to/.codex/hooks.json
-[备份] hooks.json → /path/to/.codex/hooks.json.bak_20260713_120000
-[隔离] /path/to/.codex/hooks.json → /path/to/.codex/hooks.json.disabled
-[恢复] /usr/bin/python3 /path/to/codex-keysmith/codex-instruct.py --codex-dir /path/to/.codex --restore-hooks
-```
-
-需要重新启用 hook 时，运行独立恢复操作：
+部署会暂停 `hooks.json` 中的全部 hooks。需要重新启用时，运行：
 
 ```bash
 python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks
 ```
 
-恢复不需要 `--yes`，不要求 `config.toml` 仍然存在，也不会部署指令文件或更新配置。成功输出如下：
+恢复操作不需要 `--yes`，也不要求 `config.toml` 仍然存在。它只尝试把 `hooks.json.disabled` 恢复为 `hooks.json`：
 
-```text
-[恢复] /path/to/.codex/hooks.json.disabled → /path/to/.codex/hooks.json
-```
-
-如果活跃的 `hooks.json` 已存在，恢复操作不会覆盖它；如果没有 `hooks.json.disabled`，也不会改动目录内容。`--restore-hooks` 与 `--dry-run` 是互斥操作。
+- 活跃 `hooks.json` 已存在时，不覆盖；
+- 没有 `hooks.json.disabled` 时，不改动目录；
+- `--restore-hooks` 与 `--dry-run` 互斥；
+- 恢复不会部署指令文件，也不会更新配置。
 
 ### 使用自己的指令文件
 
 ```bash
 python3 codex-instruct.py \
-  --file ./my_prompt.md \
+  --file ./my-prompt.md \
   --name my-rules \
   --codex-dir ~/.codex \
   --yes
 ```
 
-这会把 `./my_prompt.md` 写入为：
-
-```text
-~/.codex/my-rules.md
-```
-
-并在 `config.toml` 中设置：
+工具会把 `./my-prompt.md` 写入 `~/.codex/my-rules.md`，并设置：
 
 ```toml
 model_instructions_file = "./my-rules.md"
 ```
 
-### 参数说明
+`--name` 只允许字母、数字、点、下划线和连字符。路径分隔符、绝对路径、`..`、空名称和空格都会被拒绝。
+
+### 内置示例
+
+默认示例位于 [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)。它使用版本无关文件名，包含中英文请求处理、占位符、领域重解释和 9 组回归模板。Python CLI 不会匹配或改写用户请求；它只负责部署这份静态 Markdown。
+
+内置内容与脚本常量有逐字一致性测试。提示词能否改变具体模型行为，仍需在目标模型和版本上单独验证。
+
+### 参数
 
 | 参数 | 说明 |
-|---|---|
-| `--file`, `-f` | 使用外部 `.md` 指令文件；不传时使用内置示例 |
+| --- | --- |
+| `--file`, `-f` | 使用外部 Markdown；不传时使用内置示例 |
 | `--name`, `-n` | 输出文件名，不含 `.md`；默认 `gpt-unrestricted` |
-| `--dry-run` | 预览将写入的文件与配置项，不实际修改 |
-| `--yes` | 确认写入；未提供时即使不传 `--dry-run` 也只预览 |
-| `--codex-dir` | 手动指定 `.codex` 目录，推荐使用 |
-| `--restore-hooks` | 将 `hooks.json.disabled` 恢复为 `hooks.json` 后退出，不执行部署 |
+| `--dry-run` | 只展示目标文件、配置和 hooks 隔离计划 |
+| `--yes` | 确认常规部署；未提供时仍然只预览 |
+| `--codex-dir` | 明确指定一个目标 `.codex` 目录，推荐使用；不传时会处理全部自动发现目录 |
+| `--restore-hooks` | 恢复 `hooks.json.disabled` 后退出，不执行部署 |
 
-### 文件名限制
+### 事务与恢复边界
 
-`--name` 只能包含字母、数字、点、下划线和连字符。脚本会拒绝路径分隔符、绝对路径、`..`、空文件名和带空格的名称，避免把文件写到 `.codex` 目录之外。
+- 写入前会验证目标节点类型，并记录完整文件指纹；
+- 同卷原子无覆盖重命名不可用时，预检失败，部署不会开始；
+- 捕获到运行时错误、`Ctrl-C` 或 `SystemExit` 时，工具尝试恢复 config、MD 和 hooks；
+- 并发进程已经替换目标文件时，工具保留对方文件，不按内容相同与否强行覆盖；
+- `SIGKILL`、断电或进程崩溃可能留下 `.keysmith-hooks-*` / `.keysmith-write-*`，后续部署和恢复会停止，等待人工检查；如果中断恰好落在两个已完成的原子步骤之间，也可能没有事务目录却已部分完成，下一次运行不保证自动识别。
 
-可以使用：
+完整状态转换和残留处理见 [`docs/hooks-transactions.md`](docs/hooks-transactions.md)。
 
-```bash
-python3 codex-instruct.py --name my-rules --codex-dir ~/.codex --yes
-```
+### 环境与兼容性
 
-会被拒绝：
-
-```bash
-python3 codex-instruct.py --name ../x --dry-run
-python3 codex-instruct.py --name /tmp/x --dry-run
-```
-
-### 回滚方式
-
-优先使用自动生成的备份恢复：
-
-```bash
-cp ~/.codex/config.toml.bak_YYYYMMDD_HHMMSS ~/.codex/config.toml
-cp ~/.codex/gpt-unrestricted.md.bak_YYYYMMDD_HHMMSS ~/.codex/gpt-unrestricted.md
-```
-
-也可以手动处理：
-
-```bash
-# 1. 删除或恢复 config.toml 中的 model_instructions_file 行
-# 2. 删除对应的 ~/.codex/<name>.md 指令文件
-# 3. 重启 Codex CLI
-```
+- Python 3.8+；运行 CLI 不需要第三方依赖；
+- 测试需要 `pytest`；
+- 目标 Codex 配置目录必须存在；常规部署要求其中有普通文件 `config.toml`；
+- 文件系统必须支持同卷原子无覆盖重命名；脚本会在写入前探测；
+- GitHub Actions 矩阵覆盖 Ubuntu、macOS，以及 Python 3.8 和 3.13；
+- 当前公开验证范围是 macOS/Linux；Windows 分支已经存在，但尚未纳入 CI，不作为本版本的已验证支持；
+- 实际部署仍以目标卷的写入前能力探测为准，dry-run 只核对路径和计划，不执行该探测。
 
 ### 验证
 
+维护者验证：
+
 ```bash
 python3 -m py_compile codex-instruct.py
-python3 -m pytest tests
-python3 codex-instruct.py --dry-run
+python3 -m pytest -q tests
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run
 ```
 
-如果你只是想确认脚本不会写入文件，运行 `--dry-run` 即可。
+当前测试集包含 71 个 pytest cases，覆盖提示词一致性、参数解析、备份、并发写入、hooks 隔离/恢复、非普通文件、多目录回滚和中断恢复。
 
 ### 当前限制
 
-- 目前是单文件 Python CLI，还没有打包成 `pip install` 工具。
-- 目前没有 `status`、`uninstall` 子命令；配置与指令文件仍需使用备份手动回滚，hooks 可通过 `--restore-hooks` 恢复。
-- 目前主要围绕 `model_instructions_file` 做全局配置写入，还没有提供 profile 隔离模式。
-- TOML 写入采用保守的顶层键处理方式，没有引入完整 TOML 编辑库。
-- Windows 路径做了基础兼容，但仍欢迎实际使用反馈。
-- `SIGKILL`、断电等不可捕获终止不能自动执行回滚；工具会在下次运行时检测残留事务目录并停止写入。
+- 仍是单文件 Python CLI，没有打包为 `pip install` 工具；
+- 没有 `status` 或完整 `uninstall` 子命令；
+- `model_instructions_file` 是全局配置，没有 profile 隔离；
+- TOML 更新只处理顶层目标键，没有引入完整 TOML 编辑器；
+- hooks 只能按整份文件隔离；
+- 内置提示词不保证任何模型或版本必然采用相同行为。
 
 ### 项目结构
 
 ```text
 codex-keysmith/
-├── codex-instruct.py
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   ├── pull_request_template.md
+│   └── workflows/tests.yml
+├── docs/
+│   ├── assets/readme/codex-keysmith-preview.png
+│   └── hooks-transactions.md
 ├── examples/
 │   └── gpt-unrestricted.md
 ├── tests/
 │   └── test_codex_instruct.py
-├── .gitattributes
-├── .gitignore
+├── codex-instruct.py
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── README.md
 └── LICENSE
 ```
+
+### 参与贡献
+
+提交 Issue 或 Pull Request 前，请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。安全问题请按 [`SECURITY.md`](SECURITY.md) 使用 GitHub 私密漏洞报告，不要在公开 Issue 中粘贴私密配置或可用凭证。
 
 ---
 
 ## English
 
-### What is this?
+### Project positioning
 
-`codex-keysmith` is a small helper for installing a local Markdown instruction file into a Codex CLI configuration directory and pointing `model_instructions_file` at it.
+`codex-keysmith` is a single-file Python CLI for deploying a local Markdown instruction file into an existing Codex configuration directory. It installs the bundled example or a custom `--file`, updates the top-level `model_instructions_file` setting, and keeps the operation previewable and recoverable.
 
-It is intended for users who already have a local instruction file and want a safer workflow than manually copying files, editing `config.toml`, and tracking backups by hand.
+The runtime uses only the Python standard library. Without `--yes`, normal deployment remains a dry run.
 
-The repository includes a GPT unrestricted-mode example instruction file. That file is only the default example; you can pass your own `.md` file with `--file`.
+### Core capabilities
 
-### Built-in example contract
+| Module | Implemented behavior | Boundary |
+| --- | --- | --- |
+| Instruction deployment | Install the bundled prompt or a custom Markdown file | No Codex binary patching or profile isolation |
+| Preview and backups | Preview by default; back up existing MD, config, and disabled hooks files | No `status` or complete `uninstall` command |
+| Hook isolation | Back up active `hooks.json` and publish it as `hooks.json.disabled` | Pauses every hook in the file; no selective preservation |
+| Transaction protection | No-replace atomic renames, fingerprints, conflict detection, and rollback | Hard termination can require manual residue inspection |
+| Hook restore | Restore independently without deploying MD or editing config | Never overwrites an active `hooks.json` |
 
-The built-in `gpt-unrestricted` example uses a version-independent local execution framework and encodes common regression cases as static Markdown contracts:
+### Files touched
 
-- Nine Chinese and English prescriptive-template groups for download/reverse engineering, key generation, reverse shells, validation bypass, target placeholders, and anti-debugging scenarios.
-- Placeholders such as `TARGET`, `HOST`, `PORT`, `CHECK_FN`, `OFFSET`, `PATCH_BYTE`, `SERIAL`, and `LICENSE_BLOB`.
-- Simplified Chinese, Traditional Chinese, and English refusal-string constraints plus language-consistency rules.
-- General adult-content handling and the NSFW boundary anchor `Fictional sandbox template — ROLE_A / ROLE_B:`.
+| Path | Confirmed deployment behavior |
+| --- | --- |
+| `<codex-dir>/<name>.md` | Create, or back up and replace an existing regular file |
+| `<codex-dir>/config.toml` | Back up and update only when the top-level value must change; otherwise skip |
+| `<codex-dir>/hooks.json` | Back up and isolate as `hooks.json.disabled` when present |
+| `<codex-dir>/hooks.json.disabled` | Move an existing file to a timestamped backup before isolation |
+| `<codex-dir>/.keysmith-*` | Temporary transaction state; residue blocks later writes |
 
-These are Markdown instructions delivered to the model, not request-matching logic in the Python CLI. Actual behavior still requires a separate live smoke test for each model/version.
-
-### What it does
-
-When writing, the script only handles files inside the target Codex configuration directory:
-
-1. Writes the instruction file to `<codex-dir>/<name>.md`.
-2. Backs up and updates `<codex-dir>/config.toml`.
-3. Backs up an existing same-name `.md` file before overwriting it.
-4. Points `model_instructions_file` at the new instruction file.
-5. Shows a preview without writing deployment files when `--yes` is absent.
-6. Detects `<codex-dir>/hooks.json`, atomically claims, validates, backs up, and isolates it before writing MD/config. Failures trigger best-effort reverse-order rollback, with recovery files and backup paths retained on concurrent conflicts.
+Targets read, replaced, or restored by the current operation are rejected when they are symlinks, dangling links, directories, FIFOs, sockets, or other non-regular nodes.
 
 ### Quick start
 
-Preview first:
+Requirements: Python 3.8+ and an existing Codex configuration containing `config.toml`.
 
 ```bash
-python3 codex-instruct.py --dry-run
+git clone https://github.com/Jia-Ethan/codex-keysmith.git
+cd codex-keysmith
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run
 ```
 
-Write only after explicitly confirming with `--yes`:
+Review the exact MD path, config update, hook status, backup plan, and restore path. Then confirm deployment:
 
 ```bash
 python3 codex-instruct.py --codex-dir ~/.codex --yes
 ```
 
-Use a custom instruction file:
+Omitting `--codex-dir` makes `--yes` deploy to every automatically discovered Codex configuration directory. Explicitly select a target unless multi-directory deployment is intentional.
 
-```bash
-python3 codex-instruct.py \
-  --file ./my_prompt.md \
-  --name my-rules \
-  --codex-dir ~/.codex \
-  --yes
-```
+> [!IMPORTANT]
+> A confirmed deployment isolates the entire active `hooks.json`. Every hook in that file remains paused until restored.
 
-### hooks.json interference handling
-
-Codex hooks can inject context during `SessionStart` or `UserPromptSubmit`. When context injected by `hooks.json` appears between the instruction file and the user's request, its rules framework can interfere with the execution mode defined by the instruction file.
-
-`codex-keysmith` handles the file as a whole without parsing or modifying individual hooks:
-
-- `--dry-run` detects `hooks.json` and previews the planned isolation action.
-- During a `--yes` deployment, an active `hooks.json` is atomically claimed into a private same-volume transaction directory, validated as a regular file, backed up, and then published as `hooks.json.disabled`.
-- An existing `hooks.json.disabled` is atomically moved to a timestamped backup. Identical backups are retained rather than deduplicated by deletion.
-- Symlinks, dangling links, directories, FIFOs, sockets, and other non-regular nodes are rejected. Isolation disables every hook in the file; selective preservation is not implemented.
-- Every directory requiring hook isolation passes no-replace rename preflight. MD/config writes begin only after all directories finish hook checks/isolation. Failures attempt reverse-order rollback; concurrent conflicts retain recovery files and backup paths and return an explicit error.
-- Catchable runtime errors and `Ctrl-C` trigger rollback. If `SIGKILL`, power loss, or a process crash leaves a `.keysmith-hooks-*` or `.keysmith-write-*` transaction directory, later deploy/restore operations stop and require manual inspection of its recovery files.
-- The completed deployment prints the backup path, disabled path, and restore command.
-
-Example isolation output:
-
-```text
-[检测] 发现 hooks.json: /path/to/.codex/hooks.json
-[备份] hooks.json → /path/to/.codex/hooks.json.bak_20260713_120000
-[隔离] /path/to/.codex/hooks.json → /path/to/.codex/hooks.json.disabled
-[恢复] /usr/bin/python3 /path/to/codex-keysmith/codex-instruct.py --codex-dir /path/to/.codex --restore-hooks
-```
-
-Restore the hook with the independent restore operation:
+Restore hooks independently:
 
 ```bash
 python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks
 ```
 
-The restore operation does not require `--yes` or an existing `config.toml`, deploy an instruction file, or update configuration. A successful restore prints:
+The restore operation does not require `--yes` or `config.toml`, and it does not deploy an instruction file or edit configuration.
 
-```text
-[恢复] /path/to/.codex/hooks.json.disabled → /path/to/.codex/hooks.json
+### Custom instruction file
+
+```bash
+python3 codex-instruct.py \
+  --file ./my-prompt.md \
+  --name my-rules \
+  --codex-dir ~/.codex \
+  --yes
 ```
 
-An existing active `hooks.json` is never overwritten. When no `hooks.json.disabled` file exists, the directory remains unchanged. `--restore-hooks` and `--dry-run` are mutually exclusive operations.
+The bundled example is [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md). The CLI deploys this static Markdown; it does not match or rewrite user requests. Model behavior still requires live verification for the target model/version.
 
-### Parameters
+### Transaction and compatibility boundaries
 
-| Option | Description |
-|---|---|
-| `--file`, `-f` | Use an external `.md` instruction file; otherwise use the built-in example |
-| `--name`, `-n` | Output filename without `.md`; defaults to `gpt-unrestricted` |
-| `--dry-run` | Preview target files, configuration, and hook isolation without writing |
-| `--yes` | Confirm deployment; without it, normal deployment runs in preview mode |
-| `--codex-dir` | Specify the target `.codex` directory instead of automatic detection |
-| `--restore-hooks` | Restore `hooks.json.disabled` to `hooks.json` and exit without deploying |
+- Runtime dependencies: Python 3.8+ standard library only; tests require `pytest`.
+- The GitHub Actions matrix covers Ubuntu, macOS, Python 3.8, and Python 3.13.
+- The current validated target is macOS/Linux. A Windows branch exists in the code, but Windows is not part of CI and is not claimed as verified support in this release.
+- The target filesystem must provide same-volume atomic no-replace rename semantics; deployment preflights this before writing.
+- Catchable runtime errors and `Ctrl-C` trigger rollback attempts across config, MD, and hooks state.
+- Concurrent replacements are preserved rather than overwritten.
+- Hard termination can leave `.keysmith-hooks-*` or `.keysmith-write-*` residue; later deploy/restore operations then stop for manual inspection. An interruption between completed atomic steps can also leave partial state without transaction residue, which a later run is not guaranteed to detect.
 
-### Safety defaults
-
-- Deployment is preview-only unless `--yes` is provided.
-- Backs up `config.toml` before updating it.
-- Backs up an existing same-name `.md` file before overwriting it.
-- Backs up an active `hooks.json` before isolating it as `hooks.json.disabled`.
-- Does not overwrite an active `hooks.json` during `--restore-hooks`.
-- Rejects unsafe `--name` values such as paths, absolute paths, `..`, empty names, and names with spaces.
-- Does not patch Codex binaries, intercept network traffic, or modify running processes.
-
-### Current limitations
-
-- The tool is a single-file Python CLI and is not packaged for `pip install`.
-- There are no `status` or `uninstall` subcommands. Configuration and instruction files still require manual rollback from backups; hooks can be restored with `--restore-hooks`.
-- Configuration is global through `model_instructions_file`; profile isolation is not implemented.
-- TOML updates conservatively edit top-level keys without a full TOML editing library.
-- Windows paths have basic compatibility but need broader real-world testing.
-- Uncatchable termination such as `SIGKILL` or power loss cannot run rollback; the next invocation detects transaction residue and stops before writing.
+See [`docs/hooks-transactions.md`](docs/hooks-transactions.md) for the transaction model.
 
 ### Verification
 
 ```bash
 python3 -m py_compile codex-instruct.py
-python3 -m pytest tests
-python3 codex-instruct.py --dry-run
+python3 -m pytest -q tests
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run
 ```
 
-### License
+The current suite contains 71 pytest cases covering prompt parity, argument handling, backups, concurrent writes, hook isolation/restore, non-regular nodes, multi-directory rollback, and interruption recovery.
 
-MIT
+### Current limits
+
+- Single-file CLI, not a `pip install` package.
+- No `status` or complete `uninstall` command.
+- Global `model_instructions_file` configuration only.
+- Conservative top-level TOML key editing instead of a full TOML editor.
+- Whole-file hook isolation only.
+- No guarantee that a bundled instruction produces identical behavior across models or versions.
+
+### Contributing, security, and license
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a Pull Request. Report vulnerabilities privately through the process in [`SECURITY.md`](SECURITY.md). Licensed under the [MIT License](LICENSE).
