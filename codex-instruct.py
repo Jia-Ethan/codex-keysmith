@@ -27,6 +27,7 @@ import ctypes
 import errno
 import hashlib
 import json
+import locale
 import os
 import re
 import shlex
@@ -217,6 +218,10 @@ _EN_REPLACEMENTS = (
     ("部署前置检查失败，未修改任何部署文件", "Deployment preflight failed; no deployment files were changed"),
     ("部署失败，开始回滚", "Deployment failed; starting rollback"),
     ("已恢复部署前状态。", "The pre-deployment state was restored."),
+    ("未找到需要恢复的部署事务。", "No interrupted deployment transaction requires recovery."),
+    ("恢复预检发现", "Recovery preflight found"),
+    ("个所有权冲突；未修改文件:", " ownership conflict(s); no files were changed:"),
+    ("部署事务恢复失败；日志与证据均已保留", "Deployment transaction recovery failed; journals and evidence were preserved"),
     ("只读检查", "read-only inspection"),
     ("状态检查未发现阻塞问题；未读取 hooks 内容，未修改任何文件。", "Status found no blockers; hooks content was not read and no files were changed."),
     ("状态目录", "Status directory"),
@@ -238,7 +243,6 @@ _EN_REPLACEMENTS = (
     ("发现 hooks.json:", "Found hooks.json:"),
     ("已设置 model_instructions_file", "Set model_instructions_file"),
     ("model_instructions_file 已存在且值相同，跳过", "model_instructions_file already has the requested value; skipped"),
-    ("hooks.json 未被隔离，仍保持活跃。", "hooks.json was not isolated and remains active."),
     ("事务残留", "Transaction residue"),
     ("旧版迁移", "Legacy migration"),
     ("下次默认部署将归档旧文件", "the next default deployment will archive the legacy file"),
@@ -275,6 +279,12 @@ _EN_REPLACEMENTS = (
     ("[卸载]", "[Uninstall]"),
     ("[计划]", "[Plan]"),
     ("[预览]", "[Preview]"),
+    ("[醒目警告]", "[Important warning]"),
+    ("hooks 将保持活跃，并可能继续注入上下文或影响模型行为。", "hooks remain active and may continue to inject context or affect model behavior."),
+    ("（不会读取或改写）", " (content will not be read or modified)"),
+    ("active（默认部署会整体隔离）", "active (the default deployment will isolate the whole file)"),
+    ("conflict（恢复不会覆盖任何一方）", "conflict (restore will overwrite neither file)"),
+    ("ready（部署会先备份已有 disabled）", "ready (deployment will first back up the existing disabled file)"),
 )
 
 
@@ -291,12 +301,33 @@ def _resolve_output_language(value: str) -> str:
         return "zh-CN"
     if environment_locale.startswith("en"):
         return "en"
+    if not environment_locale:
+        try:
+            system_locale = (locale.getlocale()[0] or "").lower()
+        except (TypeError, ValueError):
+            system_locale = ""
+        if system_locale.startswith(("zh", "chinese")):
+            return "zh-CN"
+        if system_locale.startswith(("en", "english")):
+            return "en"
     return "zh-CN"
 
 
 def _set_output_language(value: str) -> None:
     global _OUTPUT_LANGUAGE
     _OUTPUT_LANGUAGE = _resolve_output_language(value)
+
+
+def _configure_output_streams() -> None:
+    """Use UTF-8 for multilingual CLI output, including Windows consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
 
 
 def _language_from_argv(argv: List[str]) -> str:
@@ -315,6 +346,34 @@ def _localized(zh_cn: str, english: str) -> str:
 def _tr(value: str) -> str:
     if _OUTPUT_LANGUAGE != "en":
         return value
+    value = re.sub(
+        r"(hooks\.json(?:\.disabled)?) 是 ([^，]+)，不是普通文件:",
+        r"\1 is a \2, not a regular file:",
+        value,
+    )
+    value = value.replace(
+        "已显式跳过 hooks.json 整体隔离。",
+        "Whole-file hooks.json isolation was explicitly skipped.",
+    ).replace(
+        "hooks.json 未被隔离，仍保持活跃。",
+        "hooks.json was not isolated and remains active.",
+    )
+    value = value.replace(
+        "未找到 hooks.json.disabled:",
+        "hooks.json.disabled not found:",
+    ).replace(
+        "活跃 hooks.json 与待恢复文件同时存在:",
+        "Active hooks.json and the pending restore file both exist:",
+    ).replace(
+        "两份文件均保留:",
+        "Both files were preserved:",
+    ).replace(
+        "hooks.json 状态在恢复期间发生变化:",
+        "hooks.json changed during restore:",
+    ).replace(
+        "hooks.json 恢复失败:",
+        "hooks.json restore failed:",
+    )
     # Keep path-like dynamic values opaque while translating static CLI text.
     # A blind substring replacement can otherwise rewrite a Unicode path into
     # a different, non-existent path in English output.
@@ -341,6 +400,8 @@ def _tr(value: str) -> str:
         (r"^(\s*)\[完成\] 已卸载 (\d+) 个受管理部署。$", r"\1[Done] Uninstalled \2 managed deployment(s)."),
         (r"^(\s*)\[完成\] 已恢复 (\d+) 个 hooks.json。$", r"\1[Done] Restored \2 hooks.json file(s)."),
         (r"^(\s*)\[错误\] (\d+) 个目录存在冲突或异常节点。$", r"\1[Error] \2 location(s) contain conflicts or abnormal nodes."),
+        (r"^(\s*)\[错误\] dry-run 发现 (\d+) 个可确认的阻塞问题；未修改任何文件。$", r"\1[Error] dry-run found \2 confirmed blocker(s); no files were changed."),
+        (r"^(\s*)\[错误\] 有 (\d+) 个目录因异常 hooks 路径未恢复。$", r"\1[Error] \2 location(s) were not restored because of abnormal hooks paths."),
     )
     for pattern, replacement in patterns:
         translated = re.sub(pattern, replacement, translated)
@@ -545,7 +606,12 @@ def _is_regular_path(path: Path) -> bool:
 
 
 def _open_regular_descriptor(path: Path, label: str) -> Tuple[int, os.stat_result]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         file_descriptor = os.open(path, flags)
@@ -578,7 +644,12 @@ def resolve_codex_dir(
     """Resolve and validate a user-supplied Codex directory."""
     codex_root = Path(value).expanduser().resolve()
     if not codex_root.is_dir():
-        raise FileNotFoundError(f"指定目录不存在或不是目录: {codex_root}")
+        raise FileNotFoundError(
+            _localized(
+                f"指定目录不存在或不是目录: {codex_root}",
+                f"Specified directory does not exist or is not a directory: {codex_root}",
+            )
+        )
     if reject_residue:
         _reject_hooks_transaction_residue(codex_root)
     if not require_config:
@@ -586,9 +657,19 @@ def resolve_codex_dir(
 
     config_path = codex_root / "config.toml"
     if not _path_entry_exists(config_path):
-        raise FileNotFoundError(f"指定目录下未找到 config.toml: {codex_root}")
+        raise FileNotFoundError(
+            _localized(
+                f"指定目录下未找到 config.toml: {codex_root}",
+                f"Specified directory does not contain config.toml: {codex_root}",
+            )
+        )
     if not _is_regular_path(config_path):
-        raise FileNotFoundError(f"config.toml 不是普通文件: {config_path}")
+        raise FileNotFoundError(
+            _localized(
+                f"config.toml 不是普通文件: {config_path}",
+                f"config.toml is not a regular file: {config_path}",
+            )
+        )
     return codex_root
 
 
@@ -686,7 +767,13 @@ def find_recovery_dirs() -> List[str]:
 
 def _open_exclusive_private_file(path: Path) -> int:
     """Create a private regular file without following links or replacing nodes."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     flags |= getattr(os, "O_NOFOLLOW", 0)
     return os.open(path, flags, 0o600)
 
@@ -1150,9 +1237,19 @@ def inspect_directory(
         joined = ", ".join(str(path) for path in residue)
         plan.blockers.append(f"发现未完成的 keysmith 事务目录: {joined}")
     if not config.exists:
-        plan.blockers.append(f"未找到 config.toml: {config.path}")
+        plan.blockers.append(
+            _localized(
+                f"未找到 config.toml: {config.path}",
+                f"config.toml not found: {config.path}",
+            )
+        )
     elif not config.regular:
-        plan.blockers.append(f"config.toml 是 {config.kind}，不是普通文件: {config.path}")
+        plan.blockers.append(
+            _localized(
+                f"config.toml 是 {config.kind}，不是普通文件: {config.path}",
+                f"config.toml is a {config.kind}, not a regular file: {config.path}",
+            )
+        )
     else:
         try:
             config_content, config_fingerprint = _read_regular_text_with_fingerprint(
@@ -4278,7 +4375,12 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
         for directory in codex_dirs:
             discovered.extend(_deployment_journal_dirs(Path(directory)))
         if not discovered:
-            _print("[完成] 未找到需要恢复的部署事务。")
+            _print(
+                _localized(
+                    "[完成] 未找到需要恢复的部署事务。",
+                    "[Done] No interrupted deployment transaction requires recovery.",
+                )
+            )
             return
         journals = [(path, _load_deployment_journal(path)) for path in discovered]
         transaction_ids = {data["transaction_id"] for _path, data in journals}
@@ -5020,7 +5122,12 @@ def uninstall(codex_dirs: List[str], yes: bool) -> None:
             f"  [计划] {plan.codex_dir}: deployment {manifest['deployment_id']} "
             f"(v{manifest['tool_version']})"
         )
-        _print("         恢复 config/MD/hooks/legacy，并归档当前部署清单")
+        _print(
+            _localized(
+                "         恢复 config/MD/hooks/legacy，并归档当前部署清单",
+                "         Restore config/MD/hooks/legacy and archive the current deployment manifest",
+            )
+        )
         for blocker in plan.blockers:
             _print(f"  [阻塞] {plan.codex_dir}: {blocker}")
     if blockers:
@@ -5722,7 +5829,12 @@ def _print_node(label: str, node: NodeInfo) -> None:
 def show_status(codex_dirs: List[str]) -> None:
     """Print a read-only status report; hook files are never opened or parsed."""
     if not codex_dirs:
-        _print("[!] 未找到任何 Codex 配置目录")
+        _print(
+            _localized(
+                "[!] 未找到任何 Codex 配置目录",
+                "[!] No Codex configuration locations were found",
+            )
+        )
         sys.exit(1)
 
     invalid_count = 0
@@ -5805,8 +5917,18 @@ def deploy(args) -> None:
 
     codex_dirs = find_codex_dirs()
     if not codex_dirs:
-        _print("[!] 未找到任何 Codex 安装 (.codex/config.toml)")
-        _print("    手动指定: python3 codex-instruct.py --codex-dir ~/.codex --dry-run")
+        _print(
+            _localized(
+                "[!] 未找到任何 Codex 安装 (.codex/config.toml)",
+                "[!] No Codex installation was found (.codex/config.toml)",
+            )
+        )
+        _print(
+            _localized(
+                "    手动指定: python3 codex-instruct.py --codex-dir ~/.codex --dry-run",
+                "    Specify explicitly: python3 codex-instruct.py --codex-dir ~/.codex --dry-run",
+            )
+        )
         sys.exit(1)
 
     prompt_sha256 = hashlib.sha256(md_content.encode("utf-8")).hexdigest()
@@ -6224,6 +6346,7 @@ def deploy(args) -> None:
 
 
 def main() -> None:
+    _configure_output_streams()
     _set_output_language(_language_from_argv(sys.argv[1:]))
     epilog = _localized(
         """
@@ -6474,8 +6597,18 @@ Examples:
     if args.restore_hooks:
         codex_dirs = find_hook_restore_dirs()
         if not codex_dirs:
-            _print("[!] 未找到任何可恢复的 Codex 配置目录")
-            _print("    手动指定: python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks")
+            _print(
+                _localized(
+                    "[!] 未找到任何可恢复的 Codex 配置目录",
+                    "[!] No restorable Codex configuration locations were found",
+                )
+            )
+            _print(
+                _localized(
+                    "    手动指定: python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks",
+                    "    Specify explicitly: python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks",
+                )
+            )
             sys.exit(1)
 
         _print(f"[+] 找到 {len(codex_dirs)} 个 Codex 配置目录:")

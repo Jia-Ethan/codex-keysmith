@@ -126,7 +126,7 @@ py -3 .\codex-instruct-v0.1.0.py --version
 - Python 3.8：保留 legacy compatibility 测试，但 Python 3.8 已 EOL，不作为首选生产运行时。
 - 已验证 Codex CLI：`codex-cli 0.144.1`。其他 Codex 版本需重新核对配置格式和实际模型行为。
 - macOS / Linux：当前主要支持范围。
-- Windows：v0.1.0 标记为 experimental；CI 包含 Windows 原子无覆盖重命名探测，但在正式支持声明前仍需远端矩阵和真实环境证据。
+- Windows：v0.1.0 标记为 experimental；CI 中 Windows 矩阵为非阻断观察项，并包含原子无覆盖重命名探测。测试失败仍会保留在 job 结果中，但不阻断 macOS/Linux release gate；转为正式支持前必须先实现 Windows 矩阵全绿并补齐真实环境证据。
 
 ### 第一次部署
 
@@ -239,7 +239,7 @@ python3 codex-instruct-v0.1.0.py \
 `--lang auto|zh-CN|en` 控制 CLI 输出：
 
 - `auto` 依次读取 `LC_ALL`、`LC_MESSAGES`、`LANG`；值以 `zh` 开头时使用简体中文，以 `en` 开头时使用英文；
-- 其他 locale 或缺失 locale 安全回退到 `zh-CN`；
+- 其他已设置但不受支持的 locale 安全回退到 `zh-CN`；三项环境变量都缺失时，再读取系统 locale，识别 English/Chinese 名称，否则回退 `zh-CN`；
 - `--lang zh-CN` / `--lang en` 明确覆盖自动选择；
 - `--version` 输出当前脚本版本，不访问 Codex 配置。
 
@@ -533,7 +533,7 @@ py -3 .\codex-instruct-v0.1.0.py --version
 - Python 3.8 remains in legacy compatibility tests, but it is EOL and is not the preferred production runtime.
 - Verified Codex CLI: `codex-cli 0.144.1`. Recheck configuration compatibility and live model behavior for other versions.
 - macOS and Linux are the primary support range.
-- Windows is experimental in v0.1.0. CI includes a Windows atomic no-replace probe, but formal support still requires remote-matrix and real-environment evidence.
+- Windows is experimental in v0.1.0. Its CI matrix is a non-blocking observation surface and includes an atomic no-replace probe. Failures remain visible in the job results but do not block the macOS/Linux release gate; formal support requires a fully green Windows matrix plus real-environment evidence.
 
 ### First deployment
 
@@ -646,7 +646,7 @@ Replace `--dry-run` with `--yes` after review. External Markdown must be a no-fo
 `--lang auto|zh-CN|en` controls CLI output:
 
 - `auto` checks `LC_ALL`, then `LC_MESSAGES`, then `LANG`; values beginning with `zh` select Simplified Chinese and values beginning with `en` select English;
-- an unsupported or absent locale safely falls back to `zh-CN`;
+- an unsupported configured locale safely falls back to `zh-CN`; when all three environment variables are absent, auto mode checks the system locale for English/Chinese names and otherwise falls back to `zh-CN`;
 - `--lang zh-CN` and `--lang en` override detection;
 - `--version` prints the script version without accessing Codex configuration.
 

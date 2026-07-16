@@ -371,6 +371,35 @@ def test_backup_file_uses_incrementing_suffix_on_name_collision(tmp_path):
     assert second_backup.read_text(encoding="utf-8") == "second"
 
 
+def test_regular_and_private_file_opens_request_binary_mode(tmp_path, monkeypatch):
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"line-1\r\nline-2\r\n")
+    destination = tmp_path / "destination.txt"
+    real_open = codex_instruct.os.open
+    binary_flag = getattr(codex_instruct.os, "O_BINARY", 1 << 29)
+    native_binary_flag = getattr(os, "O_BINARY", 0)
+    observed_flags = []
+
+    def observe_open(path, flags, *args, **kwargs):
+        observed_flags.append(flags)
+        native_flags = flags if native_binary_flag else flags & ~binary_flag
+        return real_open(path, native_flags, *args, **kwargs)
+
+    monkeypatch.setattr(codex_instruct.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(codex_instruct.os, "open", observe_open)
+
+    source_descriptor, _source_stat = codex_instruct._open_regular_descriptor(
+        source,
+        "source",
+    )
+    os.close(source_descriptor)
+    destination_descriptor = codex_instruct._open_exclusive_private_file(destination)
+    os.close(destination_descriptor)
+
+    assert len(observed_flags) == 2
+    assert all(flags & binary_flag for flags in observed_flags)
+
+
 def test_backup_creation_starts_private_and_fchmod_failure_is_not_silent(
     tmp_path,
     monkeypatch,
@@ -1399,7 +1428,15 @@ def test_cli_reports_transaction_residue_when_config_is_missing(tmp_path):
     previous.write_text('model = "gpt-5.6"\n', encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--yes"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--yes",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1418,7 +1455,15 @@ def test_cli_yes_writes_to_explicit_codex_dir(tmp_path):
     config.write_text('model = "gpt-5.6"\n', encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--yes"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--yes",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
         check=True,
@@ -1469,7 +1514,15 @@ def test_deploy_dry_run_shows_hooks_detection(tmp_path):
     hooks_path.write_text(hooks_content, encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--dry-run"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--dry-run",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
         check=True,
@@ -1495,12 +1548,28 @@ def test_deploy_rejects_non_file_hooks_before_writing(tmp_path):
     hooks_path.mkdir()
 
     preview = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--dry-run"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--dry-run",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
     deployment = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--yes"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--yes",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1533,6 +1602,8 @@ def test_cli_restore_hooks_restores(tmp_path):
             "--codex-dir",
             str(codex_dir),
             "--restore-hooks",
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -1562,6 +1633,8 @@ def test_cli_restore_hooks_without_config(tmp_path):
             "--codex-dir",
             str(codex_dir),
             "--restore-hooks",
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -1590,6 +1663,8 @@ def test_cli_restore_hooks_rejects_non_regular_disabled(tmp_path):
             "--codex-dir",
             str(codex_dir),
             "--restore-hooks",
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -1659,7 +1734,15 @@ def test_cli_status_is_read_only_and_reports_active_hooks(tmp_path):
     before = {path.name: path.read_bytes() for path in codex_dir.iterdir()}
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--status"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--status",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1680,7 +1763,15 @@ def test_cli_status_reports_hooks_conflict_and_preserves_both(tmp_path):
     disabled.write_text("disabled\n", encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--status"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--status",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1695,7 +1786,14 @@ def test_cli_status_reports_hooks_conflict_and_preserves_both(tmp_path):
 
 def test_cli_skip_hooks_requires_explicit_directory():
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--skip-hooks-isolation", "--dry-run"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--skip-hooks-isolation",
+            "--dry-run",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1720,6 +1818,8 @@ def test_cli_skip_hooks_keeps_active_file_unchanged(tmp_path):
             str(codex_dir),
             "--skip-hooks-isolation",
             "--yes",
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -1749,6 +1849,8 @@ def test_cli_skip_hooks_reports_abnormal_node_type_without_touching_it(tmp_path)
             str(codex_dir),
             "--skip-hooks-isolation",
             "--dry-run",
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -1768,7 +1870,15 @@ def test_cli_restore_conflict_exits_one_and_preserves_both(tmp_path):
     disabled.write_text("disabled\n", encoding="utf-8")
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--restore-hooks"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--restore-hooks",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -1783,7 +1893,15 @@ def test_cli_restore_without_disabled_is_successful_noop(tmp_path):
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--restore-hooks"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--restore-hooks",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )
@@ -2074,6 +2192,8 @@ def test_status_rejects_explicit_deployment_arguments(tmp_path, extra_args):
             str(codex_dir),
             "--status",
             *extra_args,
+            "--lang",
+            "zh-CN",
         ],
         text=True,
         capture_output=True,
@@ -2153,7 +2273,15 @@ def test_status_reports_disabled_only_residue_and_missing_config(tmp_path):
     (codex_dir / ".keysmith-write-interrupted").mkdir()
 
     result = subprocess.run(
-        [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--status"],
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--codex-dir",
+            str(codex_dir),
+            "--status",
+            "--lang",
+            "zh-CN",
+        ],
         text=True,
         capture_output=True,
     )

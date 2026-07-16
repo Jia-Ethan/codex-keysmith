@@ -111,7 +111,15 @@ def test_unwritable_directory_fails_before_deployment(tmp_path):
     codex_dir.chmod(0o500)
     try:
         result = subprocess.run(
-            [sys.executable, str(MODULE_PATH), "--codex-dir", str(codex_dir), "--yes"],
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--codex-dir",
+                str(codex_dir),
+                "--yes",
+                "--lang",
+                "zh-CN",
+            ],
             text=True,
             capture_output=True,
         )
