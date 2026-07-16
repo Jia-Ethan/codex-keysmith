@@ -18,7 +18,7 @@
 ## 验证 / Verification
 
 - [ ] `python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py`
-- [ ] `python3 -m pytest -p no:cacheprovider -q tests`（当前完整测试集 190+ / current full suite 190+）
+- [ ] `python3 -m pytest -p no:cacheprovider -q tests`（当前完整测试集 300+ / current full suite 300+）
 - [ ] `python3 -m ruff check codex-instruct.py tests scripts`
 - [ ] 合并后的 branch coverage ≥ 80% / combined branch coverage is at least 80%
 - [ ] `python3 scripts/run_prompt_bank_regression.py --validate-only`
