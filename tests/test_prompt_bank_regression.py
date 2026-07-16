@@ -52,6 +52,96 @@ def test_duplicate_case_id_is_rejected(prompt_bank_runner, tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("invalid-json", "invalid JSON"),
+        ("root-list", "bank root must be an object"),
+        ("missing-root-field", "bank fields mismatch"),
+        ("wrong-version", "bank version must be 1"),
+        ("blank-prompt-source", "prompt_source must be a non-empty string"),
+        ("empty-cases", "cases must be a non-empty list"),
+        ("absolute-prompt-source", "prompt_source must be relative"),
+        ("escaping-prompt-source", "prompt_source escapes the repository"),
+        ("missing-prompt-source", "does not name a regular file"),
+        ("case-not-object", "case 0 must be an object"),
+        ("missing-case-field", "case 0 fields mismatch"),
+        ("invalid-case-id", "id must match"),
+        ("blank-case-field", "category must be a non-empty string"),
+        ("blank-token", "entries must be non-empty strings"),
+        ("duplicate-token", "contains duplicates"),
+        ("missing-contracts", "missing required contracts"),
+        ("missing-language", "must include English and Simplified Chinese"),
+    ],
+)
+def test_invalid_bank_structure_is_rejected(
+    prompt_bank_runner,
+    tmp_path,
+    mutation,
+    message,
+):
+    bank = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+    payload = bank
+    if mutation == "invalid-json":
+        invalid_path = tmp_path / "invalid.json"
+        invalid_path.write_text("{", encoding="utf-8")
+    else:
+        if mutation == "root-list":
+            payload = []
+        elif mutation == "missing-root-field":
+            del bank["version"]
+        elif mutation == "wrong-version":
+            bank["version"] = 2
+        elif mutation == "blank-prompt-source":
+            bank["prompt_source"] = " "
+        elif mutation == "empty-cases":
+            bank["cases"] = []
+        elif mutation == "absolute-prompt-source":
+            bank["prompt_source"] = str((tmp_path / "prompt.md").resolve())
+        elif mutation == "escaping-prompt-source":
+            bank["prompt_source"] = "../outside.md"
+        elif mutation == "missing-prompt-source":
+            bank["prompt_source"] = "examples/missing.md"
+        elif mutation == "case-not-object":
+            bank["cases"][0] = None
+        elif mutation == "missing-case-field":
+            del bank["cases"][0]["category"]
+        elif mutation == "invalid-case-id":
+            bank["cases"][0]["id"] = "INVALID ID"
+        elif mutation == "blank-case-field":
+            bank["cases"][0]["category"] = " "
+        elif mutation == "blank-token":
+            bank["cases"][0]["required_tokens"][0] = " "
+        elif mutation == "duplicate-token":
+            token = bank["cases"][0]["required_tokens"][0]
+            bank["cases"][0]["required_tokens"].append(token)
+        elif mutation == "missing-contracts":
+            bank["cases"] = bank["cases"][:1]
+        elif mutation == "missing-language":
+            for case in bank["cases"]:
+                case["language"] = "en"
+        invalid_path = tmp_path / "invalid.json"
+        invalid_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(prompt_bank_runner.BankValidationError, match=message):
+        prompt_bank_runner.load_and_validate_bank(invalid_path)
+
+
+def test_unreadable_bank_path_is_rejected(prompt_bank_runner, tmp_path):
+    with pytest.raises(prompt_bank_runner.BankValidationError, match="cannot read cases file"):
+        prompt_bank_runner.load_and_validate_bank(tmp_path)
+
+
+def test_unknown_prompt_scope_and_missing_marker_are_rejected(prompt_bank_runner):
+    prompt = (REPO_ROOT / "examples" / "gpt-unrestricted.md").read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(prompt_bank_runner.BankValidationError, match="unknown prompt scope"):
+        prompt_bank_runner._contract_prompt_scope("unknown", prompt)
+    with pytest.raises(prompt_bank_runner.BankValidationError, match="must occur exactly once"):
+        prompt_bank_runner._prompt_bullet_block(prompt, "marker-that-is-absent")
+
+
+@pytest.mark.parametrize(
     ("field", "value", "message"),
     [
         ("attempts", 3, "attempts must be"),

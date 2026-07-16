@@ -10,11 +10,13 @@ permissions:
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
 
 jobs:
   test:
     name: ${{ format('{0} / Python {1}{2}', matrix.os, matrix.python-version, matrix.os == 'windows-2025' && ' / experimental' || '') }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-2025' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false

@@ -39,9 +39,9 @@ python3 scripts/build_release.py v0.1.0 --source-commit "$SOURCE_COMMIT" --outpu
 git diff --check
 ```
 
-当前完整测试集为 190+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 80% 门槛让 CI 通过。候选 Release 构建必须使用完整 `--source-commit` 并精确匹配 HEAD。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
+当前完整测试集为 300+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 80% 门槛让 CI 通过。候选 Release 构建必须使用完整 `--source-commit` 并精确匹配 HEAD。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
 
-Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果、文档/CHANGELOG 影响，以及 Windows experimental 行为是否变化。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果、文档/CHANGELOG 影响，以及 Windows experimental 行为是否变化。Windows job 在 v0.1.0 中是非阻断观察项，但失败必须保留并说明，不得伪装为正式支持。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
 
 ---
 
@@ -67,6 +67,6 @@ For a contribution:
 5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
 6. Run the complete command block above from a clean worktree.
 
-The current full suite contains 190+ tests. Do not remove tests, narrow measured source, or lower the combined 80% branch-coverage gate to make CI pass. Candidate Release builds must pass a full `--source-commit` that exactly matches HEAD. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
+The current full suite contains 300+ tests. Do not remove tests, narrow measured source, or lower the combined 80% branch-coverage gate to make CI pass. Candidate Release builds must pass a full `--source-commit` that exactly matches HEAD. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
 
-A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, documentation/CHANGELOG impact, and any change to Windows experimental behavior. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, documentation/CHANGELOG impact, and any change to Windows experimental behavior. Windows jobs are non-blocking observation jobs in v0.1.0, but failures must remain visible and documented rather than being presented as formal support. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.

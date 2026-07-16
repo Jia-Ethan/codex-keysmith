@@ -11,7 +11,7 @@ No unreleased user-visible changes are recorded yet.
 ### Added
 
 - Versioned CLI identity through `VERSION`, `codex-instruct.py --version`, and deterministic v0.1.0 ZIP, tar.gz, standalone-script, and `SHA256SUMS` release assets.
-- `--lang auto|zh-CN|en`; auto mode checks `LC_ALL`, `LC_MESSAGES`, then `LANG`, supports Chinese and English locales, and falls back to Simplified Chinese.
+- `--lang auto|zh-CN|en`; auto mode checks `LC_ALL`, `LC_MESSAGES`, then `LANG`, falls back to the system English/Chinese locale when those variables are absent, and otherwise defaults to Simplified Chinese.
 - Read-only `--status` reporting for config, current and legacy prompts, active/disabled hooks, deployment manifest, transaction residue, migration state, hook recovery, and deployability.
 - Manifest-owned deployment records in `.codex-keysmith-manifest.json`, including deployment ID, tool version, MD/config fingerprints, actual hook-isolation and legacy-archive state, backup names, and the previous manifest layer.
 - Preview-first `--uninstall` with explicit `--yes`, ownership/integrity checks, reverse rollback, multi-directory all-preflight behavior, and one-layer-at-a-time restoration of config, Markdown, actually managed hooks/legacy files, and previous manifests.
@@ -51,7 +51,7 @@ No unreleased user-visible changes are recorded yet.
 - Recommended runtime support is Python 3.10–3.14 with zero third-party runtime dependencies.
 - Python 3.8 remains tested as legacy compatibility but is EOL and is not the preferred production runtime.
 - Verified locally with Codex CLI `0.144.1`.
-- macOS and Linux are the primary support targets. Windows is experimental in v0.1.0 until remote matrix and real-environment evidence justify a formal support claim.
+- macOS and Linux are the primary support targets. Windows is a non-blocking experimental CI observation target in v0.1.0 until a fully green matrix and real-environment evidence justify a formal support claim.
 
 ### Known limitations
 
@@ -61,7 +61,7 @@ No unreleased user-visible changes are recorded yet.
 - `SIGKILL` cannot run Python rollback. Once immutable intent is published, recovery covers registered claims, journal/companion pending files, partial snapshots, and cleanup markers. Two narrow windows remain manual and fail closed: journal-directory `mkdir` before first-intent publication, and per-step `mkdtemp` before its residue record is durable.
 - Journal, intent, companion, manifest, and cleanup evidence protects against accidental drift and ordinary races; it is not cryptographic authentication against coordinated same-user tampering. Extreme power loss, storage that does not honor flush, filesystem corruption, and abnormal directory-entry persistence also remain outside the provable boundary.
 - Backups, recovery paths, and `.uninstalled_*` manifest archives are not automatically deleted.
-- Windows support is experimental, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
+- Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
 [Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.0...HEAD
