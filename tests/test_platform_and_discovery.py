@@ -54,15 +54,8 @@ def test_find_restore_dirs_includes_disabled_and_residue_without_config(
     )
 
 
-def test_discovery_skips_inaccessible_candidate_directories(tmp_path, monkeypatch):
+def test_candidate_resolver_skips_inaccessible_directory(tmp_path, monkeypatch):
     blocked = (tmp_path / "blocked").resolve()
-    valid = tmp_path / "valid"
-    valid.mkdir()
-    (valid / "config.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
-    (valid / "hooks.json.disabled").write_text("disabled\n", encoding="utf-8")
-    (valid / codex_instruct.MANIFEST_FILENAME).write_text("{}\n", encoding="utf-8")
-    (valid / (codex_instruct.JOURNAL_PREFIX + "a" * 32)).mkdir()
-    valid_resolved = valid.resolve()
     real_is_dir = Path.is_dir
 
     def guarded_is_dir(path):
@@ -70,19 +63,55 @@ def test_discovery_skips_inaccessible_candidate_directories(tmp_path, monkeypatc
             raise PermissionError("simulated inaccessible candidate")
         return real_is_dir(path)
 
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+
+    assert codex_instruct._resolve_candidate_directory(blocked) is None
+
+
+def test_each_discovery_mode_skips_probe_errors(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
     monkeypatch.setattr(
         codex_instruct,
         "_codex_dir_candidates",
-        lambda: [blocked, valid],
+        lambda: [candidate],
     )
-    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
 
-    expected = [str(valid_resolved)]
-    assert codex_instruct.find_codex_dirs() == expected
-    assert codex_instruct.find_hook_restore_dirs() == expected
-    assert codex_instruct.find_status_dirs() == expected
-    assert codex_instruct.find_recovery_dirs() == expected
-    assert codex_instruct.find_uninstall_dirs() == expected
+    def fail(*_args, **_kwargs):
+        raise PermissionError("simulated inaccessible candidate contents")
+
+    monkeypatch.setattr(codex_instruct, "_is_regular_path", fail)
+    assert codex_instruct.find_codex_dirs() == []
+    assert codex_instruct.find_hook_restore_dirs() == []
+
+    monkeypatch.setattr(codex_instruct.os, "scandir", fail)
+    assert codex_instruct._directory_is_enumerable(candidate) is False
+    assert codex_instruct.find_status_dirs() == []
+
+    monkeypatch.setattr(codex_instruct, "_deployment_journal_dirs", fail)
+    assert codex_instruct.find_recovery_dirs() == []
+
+    monkeypatch.setattr(codex_instruct, "_path_entry_exists", fail)
+    assert codex_instruct.find_uninstall_dirs() == []
+
+
+def test_status_reports_late_directory_access_error(tmp_path, monkeypatch, capsys):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+
+    def fail(*_args, **_kwargs):
+        raise PermissionError("simulated access change after discovery")
+
+    monkeypatch.setattr(codex_instruct, "inspect_directory", fail)
+    monkeypatch.setattr(codex_instruct, "_OUTPUT_LANGUAGE", "en")
+
+    with pytest.raises(SystemExit) as exit_info:
+        codex_instruct.show_status([str(candidate)])
+
+    assert exit_info.value.code == 1
+    output = capsys.readouterr().out
+    assert "Could not safely inspect the directory" in output
+    assert "simulated access change after discovery" in output
 
 
 def test_windows_candidates_include_userprofile_and_localappdata(tmp_path, monkeypatch):

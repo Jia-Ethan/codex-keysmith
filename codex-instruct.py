@@ -707,6 +707,16 @@ def _resolve_candidate_directory(candidate: Path) -> Optional[Path]:
     return codex_root
 
 
+def _directory_is_enumerable(path: Path) -> bool:
+    """Return whether discovery can enumerate a directory without side effects."""
+    try:
+        with os.scandir(str(path)) as entries:
+            next(entries, None)
+    except OSError:
+        return False
+    return True
+
+
 def find_codex_dirs() -> List[str]:
     """查找当前用户和 CODEX_HOME 指向的 Codex 配置目录。"""
     found = set()
@@ -754,7 +764,7 @@ def find_status_dirs() -> List[str]:
     found = set()
     for candidate in _codex_dir_candidates():
         codex_root = _resolve_candidate_directory(candidate)
-        if codex_root is not None:
+        if codex_root is not None and _directory_is_enumerable(codex_root):
             found.add(str(codex_root))
     return sorted(found)
 
@@ -766,10 +776,14 @@ def find_recovery_dirs() -> List[str]:
         codex_root = _resolve_candidate_directory(candidate)
         if codex_root is None:
             continue
-        if (
-            _deployment_journal_dirs(codex_root)
-            or _deployment_cleanup_markers(codex_root)
-        ):
+        try:
+            eligible = (
+                _deployment_journal_dirs(codex_root)
+                or _deployment_cleanup_markers(codex_root)
+            )
+        except OSError:
+            continue
+        if eligible:
             found.add(str(codex_root))
     return sorted(found)
 
@@ -5853,11 +5867,22 @@ def show_status(codex_dirs: List[str]) -> None:
     _print(f"[状态] 找到 {len(codex_dirs)} 个 Codex 配置目录（只读检查）:")
     for directory in codex_dirs:
         codex_root = Path(directory)
-        plan = inspect_directory(
-            codex_root,
-            skip_hooks_isolation=True,
-            status_mode=True,
-        )
+        try:
+            plan = inspect_directory(
+                codex_root,
+                skip_hooks_isolation=True,
+                status_mode=True,
+            )
+        except OSError as exc:
+            invalid_count += 1
+            _print(f"\n── 状态目录: {codex_root} ──")
+            _print(
+                _localized(
+                    f"    [错误] 无法安全检查目录: {exc}",
+                    f"    [Error] Could not safely inspect the directory: {exc}",
+                )
+            )
+            continue
         status_errors = list(plan.blockers)
         for label, node in (
             ("当前提示词", plan.current),
