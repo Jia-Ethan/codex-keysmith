@@ -416,7 +416,7 @@ git diff --check
 
 候选构建只接受 40/64 位完整 commit object ID，要求 HEAD 精确匹配；如果同名 tag 已存在，它也必须指向该 commit。正式构建不接受候选替代语义：它要求 `refs/tags/v0.1.0` 存在并精确指向 HEAD。两种模式都要求干净工作树并拒绝覆盖不同内容的既有资产。GitHub Actions 的 pre-tag candidate 使用 `--source-commit "$GITHUB_SHA"`。
 
-当前测试集为 290+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
+当前测试集为 300+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
 
 ### 当前限制
 
@@ -823,7 +823,7 @@ git diff --check
 
 Candidate builds accept only a full 40/64-character commit object ID and require HEAD to match it exactly. If the same tag already exists, it must point at that commit. Formal builds do not use candidate semantics: `refs/tags/v0.1.0` must exist and resolve exactly to HEAD. Both modes require a clean worktree and refuse to overwrite an existing asset with different content. GitHub Actions uses `--source-commit "$GITHUB_SHA"` for the pre-tag candidate build.
 
-The current suite contains 290+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
+The current suite contains 300+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
 
 ### Current limits
 
