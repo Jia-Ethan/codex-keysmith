@@ -696,19 +696,31 @@ def _codex_dir_candidates() -> List[Path]:
     return candidates
 
 
+def _resolve_candidate_directory(candidate: Path) -> Optional[Path]:
+    """Resolve an accessible candidate directory without aborting discovery."""
+    try:
+        codex_root = candidate.expanduser().resolve()
+        if not codex_root.is_dir():
+            return None
+    except OSError:
+        return None
+    return codex_root
+
+
 def find_codex_dirs() -> List[str]:
     """查找当前用户和 CODEX_HOME 指向的 Codex 配置目录。"""
     found = set()
     for candidate in _codex_dir_candidates():
+        codex_root = _resolve_candidate_directory(candidate)
+        if codex_root is None:
+            continue
         try:
-            codex_root = candidate.expanduser().resolve()
+            eligible = _is_regular_path(
+                codex_root / "config.toml"
+            ) or _hooks_transaction_residue(codex_root)
         except OSError:
             continue
-        if not codex_root.is_dir():
-            continue
-        if _is_regular_path(codex_root / "config.toml") or _hooks_transaction_residue(
-            codex_root
-        ):
+        if eligible:
             found.add(str(codex_root))
 
     return sorted(found)
@@ -719,18 +731,19 @@ def find_hook_restore_dirs() -> List[str]:
 
     found = set()
     for candidate in _codex_dir_candidates():
-        try:
-            codex_root = candidate.expanduser().resolve()
-        except OSError:
-            continue
-        if not codex_root.is_dir():
+        codex_root = _resolve_candidate_directory(candidate)
+        if codex_root is None:
             continue
         disabled_path = codex_root / "hooks.json.disabled"
-        if (
-            _is_regular_path(codex_root / "config.toml")
-            or _path_entry_exists(disabled_path)
-            or _hooks_transaction_residue(codex_root)
-        ):
+        try:
+            eligible = (
+                _is_regular_path(codex_root / "config.toml")
+                or _path_entry_exists(disabled_path)
+                or _hooks_transaction_residue(codex_root)
+            )
+        except OSError:
+            continue
+        if eligible:
             found.add(str(codex_root))
 
     return sorted(found)
@@ -740,11 +753,8 @@ def find_status_dirs() -> List[str]:
     """Find existing candidate directories for read-only status inspection."""
     found = set()
     for candidate in _codex_dir_candidates():
-        try:
-            codex_root = candidate.expanduser().resolve()
-        except OSError:
-            continue
-        if codex_root.is_dir():
+        codex_root = _resolve_candidate_directory(candidate)
+        if codex_root is not None:
             found.add(str(codex_root))
     return sorted(found)
 
@@ -753,11 +763,10 @@ def find_recovery_dirs() -> List[str]:
     """Find candidate directories that contain durable deployment journals."""
     found = set()
     for candidate in _codex_dir_candidates():
-        try:
-            codex_root = candidate.expanduser().resolve()
-        except OSError:
+        codex_root = _resolve_candidate_directory(candidate)
+        if codex_root is None:
             continue
-        if codex_root.is_dir() and (
+        if (
             _deployment_journal_dirs(codex_root)
             or _deployment_cleanup_markers(codex_root)
         ):
@@ -3427,11 +3436,14 @@ class UninstallState:
 def find_uninstall_dirs() -> List[str]:
     found = set()
     for candidate in _codex_dir_candidates():
+        codex_root = _resolve_candidate_directory(candidate)
+        if codex_root is None:
+            continue
         try:
-            codex_root = candidate.expanduser().resolve()
+            has_manifest = _path_entry_exists(codex_root / MANIFEST_FILENAME)
         except OSError:
             continue
-        if codex_root.is_dir() and _path_entry_exists(codex_root / MANIFEST_FILENAME):
+        if has_manifest:
             found.add(str(codex_root))
     return sorted(found)
 
