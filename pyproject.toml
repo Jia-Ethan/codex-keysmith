@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+relative_files = true
+source = ["."]
+patch = ["subprocess"]
+
+[tool.coverage.report]
+include = ["codex-instruct.py", "scripts/run_prompt_bank_regression.py"]
+show_missing = true
+skip_covered = false
+fail_under = 80

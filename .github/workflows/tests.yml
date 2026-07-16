@@ -13,7 +13,7 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: ${{ format('{0} / Python {1}{2}', matrix.os, matrix.python-version, matrix.os == 'windows-2025' && ' / experimental' || '') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -22,24 +22,103 @@ jobs:
         os:
           - ubuntu-24.04
           - macos-15
+          - windows-2025
         python-version:
           - "3.8"
-          - "3.13"
+          - "3.14"
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependency
-        run: python -m pip install "pytest>=7,<9"
+      - name: Install test dependency for Python 3.8
+        if: matrix.python-version == '3.8'
+        run: python -m pip install "pytest==8.3.5"
+
+      - name: Install test dependency for latest Python
+        if: matrix.python-version != '3.8'
+        run: python -m pip install "pytest==8.4.2"
 
       - name: Compile Python source
         run: python -m py_compile codex-instruct.py
 
+      - name: Verify Windows atomic rename capability (experimental)
+        if: runner.os == 'Windows'
+        shell: python
+        run: |
+          import importlib.util
+          import os
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          module_path = Path("codex-instruct.py").resolve()
+          spec = importlib.util.spec_from_file_location("keysmith_atomic_probe", module_path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          with tempfile.TemporaryDirectory() as directory:
+              module._verify_atomic_rename_support(Path(directory))
+          evidence = "Windows experimental atomic no-replace probe passed"
+          print(evidence)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as output:
+                  output.write("- " + evidence + "\n")
+
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests
+
+  quality:
+    name: Quality / Python 3.14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Install quality dependencies
+        run: python -m pip install -r requirements-quality.txt
+
+      - name: Compile Python sources
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/build_release.py
+          scripts/run_prompt_bank_regression.py
+
+      - name: Run Ruff
+        run: python -m ruff check codex-instruct.py tests scripts
+
+      - name: Run branch coverage
+        run: |
+          python -m coverage erase
+          python -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
+          python -m coverage combine
+          python -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+
+      - name: Validate prompt bank contracts
+        run: python scripts/run_prompt_bank_regression.py --validate-only
+
+      - name: Build and verify release candidate assets
+        run: |
+          release_tag="v$(tr -d '\r\n' < VERSION)"
+          echo "Candidate-only verification for ${release_tag} at ${GITHUB_SHA}; no release is published."
+          python scripts/build_release.py "$release_tag" --source-commit "$GITHUB_SHA" --output-dir dist
+          cd dist
+          sha256sum --check SHA256SUMS

@@ -2,48 +2,71 @@
 
 # 贡献指南 / Contributing
 
-`codex-keysmith` 会直接处理本地 Codex 配置。提交改动时，请把影响写清楚，保持范围聚焦，并让测试覆盖真实行为。
+`codex-keysmith` 会直接处理本地 Codex 配置。提交改动时，请保持变更边界完整，覆盖真实成功、冲突和回滚路径，并让中英文文档与 CLI 行为一致。
 
 ## 提交问题
 
-提交 Bug 前，请先搜索已有 issue，并使用仓库的 Bug 表单。报告应包含：
+提交 Bug 前，请搜索已有 Issue 并使用仓库的 Bug 表单。报告应包含：
 
-- 操作系统、Python 版本、Codex CLI 版本；
-- 受影响的 `codex-keysmith` commit；
+- `python3 codex-instruct.py --version` 输出、Release tag 和 commit SHA；
+- 操作系统、Python 版本和 Codex CLI 版本；
 - 最小复现步骤、预期结果和实际结果；
-- `--dry-run` 输出，以及与问题直接相关的错误信息。
+- 脱敏后的 `--status` / `--dry-run` 输出，以及是否涉及 deploy、recover、restore-hooks 或 uninstall；如果存在 durable journal，只报告 transaction ID 和节点类型，不粘贴完整内容。
 
-公开内容必须脱敏。请删除 token、cookie、用户名、私人路径和完整配置内容。安全漏洞请按 [安全政策](SECURITY.md) 私密报告，不要创建公开 issue。
+公开内容必须删除 token、cookie、用户名、私人路径、完整配置和 Prompt Bank 响应。安全漏洞请按 [安全政策](SECURITY.md) 私密报告。
 
 ## 提交改动
 
 1. 从当前默认分支创建短生命周期分支。
-2. 只修改与问题直接相关的文件，避免混入格式化或重构噪音。
-3. 为行为变更补充或更新测试。
-4. 运行本地检查：
+2. 只修改与问题直接相关的文件；不要混入无关格式化、生成产物或本地 `.codex` 状态。
+3. 行为变更必须补充成功、错误、并发/所有权冲突和必要回滚测试。
+4. 提示词正文变更必须原子同步 `codex-instruct.py`、`examples/gpt-unrestricted.md`、契约测试和 README。
+5. CLI、durable journal/recover、manifest schema、备份、hooks、迁移、uninstall 或 Release 行为变化必须同步中英文文档和 CHANGELOG。
+6. 在干净工作树上运行完整检查：
 
 ```bash
-python3 -m py_compile codex-instruct.py
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py
 python3 -m pytest -p no:cacheprovider -q tests
+python3 -m ruff check codex-instruct.py tests scripts
+python3 -m coverage erase
+python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
+python3 -m coverage combine
+python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+python3 scripts/run_prompt_bank_regression.py --validate-only
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+python3 scripts/build_release.py v0.1.0 --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
+(cd dist-candidate && sha256sum --check SHA256SUMS)
+git diff --check
 ```
 
-Pull request 请说明改动原因、用户可见影响、验证结果及文档影响。不要提交本地 Codex 配置、备份、日志或凭据。
+当前完整测试集为 190+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 80% 门槛让 CI 通过。候选 Release 构建必须使用完整 `--source-commit` 并精确匹配 HEAD。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
+
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果、文档/CHANGELOG 影响，以及 Windows experimental 行为是否变化。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
 
 ---
 
 ## English
 
-`codex-keysmith` directly handles local Codex configuration. Keep each change focused, explain its impact, and cover real behavior with tests.
+`codex-keysmith` directly manages local Codex configuration. Keep each change complete and focused, cover real success, conflict, and rollback paths, and keep Chinese and English documentation aligned with CLI behavior.
 
-Before opening a bug report, search existing issues and use the repository's bug form. Include the operating system, Python version, Codex CLI version, affected `codex-keysmith` commit, minimal reproduction steps, expected and actual results, and relevant `--dry-run` output.
+Before opening a bug report, search existing issues and use the bug form. Include:
 
-Redact all public content. Remove tokens, cookies, usernames, private paths, and complete configuration files. Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md), not through a public issue.
+- `python3 codex-instruct.py --version`, the Release tag, and commit SHA;
+- operating system, Python version, and Codex CLI version;
+- minimal reproduction steps, expected behavior, and actual behavior;
+- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, or uninstall is involved. If a durable journal exists, report only its transaction ID and node types, not complete content.
 
-For a code contribution:
+Remove tokens, cookies, usernames, private paths, complete configuration, and prompt-bank responses from public content. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
+For a contribution:
 
 1. Create a short-lived branch from the current default branch.
-2. Keep the diff scoped and avoid unrelated formatting or refactoring.
-3. Add or update tests for behavioral changes.
-4. Run the compile and test commands shown above.
+2. Keep the diff scoped; exclude unrelated formatting, generated assets, and local `.codex` state.
+3. Add tests for successful behavior, errors, concurrency/ownership conflicts, and required rollback paths.
+4. A bundled-prompt text change must atomically update `codex-instruct.py`, `examples/gpt-unrestricted.md`, contract tests, and README.
+5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
+6. Run the complete command block above from a clean worktree.
 
-In the pull request, describe the reason for the change, user-visible impact, verification results, and documentation impact. Do not commit local Codex configuration, backups, logs, or credentials.
+The current full suite contains 190+ tests. Do not remove tests, narrow measured source, or lower the combined 80% branch-coverage gate to make CI pass. Candidate Release builds must pass a full `--source-commit` that exactly matches HEAD. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
+
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, documentation/CHANGELOG impact, and any change to Windows experimental behavior. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
