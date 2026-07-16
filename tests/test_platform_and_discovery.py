@@ -54,6 +54,37 @@ def test_find_restore_dirs_includes_disabled_and_residue_without_config(
     )
 
 
+def test_discovery_skips_inaccessible_candidate_directories(tmp_path, monkeypatch):
+    blocked = (tmp_path / "blocked").resolve()
+    valid = tmp_path / "valid"
+    valid.mkdir()
+    (valid / "config.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
+    (valid / "hooks.json.disabled").write_text("disabled\n", encoding="utf-8")
+    (valid / codex_instruct.MANIFEST_FILENAME).write_text("{}\n", encoding="utf-8")
+    (valid / (codex_instruct.JOURNAL_PREFIX + "a" * 32)).mkdir()
+    valid_resolved = valid.resolve()
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(path):
+        if path == blocked:
+            raise PermissionError("simulated inaccessible candidate")
+        return real_is_dir(path)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [blocked, valid],
+    )
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+
+    expected = [str(valid_resolved)]
+    assert codex_instruct.find_codex_dirs() == expected
+    assert codex_instruct.find_hook_restore_dirs() == expected
+    assert codex_instruct.find_status_dirs() == expected
+    assert codex_instruct.find_recovery_dirs() == expected
+    assert codex_instruct.find_uninstall_dirs() == expected
+
+
 def test_windows_candidates_include_userprofile_and_localappdata(tmp_path, monkeypatch):
     userprofile = tmp_path / "user"
     localappdata = tmp_path / "local"

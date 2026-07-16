@@ -34,6 +34,7 @@ No unreleased user-visible changes are recorded yet.
 - Deployment recovery and manifest uninstall perform complete final sweeps across all participants before deleting rollback evidence. Journal cleanup uses `committed` / `recovered` terminal phases so a hard interruption between per-directory removals can resume as a verified no-op.
 - Transaction-directory cleanup is bound to the exact directory identity, member set, and member fingerprints, then atomically claims the whole directory before deletion; original-path replacements are preserved and matching filename prefixes alone never authorize deletion.
 - Copy-created backups are opened as exclusive no-follow `0600` files before content is copied; original permissions are applied only after copy and file `fsync` complete. Existing disabled-hook and legacy archives use validated atomic moves.
+- Automatic directory discovery skips inaccessible candidate locations instead of aborting status, deploy, restore, recover, or uninstall discovery.
 - The bundled prompt remains byte-identical to `examples/gpt-unrestricted.md` and has SHA-256 `0ac8420d504f1a42db87be9f8555f740bf4c1e7b72beb0dde6a4b8d70b6cda07`. Its broad global behavior scope is now disclosed before confirmed deployment.
 
 ### Upgrade and rollback
