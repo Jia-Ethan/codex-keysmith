@@ -219,11 +219,25 @@ _EN_REPLACEMENTS = (
     ("部署失败，开始回滚", "Deployment failed; starting rollback"),
     ("已恢复部署前状态。", "The pre-deployment state was restored."),
     ("未找到需要恢复的部署事务。", "No interrupted deployment transaction requires recovery."),
+    ("未找到需要恢复的卸载事务。", "No interrupted uninstall transaction requires recovery."),
+    ("cleanup 残留未修改；确认清理请添加 --yes。", "Cleanup residue was not changed; add --yes to confirm cleanup."),
+    ("未修改任何文件；确认恢复请添加 --yes。", "No files were changed; add --yes to confirm recovery."),
+    ("未修改任何文件；确认清理初始化 journal 请添加 --yes。", "No files were changed; add --yes to clean the initializing journal."),
     ("恢复预检发现", "Recovery preflight found"),
     ("个所有权冲突；未修改文件:", " ownership conflict(s); no files were changed:"),
-    ("部署事务恢复失败；日志与证据均已保留", "Deployment transaction recovery failed; journals and evidence were preserved"),
+    ("持久化事务恢复失败；日志与证据均已保留", "Durable transaction recovery failed; journals and evidence were preserved"),
+    ("不支持的部署恢复日志", "Unsupported deployment recovery journal"),
+    ("不支持的卸载恢复日志", "Unsupported uninstall recovery journal"),
+    ("事务 journal 不是有效 JSON", "Transaction journal is not valid JSON"),
     ("只读检查", "read-only inspection"),
-    ("状态检查未发现阻塞问题；未读取 hooks 内容，未修改任何文件。", "Status found no blockers; hooks content was not read and no files were changed."),
+    (
+        "部署 journal pending 与当前 journal 不一致",
+        "Deployment journal pending data does not match the current journal",
+    ),
+    (
+        "卸载 journal pending 与当前 journal 不一致",
+        "Uninstall journal pending data does not match the current journal",
+    ),
     ("状态目录", "Status directory"),
     ("部署到", "Deploying to"),
     ("恢复目录", "Restore directory"),
@@ -252,6 +266,8 @@ _EN_REPLACEMENTS = (
     ("hooks 部署", "Hooks deployment"),
     ("hooks 状态", "Hooks status"),
     ("可执行", "available"),
+    ("结构健康", "Structural health"),
+    ("卸载就绪度", "Uninstall readiness"),
     ("可部署性", "Deployability"),
     ("恢复不会覆盖任何一方", "restore will overwrite neither file"),
     ("部署会先备份已有 disabled", "deployment will first back up the existing disabled file"),
@@ -402,6 +418,13 @@ def _tr(value: str) -> str:
         (r"^(\s*)\[错误\] (\d+) 个目录存在冲突或异常节点。$", r"\1[Error] \2 location(s) contain conflicts or abnormal nodes."),
         (r"^(\s*)\[错误\] dry-run 发现 (\d+) 个可确认的阻塞问题；未修改任何文件。$", r"\1[Error] dry-run found \2 confirmed blocker(s); no files were changed."),
         (r"^(\s*)\[错误\] 有 (\d+) 个目录因异常 hooks 路径未恢复。$", r"\1[Error] \2 location(s) were not restored because of abnormal hooks paths."),
+        (r"^(\s*)\[恢复\] 发现事务 journal cleanup 残留: (.+)$", r"\1[Restore] Found transaction journal cleanup residue: \2"),
+        (r"^(\s*)\[恢复\] 发现事务 journal cleanup 目录: (.+)$", r"\1[Restore] Found transaction journal cleanup directory: \2"),
+        (r"^(\s*)\[恢复\] 卸载事务 ([0-9a-f]+)，参与 (\d+) 个目录，阶段: ([A-Za-z-]+)$", r"\1[Restore] Uninstall transaction \2 has \3 participant(s); phase: \4"),
+        (r"^(\s*)\[恢复\] 卸载事务 ([0-9a-f]+) 在 journal 初始化期间中断；业务路径仍保持卸载前状态。$", r"\1[Restore] Uninstall transaction \2 stopped during journal initialization; business paths remain in the pre-uninstall state."),
+        (r"^(\s*)\[恢复\] 卸载事务已处于 ([A-Za-z-]+) 终态，仅需清理剩余 journal。$", r"\1[Restore] The uninstall transaction is already in terminal phase \2; only remaining journals will be cleaned."),
+        (r"^(\s*)\[完成\] 已清理卸载事务 ([0-9a-f]+) 的初始化残留。$", r"\1[Done] Cleaned initializing residue for uninstall transaction \2."),
+        (r"^(\s*)\[完成\] 已恢复卸载事务 ([0-9a-f]+)。$", r"\1[Done] Recovered uninstall transaction \2."),
     )
     for pattern, replacement in patterns:
         translated = re.sub(pattern, replacement, translated)
@@ -884,6 +907,9 @@ class ConfigConflict(HooksConflict):
     """Raised when config.toml cannot be updated without guessing."""
 
 
+_PLANNED_HOOKS_UNSET = object()
+
+
 @dataclass(frozen=True)
 class FileIdentity:
     device: int
@@ -972,11 +998,14 @@ class DirectoryPlan:
     legacy_fingerprint: Optional[FileFingerprint] = None
     legacy_action: str = "none"
     blockers: Optional[List[str]] = None
+    uninstall_blockers: Optional[List[str]] = None
     warnings: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
         if self.blockers is None:
             self.blockers = []
+        if self.uninstall_blockers is None:
+            self.uninstall_blockers = []
         if self.warnings is None:
             self.warnings = []
 
@@ -996,7 +1025,7 @@ def _fsync_directory(path: Path) -> None:
     try:
         descriptor = os.open(path, flags)
     except OSError:
-        # Windows directory fsync support varies; Windows remains experimental.
+        # Directory fsync support varies on Windows, which is currently unsupported.
         if os.name == "nt":
             return
         raise
@@ -1137,7 +1166,8 @@ def _safe_remove_owned_directory(
     expected_identity: FileIdentity,
     expected_members: Any,
     require_exact_members: bool = False,
-) -> None:
+    retain_cleanup_marker: bool = False,
+) -> Optional[Tuple[Path, Any, FileIdentity]]:
     """Claim and delete an exact owned directory without following replacements."""
     if isinstance(expected_members, set):
         expected_members = {name: None for name in expected_members}
@@ -1173,7 +1203,6 @@ def _safe_remove_owned_directory(
     try:
         journal_cleanup = (
             (_cleanup_claim_base(path.name) or path.name).startswith(JOURNAL_PREFIX)
-            and JOURNAL_FILENAME in names
             and INTENT_FILENAME in names
         )
         if journal_cleanup:
@@ -1194,8 +1223,9 @@ def _safe_remove_owned_directory(
             for name in sorted(names - retained):
                 os.unlink(name, dir_fd=descriptor)
             os.fsync(descriptor)
-            os.unlink(JOURNAL_FILENAME, dir_fd=descriptor)
-            os.fsync(descriptor)
+            if JOURNAL_FILENAME in names:
+                os.unlink(JOURNAL_FILENAME, dir_fd=descriptor)
+                os.fsync(descriptor)
             if MANIFEST_INTENT_FILENAME in names:
                 os.unlink(MANIFEST_INTENT_FILENAME, dir_fd=descriptor)
                 os.fsync(descriptor)
@@ -1219,8 +1249,14 @@ def _safe_remove_owned_directory(
             expected = _portable_fingerprint(expected)
         if not _portable_matches(marker, expected):
             raise HooksConflict(f"事务 journal cleanup marker 已漂移: {marker}")
+        if retain_cleanup_marker:
+            return marker, expected, _require_regular_file(
+                marker,
+                "retained transaction cleanup marker",
+            )
         marker.unlink()
         _fsync_directory(path.parent)
+    return None
 
 
 def _reference_targets_legacy(reference: Optional[str]) -> bool:
@@ -1316,7 +1352,9 @@ def inspect_directory(
             ownership_plan = inspect_uninstall_directory(
                 codex_dir,
                 inspect_hooks=not (skip_hooks_isolation or status_mode),
+                inspect_hook_backups=status_mode or not skip_hooks_isolation,
             )
+            plan.uninstall_blockers.extend(ownership_plan.blockers)
             plan.blockers.extend(
                 f"现有部署清单所有权冲突: {blocker}"
                 for blocker in ownership_plan.blockers
@@ -1686,7 +1724,8 @@ def _immutable_journal_intent(data: Dict[str, Any]) -> Dict[str, Any]:
     directories = {}
     for directory, directory_data in data["directories"].items():
         resources = json.loads(json.dumps(directory_data["resources"]))
-        resources["manifest"]["allowed_sha256"] = []
+        if data["operation"] == "deploy":
+            resources["manifest"]["allowed_sha256"] = []
         directories[directory] = {
             "journal_dir": directory_data["journal_dir"],
             "journal_identity": directory_data["journal_identity"],
@@ -1970,12 +2009,16 @@ def _journal_expected_members(
         raise HooksConflict(f"清理前 immutable intent 已变化: {journal_path}")
     members[INTENT_FILENAME] = _portable_fingerprint(intent_fingerprint)
 
-    manifest_digests = {
-        participant: data["directories"][participant]["resources"]["manifest"][
-            "allowed_sha256"
-        ]
-        for participant in data["participants"]
-    }
+    manifest_digests = (
+        {
+            participant: data["directories"][participant]["resources"]["manifest"][
+                "allowed_sha256"
+            ]
+            for participant in data["participants"]
+        }
+        if data["operation"] == "deploy"
+        else {participant: [] for participant in data["participants"]}
+    )
     needs_manifest_intent = any(manifest_digests.values())
     manifest_intent_path = journal_path / MANIFEST_INTENT_FILENAME
     if needs_manifest_intent:
@@ -2148,6 +2191,14 @@ def _validate_manifest(data: Any) -> Dict[str, Any]:
             raise ValueError("hooks 隔离记录缺少所有权指纹")
         if hooks["active_after"] is not None or not hooks["backup"]:
             raise ValueError("hooks 隔离后状态无效")
+        if hooks["disabled_after"] != hooks["active_before"]:
+            raise ValueError("hooks 隔离后的 disabled 指纹与 active_before 不一致")
+        if bool(hooks["disabled_before"]) != bool(
+            hooks["previous_disabled_backup"]
+        ):
+            raise ValueError(
+                "hooks.disabled_before 与 previous_disabled_backup 不一致"
+            )
     elif (
         hooks["backup"] is not None
         or hooks["previous_disabled_backup"] is not None
@@ -2701,16 +2752,48 @@ def _format_restore_command(codex_dir: Path) -> str:
     return shlex.join(parts)
 
 
-def isolate_hooks(codex_dir: Path, timestamp: str) -> Optional[HooksIsolation]:
+def isolate_hooks(
+    codex_dir: Path,
+    timestamp: str,
+    expected_active: Optional[FileFingerprint] = None,
+    expected_disabled: Any = _PLANNED_HOOKS_UNSET,
+) -> Optional[HooksIsolation]:
     """Atomically claim, validate, back up, and disable hooks.json."""
     hooks_path = codex_dir / "hooks.json"
     disabled_path = codex_dir / "hooks.json.disabled"
-    if not _path_entry_exists(hooks_path):
-        return None
+    planned = expected_disabled is not _PLANNED_HOOKS_UNSET
+    if planned:
+        manage_existing_disabled = expected_disabled is not None
+        if expected_active is None or not _path_has_fingerprint(
+            hooks_path,
+            expected_active,
+        ):
+            raise HooksConflict(f"hooks.json 已偏离 journal 发布前计划: {hooks_path}")
+        if expected_disabled is None:
+            if _path_entry_exists(disabled_path):
+                raise HooksConflict(
+                    "hooks.json.disabled 已偏离 journal 发布前的 absent 前提: "
+                    f"{disabled_path}"
+                )
+        elif not _portable_matches(
+            disabled_path,
+            _portable_fingerprint(expected_disabled),
+        ):
+            raise HooksConflict(
+                f"hooks.json.disabled 已偏离 journal 发布前计划: {disabled_path}"
+            )
+    else:
+        if not _path_entry_exists(hooks_path):
+            return None
+        expected_active = _fingerprint_regular_file(hooks_path)
+        manage_existing_disabled = _path_entry_exists(disabled_path)
+        expected_disabled = (
+            _fingerprint_regular_file(disabled_path)
+            if manage_existing_disabled
+            else None
+        )
 
     _verify_atomic_rename_support(codex_dir)
-    expected_active = _fingerprint_regular_file(hooks_path)
-    expected_disabled = _fingerprint_or_none(disabled_path)
     expected_members = {"active": expected_active}
     if expected_disabled is not None:
         expected_members["previous-disabled"] = expected_disabled
@@ -2736,7 +2819,7 @@ def isolate_hooks(codex_dir: Path, timestamp: str) -> Optional[HooksIsolation]:
             timestamp,
         )
 
-        if _path_entry_exists(disabled_path):
+        if manage_existing_disabled:
             if not _atomic_rename_no_replace(disabled_path, disabled_claim):
                 raise HooksConflict(
                     f"无法原子认领 hooks.json.disabled: {disabled_path}"
@@ -3430,6 +3513,10 @@ class UninstallPlan:
 @dataclass
 class UninstallState:
     plan: UninstallPlan
+    deployment_id: Optional[str] = None
+    journal_dir: Optional[Path] = None
+    journal_identity: Optional[FileIdentity] = None
+    journal_data: Optional[Dict[str, Any]] = None
     transaction_dir: Optional[Path] = None
     transaction_identity: Optional[FileIdentity] = None
     snapshots: Optional[Dict[Path, Optional[Path]]] = None
@@ -3445,6 +3532,10 @@ class UninstallState:
             self.snapshot_fingerprints = {}
         if self.post_expected is None:
             self.post_expected = {}
+
+    @property
+    def codex_dir(self) -> Path:
+        return self.plan.codex_dir
 
 
 def find_uninstall_dirs() -> List[str]:
@@ -3522,7 +3613,10 @@ def inspect_uninstall_directory(
     codex_dir: Path,
     inspect_hooks: bool = True,
     inspect_residue: bool = True,
+    inspect_hook_backups: Optional[bool] = None,
 ) -> UninstallPlan:
+    if inspect_hook_backups is None:
+        inspect_hook_backups = inspect_hooks
     plan = UninstallPlan(codex_dir=codex_dir)
     residue = _hooks_transaction_residue(codex_dir) if inspect_residue else []
     if residue:
@@ -3598,7 +3692,7 @@ def inspect_uninstall_directory(
 
     _preflight_backup(plan, config["backup"], config["before"] if config["changed"] else None, "config.toml")
     _preflight_backup(plan, md["backup"], md["before"], "提示词文件")
-    if inspect_hooks:
+    if inspect_hook_backups:
         _preflight_backup(
             plan,
             hooks["backup"],
@@ -3777,8 +3871,22 @@ def _validate_canonical_residue(
         for resource in resources.values()
         for digest in resource["allowed_sha256"]
     }
+    late_absent_md_previous = (
+        match.group(1) == "write"
+        and roles == {"previous", "published"}
+        and resources["md"]["before"] is None
+        and residue["members"]["previous"] is not None
+        and residue["members"]["published"] is not None
+        and residue["members"]["published"]["sha256"]
+        in resources["md"]["allowed_sha256"]
+    )
     for member, fingerprint in residue["members"].items():
         if fingerprint is None:
+            continue
+        if member == "previous" and late_absent_md_previous:
+            # v0.1.0 could incorrectly adopt a post-journal MD as its baseline.
+            # Accept only the exact journal-owned write claim needed to restore
+            # those bytes; all other residue members remain bound to intent.
             continue
         if fingerprint not in authorized and fingerprint["sha256"] not in allowed_sha256:
             raise ValueError(
@@ -3809,11 +3917,16 @@ def _load_cleanup_intent(path: Path) -> Tuple[Dict[str, Any], FileFingerprint]:
     directories = data["directories"]
     if (
         data["schema_version"] != JOURNAL_SCHEMA_VERSION
-        or data["operation"] != "deploy"
+        or not isinstance(data["operation"], str)
+        or data["operation"] not in {"deploy", "uninstall"}
         or not isinstance(transaction_id, str)
         or not re.fullmatch(r"[0-9a-f]{32}", transaction_id)
         or not isinstance(participants, list)
         or not participants
+        or any(
+            not isinstance(item, str) or not Path(item).is_absolute()
+            for item in participants
+        )
         or len(set(participants)) != len(participants)
         or not isinstance(directories, dict)
         or set(directories) != set(participants)
@@ -3850,10 +3963,32 @@ def _load_cleanup_intent(path: Path) -> Tuple[Dict[str, Any], FileFingerprint]:
                 "allowed_portable",
             }:
                 raise ValueError(f"deployment cleanup intent resource 无效: {directory}")
+            _safe_manifest_name(
+                resource["path"],
+                f"cleanup.{label}.path",
+                allow_none=False,
+            )
             _validate_portable_fingerprint(resource["before"], f"cleanup.{label}.before")
+            _safe_manifest_name(
+                resource["snapshot"],
+                f"cleanup.{label}.snapshot",
+            )
+            if not isinstance(resource["allowed_absent"], bool):
+                raise ValueError(f"cleanup.{label}.allowed_absent 无效")
+            if not isinstance(resource["allowed_sha256"], list) or any(
+                not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                for digest in resource["allowed_sha256"]
+            ):
+                raise ValueError(f"cleanup.{label}.allowed_sha256 无效")
+            if not isinstance(resource["allowed_portable"], list):
+                raise ValueError(f"cleanup.{label}.allowed_portable 无效")
             for portable in resource["allowed_portable"]:
                 _validate_portable_fingerprint(portable, f"cleanup.{label}.portable")
-        _validate_canonical_journal_resources(resources, directory)
+        if data["operation"] == "deploy":
+            _validate_canonical_journal_resources(resources, directory)
+        else:
+            _validate_uninstall_journal_resources(resources, directory)
     return data, fingerprint
 
 
@@ -3862,16 +3997,25 @@ def _deployment_cleanup_markers(codex_dir: Path) -> List[Path]:
         entries = list(os.scandir(str(codex_dir)))
     except (FileNotFoundError, NotADirectoryError, PermissionError):
         return []
-    return sorted(
-        codex_dir / entry.name
-        for entry in entries
-        if entry.name.startswith(CLEANUP_MARKER_PREFIX)
-        and entry.name.endswith(CLEANUP_MARKER_SUFFIX)
+    markers = []
+    for entry in entries:
+        base = _cleanup_claim_base(entry.name) or entry.name
+        if base.startswith(CLEANUP_MARKER_PREFIX) and base.endswith(
+            CLEANUP_MARKER_SUFFIX
+        ):
+            markers.append(codex_dir / entry.name)
+    return sorted(markers)
+
+
+def _finish_cleanup_intent_artifact(
+    path: Path,
+    yes: bool,
+    retain_marker: bool = False,
+) -> Optional[Tuple[Path, Any, FileIdentity]]:
+    marker_base = _cleanup_claim_base(path.name) or path.name
+    marker_mode = marker_base.startswith(CLEANUP_MARKER_PREFIX) and marker_base.endswith(
+        CLEANUP_MARKER_SUFFIX
     )
-
-
-def _finish_cleanup_intent_artifact(path: Path, yes: bool) -> None:
-    marker_mode = path.name.startswith(CLEANUP_MARKER_PREFIX)
     intent_path = path if marker_mode else path / INTENT_FILENAME
     intent, fingerprint = _load_cleanup_intent(intent_path)
     transaction_id = intent["transaction_id"]
@@ -3901,13 +4045,13 @@ def _finish_cleanup_intent_artifact(path: Path, yes: bool) -> None:
         cleanup_dir = candidates[0] if candidates else None
     else:
         cleanup_dir = path
-    if marker_mode and path != marker:
+    if marker_mode and marker_base != marker.name:
         raise HooksConflict(f"cleanup marker 名称与 transaction 不匹配: {path}")
     if not marker_mode and _cleanup_claim_base(path.name) != directory_data["journal_dir"]:
         raise HooksConflict(f"cleanup 目录名称与 transaction 不匹配: {path}")
     _print(f"[恢复] 发现事务 journal cleanup 残留: {path}")
     if not yes:
-        return
+        return None
 
     if not marker_mode:
         if cleanup_dir is None or _directory_identity(cleanup_dir) != expected_identity:
@@ -3939,55 +4083,282 @@ def _finish_cleanup_intent_artifact(path: Path, yes: bool) -> None:
         _fsync_directory(owner)
     if not _path_has_fingerprint(path, fingerprint):
         raise HooksConflict(f"cleanup marker 已漂移: {path}")
+    if retain_marker:
+        if _cleanup_claim_base(path.name) is None:
+            claimed = path.with_name(
+                path.name + CLEANUP_CLAIM_SEPARATOR + uuid.uuid4().hex
+            )
+            if _path_entry_exists(claimed):
+                raise HooksConflict(f"retained cleanup marker claim already exists: {claimed}")
+            if not _atomic_rename_no_replace(path, claimed):
+                raise HooksConflict(f"cannot atomically claim cleanup marker: {path}")
+            _fsync_directory(owner)
+            path = claimed
+        if not _path_has_fingerprint(path, fingerprint):
+            raise HooksConflict(f"claimed cleanup marker changed: {path}")
+        return (
+            path,
+            _portable_fingerprint(fingerprint),
+            _require_regular_file(path, "retained cleanup marker"),
+        )
     path.unlink()
     _fsync_directory(owner)
+    return None
 
 
-def _recover_cleanup_artifacts(codex_dirs: List[str], yes: bool) -> bool:
+def _recover_cleanup_artifacts(
+    codex_dirs: List[str],
+    expected_intent: Optional[Dict[str, Any]] = None,
+) -> Tuple[
+    bool,
+    List[str],
+    Optional[Dict[str, Any]],
+    List[Tuple[str, Path, Optional[Dict[str, Any]]]],
+]:
     artifacts: List[Path] = []
-    for directory in codex_dirs:
+    actions: List[Tuple[str, Path, Optional[Dict[str, Any]]]] = []
+    directories = list(dict.fromkeys(str(Path(item).resolve()) for item in codex_dirs))
+    cleanup_intent = expected_intent
+    seen_artifacts = set()
+    index = 0
+    while index < len(directories):
+        directory = directories[index]
+        index += 1
         codex_dir = Path(directory)
         markers = _deployment_cleanup_markers(codex_dir)
-        artifacts.extend(markers)
         for marker in markers:
-            _finish_cleanup_intent_artifact(marker, yes)
+            if marker in seen_artifacts:
+                continue
+            seen_artifacts.add(marker)
+            artifacts.append(marker)
+            intent, _fingerprint = _load_cleanup_intent(marker)
+            if cleanup_intent is None:
+                cleanup_intent = intent
+            elif intent != cleanup_intent:
+                raise HooksConflict("cleanup artifacts contain inconsistent immutable intents")
+            for participant in intent["participants"]:
+                if participant not in directories:
+                    directories.append(participant)
+            actions.append(("intent", marker, None))
         for journal in _deployment_journal_dirs(codex_dir):
             journal_base = _cleanup_claim_base(journal.name)
             if journal_base is None:
                 continue
+            if journal in seen_artifacts:
+                continue
+            seen_artifacts.add(journal)
+            artifacts.append(journal)
             if _is_regular_path(journal / JOURNAL_FILENAME):
-                data = _load_deployment_journal(journal)
-                owner = data["owner_directory"]
+                data = (
+                    _load_deployment_journal(journal)
+                    if _journal_operation(journal) == "deploy"
+                    else _load_uninstall_journal(journal)
+                )
+                intent = _immutable_journal_intent(data)
+                if cleanup_intent is None:
+                    cleanup_intent = intent
+                elif intent != cleanup_intent:
+                    raise HooksConflict("cleanup journals contain inconsistent immutable intents")
+                for participant in data["participants"]:
+                    if participant not in directories:
+                        directories.append(participant)
                 _print(f"[恢复] 发现事务 journal cleanup 目录: {journal}")
-                if yes:
-                    _safe_remove_owned_directory(
-                        journal,
-                        _identity_from_portable(
-                            data["directories"][owner]["journal_identity"],
-                            "cleanup journal identity",
-                        ),
-                        _journal_expected_members(
-                            data,
-                            owner,
-                            journal,
-                            require_all_snapshots=False,
-                        ),
-                        require_exact_members=True,
-                    )
-                artifacts.append(journal)
+                actions.append(("journal", journal, data))
             elif _is_regular_path(journal / INTENT_FILENAME):
-                _finish_cleanup_intent_artifact(journal, yes)
-                artifacts.append(journal)
+                intent, _fingerprint = _load_cleanup_intent(
+                    journal / INTENT_FILENAME
+                )
+                if cleanup_intent is None:
+                    cleanup_intent = intent
+                elif intent != cleanup_intent:
+                    raise HooksConflict("cleanup intents are inconsistent")
+                for participant in intent["participants"]:
+                    if participant not in directories:
+                        directories.append(participant)
+                actions.append(("intent", journal, None))
             else:
                 transaction_id = journal_base[len(JOURNAL_PREFIX) :]
                 marker = codex_dir / (
                     f"{CLEANUP_MARKER_PREFIX}{transaction_id}{CLEANUP_MARKER_SUFFIX}"
                 )
                 if _path_entry_exists(marker) and not os.listdir(journal):
-                    artifacts.append(journal)
                     continue
                 raise HooksConflict(f"cleanup journal 缺少可验证 intent: {journal}")
-    return bool(artifacts)
+    if cleanup_intent is not None:
+        participant_order = {
+            participant: index
+            for index, participant in enumerate(cleanup_intent["participants"])
+        }
+        active_cleanup_indexes = [
+            participant_order[str(path.parent.resolve())]
+            for _action, path, _data in actions
+            if str(path.parent.resolve()) in participant_order
+        ]
+        earliest_active_cleanup = (
+            min(active_cleanup_indexes) if active_cleanup_indexes else None
+        )
+        for participant in cleanup_intent["participants"]:
+            participant_path = Path(participant)
+            if _classify_node(participant_path).kind != "directory":
+                raise HooksConflict(
+                    f"cleanup participant is unavailable or no longer a directory: "
+                    f"{participant_path}"
+                )
+            try:
+                with os.scandir(str(participant_path)) as entries:
+                    participant_entries = list(entries)
+            except OSError as exc:
+                raise HooksConflict(
+                    f"cleanup participant cannot be enumerated: {participant_path}: {exc}"
+                ) from exc
+            directory_data = cleanup_intent["directories"][participant]
+            expected_name = directory_data["journal_dir"]
+            expected_identity = _identity_from_portable(
+                directory_data["journal_identity"],
+                "cleanup participant journal identity",
+            )
+            expected_marker = (
+                f"{CLEANUP_MARKER_PREFIX}{cleanup_intent['transaction_id']}"
+                f"{CLEANUP_MARKER_SUFFIX}"
+            )
+            has_owned_node = False
+            for entry in participant_entries:
+                base = _cleanup_claim_base(entry.name) or entry.name
+                if base != expected_name:
+                    continue
+                node_path = participant_path / entry.name
+                try:
+                    actual_identity = _directory_identity(node_path)
+                except OSError as exc:
+                    raise HooksConflict(
+                        f"cleanup participant journal cannot be verified: {node_path}: {exc}"
+                    ) from exc
+                if actual_identity != expected_identity:
+                    raise HooksConflict(
+                        f"cleanup participant journal identity changed: {node_path}"
+                    )
+                has_owned_node = True
+            has_marker = any(
+                (_cleanup_claim_base(entry.name) or entry.name) == expected_marker
+                for entry in participant_entries
+            )
+            if has_owned_node or has_marker:
+                continue
+            for entry in participant_entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = participant_path / entry.name
+                try:
+                    if _directory_identity(candidate) == expected_identity:
+                        raise HooksConflict(
+                            f"cleanup participant journal moved to an unmanaged name: "
+                            f"{candidate}"
+                        )
+                except FileNotFoundError:
+                    continue
+            if (
+                earliest_active_cleanup is not None
+                and participant_order[participant] > earliest_active_cleanup
+            ):
+                raise HooksConflict(
+                    f"cleanup participant is missing durable transaction evidence: "
+                    f"{participant_path}"
+                )
+    return bool(artifacts), directories, cleanup_intent, actions
+
+
+def _execute_cleanup_artifacts(
+    actions: List[Tuple[str, Path, Optional[Dict[str, Any]]]],
+    retain_markers: bool = False,
+) -> List[Tuple[Path, Any, FileIdentity]]:
+    retained = []
+    for action, path, data in actions:
+        if action == "intent":
+            marker = _finish_cleanup_intent_artifact(
+                path,
+                True,
+                retain_marker=retain_markers,
+            )
+            if marker is not None:
+                retained.append(marker)
+            continue
+        if data is None:
+            raise HooksConflict(f"cleanup journal 缺少已验证数据: {path}")
+        owner = data["owner_directory"]
+        marker = _safe_remove_owned_directory(
+            path,
+            _identity_from_portable(
+                data["directories"][owner]["journal_identity"],
+                "cleanup journal identity",
+            ),
+            _journal_expected_members(
+                data,
+                owner,
+                path,
+                require_all_snapshots=False,
+            ),
+            require_exact_members=True,
+            retain_cleanup_marker=retain_markers,
+        )
+        if marker is not None:
+            retained.append(marker)
+    return retained
+
+
+def _remove_retained_cleanup_markers(
+    markers: List[Tuple[Path, Any, FileIdentity]],
+) -> None:
+    def require_claimed_identity(marker: Path, identity: FileIdentity) -> None:
+        if _path_has_identity(marker, identity):
+            return
+        moved = []
+        try:
+            entries = list(os.scandir(str(marker.parent)))
+        except OSError as exc:
+            raise HooksConflict(
+                f"retained cleanup marker parent cannot be enumerated: {marker.parent}"
+            ) from exc
+        for entry in entries:
+            candidate = marker.parent / entry.name
+            if candidate == marker:
+                continue
+            try:
+                if _path_has_identity(candidate, identity):
+                    moved.append(candidate)
+            except OSError:
+                continue
+        if len(moved) == 1:
+            marker_base = _cleanup_claim_base(marker.name) or marker.name
+            reanchored = marker.with_name(
+                marker_base + CLEANUP_CLAIM_SEPARATOR + uuid.uuid4().hex
+            )
+            if _path_entry_exists(reanchored) or not _atomic_rename_no_replace(
+                moved[0], reanchored
+            ):
+                raise HooksConflict(
+                    f"retained cleanup marker moved and could not be re-anchored: {moved[0]}"
+                )
+            _fsync_directory(marker.parent)
+            raise HooksConflict(
+                f"retained cleanup marker moved and was re-anchored for recovery: {reanchored}"
+            )
+        if len(moved) > 1:
+            raise HooksConflict(
+                f"retained cleanup marker identity appears at multiple paths: {marker.parent}"
+            )
+        raise HooksConflict(f"retained cleanup marker identity changed: {marker}")
+
+    # Remaining journals are still durable anchors while this function runs.
+    # Validate every retained marker before deleting any of them, then bind
+    # each unlink to the exact inode so a same-name replacement is preserved.
+    for marker, expected, identity in markers:
+        require_claimed_identity(marker, identity)
+        if not _portable_matches(marker, expected):
+            raise HooksConflict(f"retained cleanup marker content changed: {marker}")
+    for marker, _expected, identity in markers:
+        require_claimed_identity(marker, identity)
+        marker.unlink()
+        _fsync_directory(marker.parent)
 
 
 def _load_deployment_journal(journal_dir: Path) -> Dict[str, Any]:
@@ -4034,7 +4405,24 @@ def _load_deployment_journal(journal_dir: Path) -> Dict[str, Any]:
     }
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError(f"部署恢复日志结构无效: {journal_dir}")
-    if data["schema_version"] != JOURNAL_SCHEMA_VERSION or data["operation"] != "deploy":
+    phases = {
+        "initializing",
+        "prepared",
+        "hooks-intent",
+        "legacy-intent",
+        "files-intent",
+        "final-sweep",
+        "committed",
+        "recovering",
+        "recovered",
+    }
+    if (
+        data["schema_version"] != JOURNAL_SCHEMA_VERSION
+        or not isinstance(data["operation"], str)
+        or data["operation"] != "deploy"
+        or not isinstance(data["phase"], str)
+        or data["phase"] not in phases
+    ):
         raise ValueError(f"不支持的部署恢复日志: {journal_dir}")
     transaction_id = data["transaction_id"]
     if not isinstance(transaction_id, str) or not re.fullmatch(r"[0-9a-f]{32}", transaction_id):
@@ -4068,7 +4456,7 @@ def _load_deployment_journal(journal_dir: Path) -> Dict[str, Any]:
                 and _immutable_journal_intent(base_data)
                 == _immutable_journal_intent(data)
             )
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             same_base = False
         if not same_base:
             raise ValueError(f"部署 journal pending 与当前 journal 不一致: {journal_dir}")
@@ -4256,6 +4644,342 @@ def _load_deployment_journal(journal_dir: Path) -> Dict[str, Any]:
     return data
 
 
+def _journal_operation(journal_dir: Path) -> str:
+    content, _fingerprint = _read_regular_text_with_fingerprint(
+        journal_dir / JOURNAL_FILENAME,
+        "transaction journal",
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"事务 journal 不是有效 JSON: {journal_dir}") from exc
+    operation = data.get("operation") if isinstance(data, dict) else None
+    if operation not in {"deploy", "uninstall"}:
+        raise ValueError(f"事务 journal operation 无效: {journal_dir}")
+    return operation
+
+
+def _load_uninstall_journal(journal_dir: Path) -> Dict[str, Any]:
+    node = _classify_node(journal_dir)
+    if node.kind != "directory":
+        raise ValueError(f"卸载恢复事务节点是 {node.kind}: {journal_dir}")
+    journal_path = journal_dir / JOURNAL_FILENAME
+    pending_path = journal_dir / JOURNAL_PENDING_FILENAME
+    content, _fingerprint = _read_regular_text_with_fingerprint(
+        journal_path,
+        "卸载恢复日志",
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"卸载恢复日志不是有效 JSON: {journal_dir}") from exc
+    base_data = data
+    if _path_entry_exists(pending_path):
+        pending_content, pending_fingerprint = _read_regular_text_with_fingerprint(
+            pending_path,
+            "卸载恢复日志 pending",
+        )
+        try:
+            pending_data = json.loads(pending_content)
+        except json.JSONDecodeError:
+            _LOADED_JOURNAL_PENDING[str(journal_path)] = (
+                pending_fingerprint,
+                False,
+            )
+        else:
+            data = pending_data
+            _LOADED_JOURNAL_PENDING[str(journal_path)] = (
+                pending_fingerprint,
+                True,
+            )
+    required = {
+        "schema_version",
+        "operation",
+        "transaction_id",
+        "phase",
+        "owner_directory",
+        "participants",
+        "directories",
+    }
+    phases = {
+        "initializing",
+        "prepared",
+        "config-intent",
+        "md-intent",
+        "hooks-intent",
+        "legacy-intent",
+        "manifest-intent",
+        "final-sweep",
+        "committed",
+        "recovering",
+        "recovered",
+    }
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError(f"卸载恢复日志结构无效: {journal_dir}")
+    if (
+        data["schema_version"] != JOURNAL_SCHEMA_VERSION
+        or not isinstance(data["operation"], str)
+        or data["operation"] != "uninstall"
+        or not isinstance(data["phase"], str)
+        or data["phase"] not in phases
+    ):
+        raise ValueError(f"不支持的卸载恢复日志: {journal_dir}")
+    transaction_id = data["transaction_id"]
+    participants = data["participants"]
+    directories = data["directories"]
+    if (
+        not isinstance(transaction_id, str)
+        or not re.fullmatch(r"[0-9a-f]{32}", transaction_id)
+        or not isinstance(participants, list)
+        or not participants
+        or any(
+            not isinstance(item, str) or not Path(item).is_absolute()
+            for item in participants
+        )
+        or len(set(participants)) != len(participants)
+        or not isinstance(directories, dict)
+        or set(directories) != set(participants)
+    ):
+        raise ValueError(f"卸载恢复日志参与目录无效: {journal_dir}")
+    owner = data["owner_directory"]
+    if (
+        not isinstance(owner, str)
+        or owner not in participants
+        or Path(owner).resolve() != journal_dir.parent.resolve()
+    ):
+        raise ValueError(f"卸载恢复日志 owner 无效: {journal_dir}")
+    if data is not base_data:
+        try:
+            same_base = (
+                isinstance(base_data, dict)
+                and set(base_data) == required
+                and base_data["transaction_id"] == transaction_id
+                and base_data["owner_directory"] == owner
+                and base_data["participants"] == participants
+                and _immutable_journal_intent(base_data)
+                == _immutable_journal_intent(data)
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            same_base = False
+        if not same_base:
+            raise ValueError(f"卸载 journal pending 与当前 journal 不一致: {journal_dir}")
+
+    for directory, directory_data in directories.items():
+        if not isinstance(directory_data, dict) or set(directory_data) != {
+            "journal_dir",
+            "journal_identity",
+            "resources",
+            "residues",
+        }:
+            raise ValueError(f"卸载恢复日志目录结构无效: {directory}")
+        if directory_data["journal_dir"] != f"{JOURNAL_PREFIX}{transaction_id}":
+            raise ValueError(f"卸载恢复日志目录名无效: {directory}")
+        _identity_from_portable(
+            directory_data["journal_identity"],
+            "uninstall journal identity",
+        )
+        resources = directory_data["resources"]
+        if not isinstance(resources, dict):
+            raise ValueError(f"卸载恢复日志 resources 无效: {directory}")
+        for label, resource in resources.items():
+            if not isinstance(label, str) or not isinstance(resource, dict) or set(
+                resource
+            ) != {
+                "path",
+                "before",
+                "snapshot",
+                "allowed_absent",
+                "allowed_sha256",
+                "allowed_portable",
+            }:
+                raise ValueError(f"卸载恢复日志 resource 无效: {directory}")
+            _safe_manifest_name(
+                resource["path"],
+                f"uninstall.{label}.path",
+                allow_none=False,
+            )
+            _validate_portable_fingerprint(
+                resource["before"],
+                f"uninstall.{label}.before",
+            )
+            _safe_manifest_name(
+                resource["snapshot"],
+                f"uninstall.{label}.snapshot",
+            )
+            if not isinstance(resource["allowed_absent"], bool):
+                raise ValueError(f"uninstall.{label}.allowed_absent 无效")
+            if not isinstance(resource["allowed_sha256"], list) or any(
+                not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                for digest in resource["allowed_sha256"]
+            ):
+                raise ValueError(f"uninstall.{label}.allowed_sha256 无效")
+            if not isinstance(resource["allowed_portable"], list):
+                raise ValueError(f"uninstall.{label}.allowed_portable 无效")
+            for portable in resource["allowed_portable"]:
+                _validate_portable_fingerprint(
+                    portable,
+                    f"uninstall.{label}.allowed_portable",
+                )
+        _validate_uninstall_journal_resources(resources, directory)
+        residues = directory_data["residues"]
+        if not isinstance(residues, list):
+            raise ValueError(f"卸载恢复日志 residue 结构无效: {directory}")
+        names = set()
+        for residue in residues:
+            if not isinstance(residue, dict) or set(residue) != {
+                "name",
+                "identity",
+                "members",
+                "auth",
+            }:
+                raise ValueError(f"卸载恢复日志 residue 无效: {directory}")
+            name = _safe_manifest_name(
+                residue["name"],
+                "uninstall.residue.name",
+                allow_none=False,
+            )
+            if name in names:
+                raise ValueError(f"卸载恢复日志 residue 重复: {name}")
+            names.add(name)
+            _identity_from_portable(residue["identity"], "uninstall residue")
+            if not isinstance(residue["members"], dict):
+                raise ValueError(f"卸载恢复日志 residue members 无效: {name}")
+            for member, portable in residue["members"].items():
+                if not isinstance(member, str):
+                    raise ValueError(f"卸载恢复日志 residue member 无效: {name}")
+                if portable is not None:
+                    _validate_portable_fingerprint(
+                        portable,
+                        f"uninstall.residue.{name}.{member}",
+                    )
+            if residue["auth"] != _residue_authorization_digest(
+                transaction_id,
+                directory,
+                residue,
+            ):
+                raise ValueError(f"卸载恢复日志 residue 授权无效: {name}")
+            _validate_canonical_residue(
+                transaction_id,
+                directory,
+                residue,
+                resources,
+            )
+
+    owner_identity = directories[owner]["journal_identity"]
+    if _directory_identity(journal_dir) != _identity_from_portable(
+        owner_identity,
+        "uninstall journal owner",
+    ):
+        raise ValueError(f"卸载恢复日志目录 identity 不匹配: {journal_dir}")
+    intent_content, _intent_fingerprint = _read_regular_text_with_fingerprint(
+        journal_dir / INTENT_FILENAME,
+        "immutable uninstall intent",
+    )
+    try:
+        intent = json.loads(intent_content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"immutable uninstall intent 无效: {journal_dir}") from exc
+    if intent != _immutable_journal_intent(data):
+        raise ValueError(f"卸载 journal 与 immutable intent 不一致: {journal_dir}")
+    if _path_entry_exists(journal_dir / MANIFEST_INTENT_FILENAME):
+        raise ValueError(f"卸载 journal 不应包含 manifest companion: {journal_dir}")
+    return data
+
+
+def _load_initializing_uninstall_pending(
+    journal_dir: Path,
+    expected_intent: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Validate the first durable journal write before its atomic publication."""
+    journal_path = journal_dir / JOURNAL_FILENAME
+    pending_path = journal_dir / JOURNAL_PENDING_FILENAME
+    if _path_entry_exists(journal_path):
+        raise ValueError(f"initializing uninstall journal is already published: {journal_dir}")
+    content, pending_fingerprint = _read_regular_text_with_fingerprint(
+        pending_path,
+        "initializing uninstall journal pending",
+    )
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"initializing uninstall journal pending is not valid JSON: {journal_dir}"
+        ) from exc
+    required = {
+        "schema_version",
+        "operation",
+        "transaction_id",
+        "phase",
+        "owner_directory",
+        "participants",
+        "directories",
+    }
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError(
+            f"initializing uninstall journal pending has an invalid structure: {journal_dir}"
+        )
+    owner = data["owner_directory"]
+    participants = data["participants"]
+    directories = data["directories"]
+    if (
+        data["schema_version"] != JOURNAL_SCHEMA_VERSION
+        or data["operation"] != "uninstall"
+        or data["phase"] != "initializing"
+        or not isinstance(owner, str)
+        or owner != str(journal_dir.parent.resolve())
+        or not isinstance(participants, list)
+        or participants != expected_intent["participants"]
+        or not isinstance(directories, dict)
+        or set(directories) != set(participants)
+    ):
+        raise ValueError(
+            f"initializing uninstall journal pending has invalid metadata: {journal_dir}"
+        )
+    try:
+        actual_intent = _immutable_journal_intent(data)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"initializing uninstall journal pending is malformed: {journal_dir}"
+        ) from exc
+    if actual_intent != expected_intent:
+        raise ValueError(
+            f"initializing uninstall journal pending conflicts with immutable intent: "
+            f"{journal_dir}"
+        )
+    for directory, directory_data in directories.items():
+        if (
+            not isinstance(directory_data, dict)
+            or set(directory_data)
+            != {"journal_dir", "journal_identity", "resources", "residues"}
+            or directory_data["residues"] != []
+        ):
+            raise ValueError(
+                f"initializing uninstall journal pending contains mutable state: {directory}"
+            )
+    owner_identity = _identity_from_portable(
+        directories[owner]["journal_identity"],
+        "initializing uninstall journal owner",
+    )
+    if _directory_identity(journal_dir) != owner_identity:
+        raise ValueError(
+            f"initializing uninstall journal directory identity changed: {journal_dir}"
+        )
+    intent, _intent_fingerprint = _load_cleanup_intent(
+        journal_dir / INTENT_FILENAME
+    )
+    if intent != expected_intent:
+        raise ValueError(
+            f"initializing uninstall intent changed before journal publication: {journal_dir}"
+        )
+    if _path_entry_exists(journal_dir / MANIFEST_INTENT_FILENAME):
+        raise ValueError(
+            f"initializing uninstall journal contains a manifest companion: {journal_dir}"
+        )
+    _LOADED_JOURNAL_PENDING[str(journal_path)] = (pending_fingerprint, True)
+    return data
+
+
 def _journal_resource_is_allowed(path: Path, resource: Dict[str, Any]) -> bool:
     node = _classify_node(path)
     if not node.exists:
@@ -4304,6 +5028,86 @@ def _owned_residue_claims_resource(
     return False
 
 
+def _late_absent_md_recovery_claim(
+    codex_dir: Path,
+    resource: Dict[str, Any],
+    residues: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the exact v0.1.0 late-MD write claim, if one is recoverable."""
+    if resource["before"] is not None:
+        return None
+    candidates = []
+    for record in residues.values():
+        members = record["members"]
+        if set(members) != {"previous", "published"}:
+            continue
+        previous = members["previous"]
+        published = members["published"]
+        if (
+            previous is None
+            or published is None
+            or published["sha256"] not in resource["allowed_sha256"]
+        ):
+            continue
+        candidates.append((record, previous, published))
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise HooksConflict("发现多个 late-MD 恢复 claim，拒绝猜测所有权")
+
+    record, previous, published = candidates[0]
+    residue_path = codex_dir / record["name"]
+    target = codex_dir / resource["path"]
+    if not _path_entry_exists(residue_path):
+        if not _portable_matches(target, previous):
+            raise HooksConflict(
+                f"late-MD 恢复 claim 已缺失且目标未恢复: {residue_path}"
+            )
+        return {
+            "record": record,
+            "residue_path": residue_path,
+            "previous_path": residue_path / "previous",
+            "previous": previous,
+            "published": published,
+            "previous_in_claim": False,
+        }
+    descriptor, names = _open_verified_owned_directory(
+        residue_path,
+        _identity_from_portable(record["identity"], "late-MD residue"),
+        record["members"],
+        require_exact_members=False,
+    )
+    os.close(descriptor)
+    previous_path = residue_path / "previous"
+    previous_in_claim = "previous" in names
+    published_in_claim = "published" in names
+    target_is_previous = _portable_matches(target, previous)
+    target_is_published = _portable_matches(target, published)
+    target_absent = not _path_entry_exists(target)
+
+    valid_state = (
+        previous_in_claim
+        and not published_in_claim
+        and (target_is_published or target_absent)
+    ) or (
+        not previous_in_claim
+        and not published_in_claim
+        and target_is_previous
+    )
+    if not valid_state:
+        raise HooksConflict(
+            f"late-MD 恢复 claim 与 live path 状态不一致: {residue_path}"
+        )
+    return {
+        "record": record,
+        "residue_path": residue_path,
+        "previous_path": previous_path,
+        "previous": previous,
+        "published": published,
+        "previous_in_claim": previous_in_claim,
+    }
+
+
 def _validate_recovery_snapshot(
     journal_dir: Path,
     resource: Dict[str, Any],
@@ -4326,11 +5130,27 @@ def _validate_terminal_journal_state(data: Dict[str, Any], phase: str) -> None:
     """Validate committed/recovered state without requiring every journal copy."""
     for directory in data["participants"]:
         codex_dir = Path(directory)
-        resources = data["directories"][directory]["resources"]
+        directory_data = data["directories"][directory]
+        resources = directory_data["resources"]
+        residues = {
+            residue["name"]: residue for residue in directory_data["residues"]
+        }
         for label, resource in resources.items():
             path = codex_dir / resource["path"]
             if phase == "recovered":
-                valid = _portable_matches(path, resource["before"])
+                late_md_claim = (
+                    _late_absent_md_recovery_claim(codex_dir, resource, residues)
+                    if label == "md"
+                    else None
+                )
+                valid = _portable_matches(
+                    path,
+                    (
+                        late_md_claim["previous"]
+                        if late_md_claim is not None
+                        else resource["before"]
+                    ),
+                )
             elif label in {"manifest", "md"} or resource["allowed_sha256"]:
                 current = _fingerprint_or_none(path)
                 valid = (
@@ -4365,6 +5185,7 @@ def _cleanup_terminal_journals(
     journals: List[Tuple[Path, Dict[str, Any]]],
     phase: str,
     yes: bool,
+    retained_cleanup_markers: List[Tuple[Path, Any, FileIdentity]],
 ) -> None:
     reference = journals[0][1]
     _validate_terminal_journal_state(reference, phase)
@@ -4372,6 +5193,7 @@ def _cleanup_terminal_journals(
     if not yes:
         _print("[预览] 终态资源不会回滚；确认清理请添加 --yes。")
         return
+    _remove_retained_cleanup_markers(retained_cleanup_markers)
     for journal_dir, data in journals:
         if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
             _atomic_write_private_json(journal_dir / JOURNAL_FILENAME, data)
@@ -4389,17 +5211,599 @@ def _cleanup_terminal_journals(
     _print(f"[完成] 已清理 {phase} 事务的剩余 journal。")
 
 
+def _validate_uninstall_terminal_state(data: Dict[str, Any], phase: str) -> None:
+    for directory in data["participants"]:
+        codex_dir = Path(directory)
+        resources = data["directories"][directory]["resources"]
+        for resource in resources.values():
+            expected = (
+                resource["before"]
+                if phase == "recovered"
+                else _uninstall_after_state(resource)
+            )
+            path = codex_dir / resource["path"]
+            if not _portable_matches(path, expected):
+                raise HooksConflict(
+                    f"uninstall {phase} 终态验证失败: {path}"
+                )
+
+
+def _cleanup_uninstall_terminal_journals(
+    journals: List[Tuple[Path, Dict[str, Any]]],
+    phase: str,
+    yes: bool,
+    retained_cleanup_markers: List[Tuple[Path, Any, FileIdentity]],
+) -> None:
+    reference = journals[0][1]
+    _validate_uninstall_terminal_state(reference, phase)
+    _print(f"[恢复] 卸载事务已处于 {phase} 终态，仅需清理剩余 journal。")
+    if not yes:
+        _print("[预览] 终态资源不会反向恢复；确认清理请添加 --yes。")
+        return
+    _remove_retained_cleanup_markers(retained_cleanup_markers)
+    for journal_dir, data in journals:
+        if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
+            _atomic_write_private_json(journal_dir / JOURNAL_FILENAME, data)
+        owner = data["owner_directory"]
+        _safe_remove_owned_directory(
+            journal_dir,
+            _identity_from_portable(
+                data["directories"][owner]["journal_identity"],
+                "uninstall journal identity",
+            ),
+            _journal_expected_members(data, owner, journal_dir),
+            require_exact_members=True,
+        )
+        _fsync_directory(journal_dir.parent)
+
+
+def _merge_uninstall_journals(
+    reference: Dict[str, Any],
+    journals: List[Tuple[Path, Dict[str, Any]]],
+) -> None:
+    directories = reference["directories"]
+    for _path, data in journals:
+        for directory in reference["participants"]:
+            target = directories[directory]
+            current = data["directories"][directory]
+            if target["resources"] != current["resources"]:
+                raise HooksConflict("参与目录中的卸载资源定义不一致")
+            known = {item["name"]: item for item in target["residues"]}
+            for residue in current["residues"]:
+                existing = known.get(residue["name"])
+                if existing is not None and existing != residue:
+                    raise HooksConflict(
+                        f"参与目录 uninstall residue 冲突: {residue['name']}"
+                    )
+                if existing is None:
+                    target["residues"].append(residue)
+                    known[residue["name"]] = residue
+
+
+def _uninstall_recovery_preflight(
+    reference: Dict[str, Any],
+    journal_paths: Dict[str, Path],
+) -> List[str]:
+    blockers = []
+    for directory in reference["participants"]:
+        codex_dir = Path(directory)
+        directory_data = reference["directories"][directory]
+        resources = directory_data["resources"]
+        residues = {item["name"]: item for item in directory_data["residues"]}
+        for residue in _hooks_transaction_residue(codex_dir):
+            if residue == journal_paths[directory]:
+                continue
+            base = _cleanup_claim_base(residue.name) or residue.name
+            record = residues.get(base)
+            if record is None:
+                blockers.append(f"{residue}: 不属于卸载事务")
+                continue
+            try:
+                descriptor, _names = _open_verified_owned_directory(
+                    residue,
+                    _identity_from_portable(
+                        record["identity"],
+                        "uninstall residue",
+                    ),
+                    record["members"],
+                    require_exact_members=False,
+                )
+                os.close(descriptor)
+            except (OSError, ValueError) as exc:
+                blockers.append(str(exc))
+        for resource in resources.values():
+            path = codex_dir / resource["path"]
+            if not _journal_resource_is_allowed(
+                path,
+                resource,
+            ) and not _owned_residue_claims_resource(
+                codex_dir,
+                resource,
+                residues,
+            ):
+                blockers.append(f"{path}: 当前节点不属于 uninstall before/after")
+            if resource["before"] is not None:
+                try:
+                    _validate_recovery_snapshot(
+                        journal_paths[directory],
+                        resource,
+                    )
+                except (OSError, ValueError) as exc:
+                    blockers.append(str(exc))
+    return blockers
+
+
+def _restore_uninstall_before_state(
+    reference: Dict[str, Any],
+    journal_paths: Dict[str, Path],
+) -> None:
+    order = (
+        "manifest_archive",
+        "manifest",
+        "legacy",
+        "hooks_disabled",
+        "hooks_active",
+        "md",
+        "config",
+    )
+    for directory in reversed(reference["participants"]):
+        codex_dir = Path(directory)
+        journal_dir = journal_paths[directory]
+        resources = reference["directories"][directory]["resources"]
+        for label in order:
+            resource = resources.get(label)
+            if resource is None:
+                continue
+            path = codex_dir / resource["path"]
+            before = resource["before"]
+            if _portable_matches(path, before):
+                continue
+            current = _fingerprint_or_none(path)
+            if before is None:
+                if current is not None:
+                    after = _uninstall_after_state(resource)
+                    if not _portable_matches(path, after):
+                        raise HooksConflict(f"卸载恢复目标已漂移: {path}")
+                    _remove_owned_file(path, current)
+                continue
+            snapshot = journal_dir / resource["snapshot"]
+            snapshot_fingerprint = _validate_recovery_snapshot(
+                journal_dir,
+                resource,
+            )
+            if current is None:
+                if not _copy_file_no_replace(
+                    snapshot,
+                    path,
+                    expected_fingerprint=snapshot_fingerprint,
+                ):
+                    raise HooksConflict(f"卸载恢复目标被并发创建: {path}")
+            else:
+                _replace_owned_from_backup(
+                    path,
+                    current,
+                    snapshot,
+                    snapshot_fingerprint,
+                )
+            if not _portable_matches(path, before):
+                raise HooksConflict(f"卸载恢复后的文件未匹配 before: {path}")
+
+
+def _cleanup_uninstall_residues(
+    reference: Dict[str, Any],
+    journal_paths: Dict[str, Path],
+) -> None:
+    for directory in reference["participants"]:
+        codex_dir = Path(directory)
+        records = {
+            item["name"]: item
+            for item in reference["directories"][directory]["residues"]
+        }
+        for residue in _hooks_transaction_residue(codex_dir):
+            if residue == journal_paths[directory]:
+                continue
+            base = _cleanup_claim_base(residue.name) or residue.name
+            record = records.get(base)
+            if record is None:
+                raise HooksConflict(f"发现未知 uninstall residue: {residue}")
+            _safe_remove_owned_directory(
+                residue,
+                _identity_from_portable(record["identity"], "uninstall residue"),
+                record["members"],
+            )
+            _fsync_directory(codex_dir)
+
+
+def _cleanup_initializing_uninstall(
+    reference: Dict[str, Any],
+    journals: List[Tuple[Path, Dict[str, Any]]],
+    partial_journals: List[Tuple[Path, Dict[str, Any]]],
+    yes: bool,
+    retained_cleanup_markers: List[Tuple[Path, Any, FileIdentity]],
+) -> None:
+    transaction_id = reference["transaction_id"]
+    expected_intent = _immutable_journal_intent(reference)
+    journal_by_owner = {data["owner_directory"]: (path, data) for path, data in journals}
+    expected_base = f"{JOURNAL_PREFIX}{transaction_id}"
+    expected_marker = (
+        f"{CLEANUP_MARKER_PREFIX}{transaction_id}{CLEANUP_MARKER_SUFFIX}"
+    )
+
+    for directory in reference["participants"]:
+        codex_dir = Path(directory)
+        resources = reference["directories"][directory]["resources"]
+        for resource in resources.values():
+            path = codex_dir / resource["path"]
+            if not _portable_matches(path, resource["before"]):
+                raise HooksConflict(
+                    f"初始化 uninstall journal 未完成且 live path 已变化: {path}"
+                )
+        for residue in _hooks_transaction_residue(codex_dir):
+            base = _cleanup_claim_base(residue.name) or residue.name
+            if base == expected_base or residue.name == expected_marker:
+                continue
+            raise HooksConflict(f"初始化 uninstall 存在未知 residue: {residue}")
+
+        journal_record = journal_by_owner.get(directory)
+        if journal_record is None:
+            continue
+        journal_dir, _data = journal_record
+        for resource in resources.values():
+            if resource["snapshot"] is None:
+                continue
+            snapshot = journal_dir / resource["snapshot"]
+            if _path_entry_exists(snapshot) and not _portable_matches(
+                snapshot,
+                resource["before"],
+            ):
+                raise HooksConflict(f"初始化 uninstall 快照已漂移: {snapshot}")
+
+    _print(
+        f"[恢复] 卸载事务 {transaction_id} 在 journal 初始化期间中断；"
+        "业务路径仍保持卸载前状态。"
+    )
+    if not yes:
+        _print("[预览] 未修改任何文件；确认清理初始化 journal 请添加 --yes。")
+        return
+    _remove_retained_cleanup_markers(retained_cleanup_markers)
+
+    # Empty participants are claimed first; intent-only and complete journals
+    # remain as durable anchors until the end of cross-directory cleanup.
+    for journal_dir, expected_members in sorted(
+        partial_journals,
+        key=lambda item: bool(item[1]),
+    ):
+        owner = str(journal_dir.parent.resolve())
+        identity = _identity_from_portable(
+            reference["directories"][owner]["journal_identity"],
+            "initializing uninstall journal identity",
+        )
+        if not expected_members:
+            descriptor, _names = _open_verified_owned_directory(
+                journal_dir,
+                identity,
+                {},
+                require_exact_members=True,
+            )
+            os.close(descriptor)
+            intent_path = journal_dir / INTENT_FILENAME
+            _write_exclusive_private_json(intent_path, expected_intent)
+            intent_fingerprint = _fingerprint_regular_file(intent_path)
+            expected_members = {
+                INTENT_FILENAME: _portable_fingerprint(intent_fingerprint)
+            }
+        _safe_remove_owned_directory(
+            journal_dir,
+            identity,
+            expected_members,
+            require_exact_members=True,
+        )
+        _fsync_directory(journal_dir.parent)
+
+    for journal_dir, data in journals:
+        if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
+            _atomic_write_private_json(journal_dir / JOURNAL_FILENAME, data)
+        owner = data["owner_directory"]
+        _safe_remove_owned_directory(
+            journal_dir,
+            _identity_from_portable(
+                data["directories"][owner]["journal_identity"],
+                "initializing uninstall journal identity",
+            ),
+            _journal_expected_members(
+                data,
+                owner,
+                journal_dir,
+                require_all_snapshots=False,
+            ),
+            require_exact_members=True,
+        )
+        _fsync_directory(journal_dir.parent)
+    _print(f"[完成] 已清理卸载事务 {transaction_id} 的初始化残留。")
+
+
+def _recover_uninstall(codex_dirs: List[str], yes: bool) -> None:
+    global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
+    discovered = []
+    for directory in codex_dirs:
+        discovered.extend(_deployment_journal_dirs(Path(directory)))
+    discovered = [
+        path for path in discovered if _cleanup_claim_base(path.name) is None
+    ]
+    journals = []
+    intents = []
+    for path in discovered:
+        if _is_regular_path(path / JOURNAL_FILENAME):
+            if _journal_operation(path) != "uninstall":
+                raise HooksConflict(f"恢复范围包含非 uninstall journal: {path}")
+            data = _load_uninstall_journal(path)
+            journals.append((path, data))
+            intents.append(_immutable_journal_intent(data))
+            continue
+        if _is_regular_path(path / INTENT_FILENAME):
+            intent, _fingerprint = _load_cleanup_intent(path / INTENT_FILENAME)
+            if intent["operation"] != "uninstall":
+                raise HooksConflict(f"恢复范围包含非 uninstall intent: {path}")
+            intents.append(intent)
+    if not intents:
+        if discovered:
+            raise HooksConflict("卸载恢复范围缺少可验证的 immutable intent")
+        _print("[完成] 未找到需要恢复的卸载事务。")
+        return
+    transaction_ids = {intent["transaction_id"] for intent in intents}
+    if len(transaction_ids) != 1:
+        raise HooksConflict("发现多个卸载事务；请分别指定参与目录恢复")
+    transaction_id = next(iter(transaction_ids))
+    expected_intent = intents[0]
+    if any(intent != expected_intent for intent in intents[1:]):
+        raise HooksConflict("参与目录中的卸载 immutable intent 不一致")
+    reference = journals[0][1] if journals else dict(expected_intent)
+    if not journals:
+        reference["phase"] = "initializing"
+    participants = reference["participants"]
+    (
+        cleanup_found,
+        _expanded,
+        _cleanup_intent,
+        cleanup_actions,
+    ) = _recover_cleanup_artifacts(
+        participants,
+        expected_intent=expected_intent,
+    )
+    verified = []
+    missing = []
+    partial_journals = []
+    for directory in participants:
+        expected = Path(directory) / f"{JOURNAL_PREFIX}{transaction_id}"
+        if not _path_entry_exists(expected):
+            missing.append(expected)
+            continue
+        if not _is_regular_path(expected / JOURNAL_FILENAME):
+            if reference["phase"] != "initializing":
+                raise HooksConflict(f"参与目录 journal 不完整: {expected}")
+            expected_identity = _identity_from_portable(
+                reference["directories"][directory]["journal_identity"],
+                "initializing uninstall journal identity",
+            )
+            if _directory_identity(expected) != expected_identity:
+                raise HooksConflict(f"初始化 uninstall journal identity 已变化: {expected}")
+            names = set(os.listdir(expected))
+            if not names:
+                partial_journals.append((expected, {}))
+                continue
+            if names == {INTENT_FILENAME}:
+                intent, fingerprint = _load_cleanup_intent(
+                    expected / INTENT_FILENAME
+                )
+                if intent != expected_intent:
+                    raise HooksConflict(f"初始化 uninstall intent 不一致: {expected}")
+                partial_journals.append(
+                    (
+                        expected,
+                        {INTENT_FILENAME: _portable_fingerprint(fingerprint)},
+                    )
+                )
+                continue
+            if names == {INTENT_FILENAME, JOURNAL_PENDING_FILENAME}:
+                data = _load_initializing_uninstall_pending(
+                    expected,
+                    expected_intent,
+                )
+                verified.append((expected, data))
+                continue
+            raise HooksConflict(f"初始化 uninstall journal 成员不受管: {expected}")
+        if _journal_operation(expected) != "uninstall":
+            raise HooksConflict(f"参与目录 journal operation 不一致: {expected}")
+        data = _load_uninstall_journal(expected)
+        if (
+            data["participants"] != participants
+            or _immutable_journal_intent(data)
+            != _immutable_journal_intent(reference)
+        ):
+            raise HooksConflict("参与目录中的卸载恢复日志不一致")
+        verified.append((expected, data))
+    if cleanup_found and not yes:
+        _print("[预览] cleanup 残留未修改；确认清理请添加 --yes。")
+        return
+    retained_cleanup_markers = (
+        _execute_cleanup_artifacts(cleanup_actions, retain_markers=True)
+        if cleanup_actions
+        else []
+    )
+    phases = {data["phase"] for _path, data in verified}
+    if phases and (phases <= {"committed"} or phases <= {"recovered"}):
+        _cleanup_uninstall_terminal_journals(
+            verified,
+            next(iter(phases)),
+            yes,
+            retained_cleanup_markers,
+        )
+        return
+    if reference["phase"] == "initializing" and all(
+        data["phase"] == "initializing" for _path, data in verified
+    ):
+        _cleanup_initializing_uninstall(
+            reference,
+            verified,
+            partial_journals,
+            yes,
+            retained_cleanup_markers,
+        )
+        return
+    if missing:
+        raise HooksConflict(
+            "卸载事务缺少参与目录 journal: "
+            + ", ".join(str(path) for path in missing)
+        )
+    _merge_uninstall_journals(reference, verified)
+    journal_paths = {
+        directory: Path(directory) / f"{JOURNAL_PREFIX}{transaction_id}"
+        for directory in participants
+    }
+    blockers = _uninstall_recovery_preflight(reference, journal_paths)
+    if blockers:
+        _print(f"[错误] 卸载恢复预检发现 {len(blockers)} 个冲突；未修改文件:")
+        for blocker in blockers:
+            _print(f"  - {blocker}")
+        sys.exit(1)
+    _print(
+        f"[恢复] 卸载事务 {transaction_id}，参与 {len(participants)} 个目录，"
+        f"阶段: {reference['phase']}"
+    )
+    if not yes:
+        _print("[预览] 未修改任何文件；确认恢复请添加 --yes。")
+        return
+
+    states = []
+    for directory in participants:
+        states.append(
+            UninstallState(
+                plan=UninstallPlan(codex_dir=Path(directory)),
+                deployment_id=transaction_id,
+                journal_dir=journal_paths[directory],
+                journal_identity=_identity_from_portable(
+                    reference["directories"][directory]["journal_identity"],
+                    "uninstall journal identity",
+                ),
+                journal_data=reference,
+            )
+        )
+    _ACTIVE_DEPLOYMENT_TRANSACTION_ID = transaction_id
+    _ACTIVE_DEPLOYMENT_STATES = states
+    _update_deployment_journals(states, "recovering")
+    _restore_uninstall_before_state(reference, journal_paths)
+    _validate_uninstall_terminal_state(reference, "recovered")
+    _cleanup_uninstall_residues(reference, journal_paths)
+    _update_deployment_journals(states, "recovered")
+    _validate_uninstall_terminal_state(reference, "recovered")
+    _remove_retained_cleanup_markers(retained_cleanup_markers)
+    for state in states:
+        _safe_remove_owned_directory(
+            state.journal_dir,
+            state.journal_identity,
+            _journal_expected_members(
+                reference,
+                str(state.codex_dir.resolve()),
+                state.journal_dir,
+            ),
+            require_exact_members=True,
+        )
+        _fsync_directory(state.codex_dir)
+    _ACTIVE_DEPLOYMENT_TRANSACTION_ID = None
+    _ACTIVE_DEPLOYMENT_STATES = None
+    _print(f"[完成] 已恢复卸载事务 {transaction_id}。")
+
+
 def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
     """Preview or safely recover an interrupted durable deployment."""
     global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     try:
-        cleanup_found = _recover_cleanup_artifacts(codex_dirs, yes)
+        (
+            cleanup_found,
+            recovery_dirs,
+            cleanup_intent,
+            cleanup_actions,
+        ) = _recover_cleanup_artifacts(
+            codex_dirs,
+        )
+        selected_journals = [
+            journal
+            for directory in recovery_dirs
+            for journal in _deployment_journal_dirs(Path(directory))
+            if _cleanup_claim_base(journal.name) is None
+            and _is_regular_path(journal / JOURNAL_FILENAME)
+        ]
+        operations = set()
+        for path in selected_journals:
+            operation = _journal_operation(path)
+            data = (
+                _load_deployment_journal(path)
+                if operation == "deploy"
+                else _load_uninstall_journal(path)
+            )
+            operations.add(operation)
+            if (
+                cleanup_intent is not None
+                and _immutable_journal_intent(data) != cleanup_intent
+            ):
+                raise HooksConflict(
+                    "remaining journal does not match the verified cleanup intent"
+                )
+        for directory in recovery_dirs:
+            for journal in _deployment_journal_dirs(Path(directory)):
+                if (
+                    _cleanup_claim_base(journal.name) is not None
+                    or _is_regular_path(journal / JOURNAL_FILENAME)
+                    or not _is_regular_path(journal / INTENT_FILENAME)
+                ):
+                    continue
+                intent, _fingerprint = _load_cleanup_intent(
+                    journal / INTENT_FILENAME
+                )
+                owner = str(journal.parent.resolve())
+                expected_identity = _identity_from_portable(
+                    intent["directories"][owner]["journal_identity"],
+                    "incomplete transaction journal identity",
+                )
+                if _directory_identity(journal) != expected_identity:
+                    raise HooksConflict(
+                        f"incomplete transaction journal identity changed: {journal}"
+                    )
+                operations.add(intent["operation"])
+                if cleanup_intent is not None and intent != cleanup_intent:
+                    raise HooksConflict(
+                        "remaining intent does not match the verified cleanup intent"
+                    )
+                names = set(os.listdir(journal))
+                if names == {INTENT_FILENAME}:
+                    continue
+                if (
+                    intent["operation"] == "uninstall"
+                    and names == {INTENT_FILENAME, JOURNAL_PENDING_FILENAME}
+                ):
+                    _load_initializing_uninstall_pending(journal, intent)
+                    continue
+                raise HooksConflict(
+                    f"incomplete transaction journal has unmanaged members: {journal}"
+                )
+        if len(operations) > 1:
+            raise HooksConflict("同一恢复范围包含 deploy 与 uninstall 事务")
         if cleanup_found and not yes:
             _print("[预览] cleanup 残留未修改；确认清理请添加 --yes。")
             return
+        if operations == {"uninstall"}:
+            _recover_uninstall(recovery_dirs, yes)
+            return
+        if not operations and cleanup_actions:
+            _execute_cleanup_artifacts(cleanup_actions)
+            cleanup_actions = []
         discovered = []
-        for directory in codex_dirs:
-            discovered.extend(_deployment_journal_dirs(Path(directory)))
+        for directory in recovery_dirs:
+            discovered.extend(
+                journal
+                for journal in _deployment_journal_dirs(Path(directory))
+                if _cleanup_claim_base(journal.name) is None
+            )
         if not discovered:
             _print(
                 _localized(
@@ -4415,6 +5819,18 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
         transaction_id = next(iter(transaction_ids))
         reference = journals[0][1]
         participants = reference["participants"]
+        (
+            participant_cleanup_found,
+            _participant_recovery_dirs,
+            _participant_cleanup_intent,
+            participant_cleanup_actions,
+        ) = _recover_cleanup_artifacts(
+            participants,
+            expected_intent=_immutable_journal_intent(reference),
+        )
+        if participant_cleanup_found and not yes:
+            _print("[预览] cleanup 残留未修改；确认清理请添加 --yes。")
+            return
         verified_journals = []
         missing_journals = []
         for directory in participants:
@@ -4431,12 +5847,21 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
             ):
                 raise HooksConflict("参与目录中的部署恢复日志不一致")
             verified_journals.append((expected, data))
+        retained_cleanup_markers = (
+            _execute_cleanup_artifacts(
+                participant_cleanup_actions,
+                retain_markers=True,
+            )
+            if participant_cleanup_actions
+            else []
+        )
         terminal_phases = {data["phase"] for _path, data in verified_journals}
         if terminal_phases <= {"committed"} or terminal_phases <= {"recovered"}:
             _cleanup_terminal_journals(
                 verified_journals,
                 next(iter(terminal_phases)),
                 yes,
+                retained_cleanup_markers,
             )
             return
         if missing_journals:
@@ -4466,6 +5891,7 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
             if not yes:
                 _print("[预览] 业务路径未修改；确认清理初始化日志请添加 --yes。")
                 return
+            _remove_retained_cleanup_markers(retained_cleanup_markers)
             for journal_dir, _data in selected:
                 owner = _data["owner_directory"]
                 identity = _identity_from_portable(
@@ -4504,6 +5930,7 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
             if not yes:
                 _print("[预览] 未修改任何文件；确认清理初始化 journal 请添加 --yes。")
                 return
+            _remove_retained_cleanup_markers(retained_cleanup_markers)
             for journal_dir, data in verified_journals:
                 if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
                     _atomic_write_private_json(
@@ -4561,6 +5988,7 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
                         target_residues[residue["name"]] = residue
 
         journal_paths: Dict[str, Optional[Path]] = {}
+        late_md_claims: Dict[str, Dict[str, Any]] = {}
         blockers = []
         for directory in participants:
             codex_dir = Path(directory)
@@ -4590,9 +6018,32 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
                 except (OSError, ValueError) as exc:
                     blockers.append(str(exc))
             resources = directories[directory]["resources"]
-            for _label, resource in resources.items():
+            try:
+                late_md_claim = _late_absent_md_recovery_claim(
+                    codex_dir,
+                    resources["md"],
+                    owned_residues,
+                )
+            except (OSError, ValueError) as exc:
+                blockers.append(str(exc))
+                late_md_claim = None
+            if late_md_claim is not None:
+                late_md_claims[directory] = late_md_claim
+            for label, resource in resources.items():
                 path = codex_dir / resource["path"]
-                if not _journal_resource_is_allowed(
+                late_md_allowed = (
+                    label == "md"
+                    and late_md_claim is not None
+                    and (
+                        _portable_matches(path, late_md_claim["previous"])
+                        or _portable_matches(path, late_md_claim["published"])
+                        or (
+                            late_md_claim["previous_in_claim"]
+                            and not _path_entry_exists(path)
+                        )
+                    )
+                )
+                if not late_md_allowed and not _journal_resource_is_allowed(
                     path,
                     resource,
                 ) and not _owned_residue_claims_resource(
@@ -4673,6 +6124,31 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
                     continue
                 current = _fingerprint_or_none(path)
                 if before is None:
+                    late_md_claim = (
+                        late_md_claims.get(directory) if label == "md" else None
+                    )
+                    if late_md_claim is not None:
+                        previous = late_md_claim["previous"]
+                        if _portable_matches(path, previous):
+                            continue
+                        published = late_md_claim["published"]
+                        if current is not None:
+                            if not _portable_matches(path, published):
+                                raise HooksConflict(
+                                    f"late-MD 恢复目标已发生并发变化: {path}"
+                                )
+                            _remove_owned_file(path, current)
+                        previous_path = late_md_claim["previous_path"]
+                        if not _atomic_rename_no_replace(previous_path, path):
+                            raise HooksConflict(
+                                f"late-MD 恢复目标被并发创建: {path}"
+                            )
+                        _fsync_directory(late_md_claim["residue_path"])
+                        _fsync_directory(codex_dir)
+                        if not _portable_matches(path, previous):
+                            raise HooksConflict(f"late-MD 用户内容恢复失败: {path}")
+                        late_md_claim["previous_in_claim"] = False
+                        continue
                     if current is not None:
                         _remove_owned_file(path, current)
                     continue
@@ -4705,9 +6181,18 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
         }
         for directory in participants:
             codex_dir = Path(directory)
-            for resource in directories[directory]["resources"].values():
+            for label, resource in directories[directory]["resources"].items():
                 path = codex_dir / resource["path"]
-                if not _portable_matches(path, resource["before"]):
+                late_md_claim = (
+                    late_md_claims.get(directory) if label == "md" else None
+                )
+                matches_recovered = _portable_matches(path, resource["before"])
+                if late_md_claim is not None:
+                    matches_recovered = _portable_matches(
+                        path,
+                        late_md_claim["previous"],
+                    )
+                if not matches_recovered:
                     raise HooksConflict(
                         f"恢复最终一致性检查发现并发变化: {path}"
                     )
@@ -4756,6 +6241,7 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
                 _fsync_directory(codex_dir)
         _update_deployment_journals(recovery_states, "recovered")
         _validate_terminal_journal_state(reference, "recovered")
+        _remove_retained_cleanup_markers(retained_cleanup_markers)
         for directory in participants:
             journal_dir = journal_paths[directory]
             if journal_dir is not None:
@@ -4780,8 +6266,265 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
     except (OSError, ValueError, UnicodeDecodeError) as exc:
         _ACTIVE_DEPLOYMENT_TRANSACTION_ID = None
         _ACTIVE_DEPLOYMENT_STATES = None
-        _print(f"[错误] 部署事务恢复失败；日志与证据均已保留: {exc}")
+        _print(f"[错误] 持久化事务恢复失败；日志与证据均已保留: {exc}")
         sys.exit(1)
+
+
+def _select_uninstall_manifest_archive(path: Path, timestamp: str) -> Path:
+    attempt = 0
+    while True:
+        suffix = "" if attempt == 0 else f"_{attempt}"
+        archive = path.with_name(f"{path.name}.uninstalled_{timestamp}{suffix}")
+        if not _path_entry_exists(archive):
+            return archive
+        attempt += 1
+
+
+def _uninstall_after_state(resource: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    portable = resource["allowed_portable"]
+    if len(portable) == 1:
+        return portable[0]
+    if resource["allowed_absent"] and not portable:
+        return None
+    if len(portable) != 1:
+        raise ValueError("uninstall resource 缺少唯一 after 状态")
+    return portable[0]
+
+
+def _validate_uninstall_journal_resources(
+    resources: Dict[str, Any],
+    directory: str,
+) -> None:
+    labels = set(resources)
+    required = {"config", "md", "manifest", "manifest_archive"}
+    optional = {"hooks_active", "hooks_disabled", "legacy"}
+    if not required <= labels or labels - required - optional:
+        raise ValueError(f"卸载恢复日志资源标签无效: {directory}")
+    if ("hooks_active" in labels) != ("hooks_disabled" in labels):
+        raise ValueError(f"卸载恢复日志 hooks 资源必须成对出现: {directory}")
+    expected_paths = {
+        "config": "config.toml",
+        "manifest": MANIFEST_FILENAME,
+        "hooks_active": "hooks.json",
+        "hooks_disabled": "hooks.json.disabled",
+        "legacy": LEGACY_MD_FILENAME,
+    }
+    paths = {label: resource["path"] for label, resource in resources.items()}
+    for label, expected in expected_paths.items():
+        if label in paths and paths[label] != expected:
+            raise ValueError(f"卸载恢复日志 {label} 路径无效: {directory}")
+    try:
+        if normalize_md_name(paths["md"]) != paths["md"]:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError(f"卸载恢复日志 md 路径无效: {directory}") from exc
+    archive_name = paths["manifest_archive"]
+    if not archive_name.startswith(f"{MANIFEST_FILENAME}.uninstalled_"):
+        raise ValueError(f"卸载恢复日志 manifest archive 路径无效: {directory}")
+    if len(set(paths.values())) != len(paths):
+        raise ValueError(f"卸载恢复日志资源路径重复: {directory}")
+
+    for label, resource in resources.items():
+        expected_snapshot = (
+            f"snapshot-{label.replace('_', '-')}"
+            if resource["before"] is not None
+            else None
+        )
+        if resource["snapshot"] != expected_snapshot:
+            raise ValueError(f"卸载恢复日志 {label} 快照名无效: {directory}")
+        if resource["allowed_sha256"]:
+            raise ValueError(f"卸载恢复日志 {label} 不应使用 SHA-only after")
+        _uninstall_after_state(resource)
+    if resources["config"]["before"] is None:
+        raise ValueError(f"卸载恢复日志 config 缺少 before: {directory}")
+    if resources["md"]["before"] is None:
+        raise ValueError(f"卸载恢复日志 md 缺少 before: {directory}")
+    if resources["manifest"]["before"] is None:
+        raise ValueError(f"卸载恢复日志 manifest 缺少 before: {directory}")
+    if resources["manifest_archive"]["before"] is not None:
+        raise ValueError(f"卸载恢复日志 manifest archive before 必须 absent: {directory}")
+
+
+def _create_uninstall_journals(
+    states: List[UninstallState],
+    timestamp: str,
+) -> None:
+    if not states or not states[0].deployment_id:
+        raise HooksConflict("卸载事务缺少 transaction id")
+    transaction_id = states[0].deployment_id
+    participants = [str(state.codex_dir.resolve()) for state in states]
+    directories: Dict[str, Any] = {}
+
+    for state in states:
+        plan = state.plan
+        manifest = plan.manifest
+        if manifest is None or plan.manifest_fingerprint is None:
+            raise HooksConflict(f"卸载事务缺少有效部署清单: {plan.codex_dir}")
+        codex_dir = plan.codex_dir
+        manifest_path = codex_dir / MANIFEST_FILENAME
+        state.manifest_archive = _select_uninstall_manifest_archive(
+            manifest_path,
+            timestamp,
+        )
+
+        def current(
+            path: Path,
+            current_plan: UninstallPlan = plan,
+        ) -> Optional[FileFingerprint]:
+            return current_plan.current_fingerprints.get(path)
+
+        def resource(
+            label: str,
+            path: Path,
+            before: Optional[FileFingerprint],
+            after: Optional[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            return _journal_resource(
+                path.name,
+                before,
+                (
+                    f"snapshot-{label.replace('_', '-')}"
+                    if before is not None
+                    else None
+                ),
+                allowed_absent=after is None,
+                allowed_portable=[after] if after is not None else [],
+            )
+
+        config = manifest["config"]
+        md = manifest["md"]
+        hooks = manifest["hooks"]
+        legacy = manifest["legacy"]
+        previous = manifest["previous_manifest"]
+        config_path = codex_dir / config["path"]
+        md_path = codex_dir / md["path"]
+        resources = {
+            "config": resource(
+                "config",
+                config_path,
+                current(config_path),
+                config["before"] if config["changed"] else config["after"],
+            ),
+            "md": resource("md", md_path, current(md_path), md["before"]),
+            "manifest": resource(
+                "manifest",
+                manifest_path,
+                plan.manifest_fingerprint,
+                previous["before"],
+            ),
+            "manifest_archive": resource(
+                "manifest_archive",
+                state.manifest_archive,
+                None,
+                _portable_fingerprint(plan.manifest_fingerprint),
+            ),
+        }
+        if hooks["isolated"]:
+            hooks_path = codex_dir / "hooks.json"
+            disabled_path = codex_dir / "hooks.json.disabled"
+            resources["hooks_active"] = resource(
+                "hooks_active",
+                hooks_path,
+                current(hooks_path),
+                hooks["active_before"],
+            )
+            resources["hooks_disabled"] = resource(
+                "hooks_disabled",
+                disabled_path,
+                current(disabled_path),
+                hooks["disabled_before"],
+            )
+            resources["hooks_disabled"]["allowed_absent"] = True
+        if legacy["action"] == "archive":
+            legacy_path = codex_dir / legacy["path"]
+            resources["legacy"] = resource(
+                "legacy",
+                legacy_path,
+                current(legacy_path),
+                legacy["before"],
+            )
+        _validate_uninstall_journal_resources(
+            resources,
+            str(codex_dir.resolve()),
+        )
+        directories[str(codex_dir.resolve())] = {
+            "journal_dir": f"{JOURNAL_PREFIX}{transaction_id}",
+            "journal_identity": None,
+            "resources": resources,
+            "residues": [],
+        }
+
+    journal_data = {
+        "schema_version": JOURNAL_SCHEMA_VERSION,
+        "operation": "uninstall",
+        "transaction_id": transaction_id,
+        "phase": "initializing",
+        "participants": participants,
+        "directories": directories,
+    }
+    try:
+        for state in states:
+            journal_dir = state.codex_dir / f"{JOURNAL_PREFIX}{transaction_id}"
+            os.mkdir(journal_dir, 0o700)
+            if hasattr(os, "chmod"):
+                os.chmod(journal_dir, 0o700)
+            state.journal_dir = journal_dir
+            state.journal_identity = _directory_identity(journal_dir)
+            directories[str(state.codex_dir.resolve())]["journal_identity"] = (
+                _portable_identity(state.journal_identity)
+            )
+            state.journal_data = journal_data
+
+        for state in states:
+            if state.journal_dir is None:
+                raise HooksConflict("卸载事务目录在 intent 发布前消失")
+            persisted = dict(journal_data)
+            persisted["owner_directory"] = str(state.codex_dir.resolve())
+            _write_exclusive_private_json(
+                state.journal_dir / INTENT_FILENAME,
+                _immutable_journal_intent(journal_data),
+            )
+            _atomic_write_private_json(
+                state.journal_dir / JOURNAL_FILENAME,
+                persisted,
+            )
+            _fsync_directory(state.codex_dir)
+
+        for state in states:
+            directory = str(state.codex_dir.resolve())
+            for resource_data in directories[directory]["resources"].values():
+                before = resource_data["before"]
+                if before is None:
+                    continue
+                source = state.codex_dir / resource_data["path"]
+                if not _portable_matches(source, before):
+                    raise HooksConflict(f"卸载快照前文件已变化: {source}")
+                snapshot = state.journal_dir / resource_data["snapshot"]
+                _copy_snapshot(source, snapshot)
+                if not _portable_matches(snapshot, before):
+                    raise HooksConflict(f"卸载快照校验失败: {snapshot}")
+            _fsync_directory(state.journal_dir)
+        _update_deployment_journals(states, "prepared")
+    except BaseException:
+        for state in reversed(states):
+            if state.journal_dir and _path_entry_exists(state.journal_dir):
+                if state.journal_identity is None or state.journal_data is None:
+                    raise HooksConflict(
+                        f"初始化失败的 uninstall journal 缺少所有权: {state.journal_dir}"
+                    ) from None
+                _safe_remove_owned_directory(
+                    state.journal_dir,
+                    state.journal_identity,
+                    _journal_expected_members(
+                        state.journal_data,
+                        str(state.codex_dir.resolve()),
+                        state.journal_dir,
+                        require_all_snapshots=False,
+                    ),
+                    require_exact_members=True,
+                )
+                state.journal_dir = None
+        raise
 
 
 def _prepare_uninstall_state(state: UninstallState) -> None:
@@ -4789,30 +6532,23 @@ def _prepare_uninstall_state(state: UninstallState) -> None:
     manifest = plan.manifest
     if manifest is None:
         return
-    transaction_dir = Path(
-        tempfile.mkdtemp(prefix=".keysmith-uninstall-", dir=str(plan.codex_dir))
-    )
-    os.chmod(transaction_dir, 0o700)
-    state.transaction_dir = transaction_dir
-    state.transaction_identity = _directory_identity(transaction_dir)
-    paths = [
-        plan.codex_dir / manifest["config"]["path"],
-        plan.codex_dir / manifest["md"]["path"],
-        plan.codex_dir / "hooks.json",
-        plan.codex_dir / "hooks.json.disabled",
-        plan.codex_dir / manifest["legacy"]["path"],
-        plan.codex_dir / MANIFEST_FILENAME,
-    ]
-    for index, path in enumerate(paths):
-        if _path_entry_exists(path):
-            snapshot = transaction_dir / f"snapshot-{index}"
-            _copy_snapshot(path, snapshot)
-            state.snapshots[path] = snapshot
-            state.snapshot_fingerprints[snapshot.name] = _fingerprint_regular_file(
-                snapshot
+    if state.journal_dir is None or state.journal_data is None:
+        raise HooksConflict("卸载 durable journal 尚未创建")
+    resources = state.journal_data["directories"][
+        str(plan.codex_dir.resolve())
+    ]["resources"]
+    for resource in resources.values():
+        path = plan.codex_dir / resource["path"]
+        snapshot = (
+            state.journal_dir / resource["snapshot"]
+            if resource["snapshot"] is not None
+            else None
+        )
+        state.snapshots[path] = snapshot
+        if snapshot is not None:
+            state.snapshot_fingerprints[snapshot.name] = (
+                _fingerprint_regular_file(snapshot)
             )
-        else:
-            state.snapshots[path] = None
 
 
 def _remove_owned_file(path: Path, expected: FileFingerprint) -> None:
@@ -4898,7 +6634,16 @@ def _move_manifest_to_archive(
     path: Path,
     expected: FileFingerprint,
     timestamp: str,
+    exact_archive: Optional[Path] = None,
 ) -> Path:
+    if exact_archive is not None:
+        if not _atomic_rename_no_replace(path, exact_archive):
+            raise HooksConflict(f"卸载清单归档目标已存在: {exact_archive}")
+        if not _path_has_fingerprint(exact_archive, expected):
+            if not _path_entry_exists(path):
+                _atomic_rename_no_replace(exact_archive, path)
+            raise HooksConflict(f"归档后的部署清单已漂移: {exact_archive}")
+        return exact_archive
     attempt = 0
     while True:
         suffix = "" if attempt == 0 else f"_{attempt}"
@@ -4920,6 +6665,13 @@ def _record_post(state: UninstallState, path: Path) -> None:
     state.post_expected[path] = _portable_fingerprint(_fingerprint_or_none(path))
 
 
+def _update_uninstall_phase(state: UninstallState, phase: str) -> None:
+    states = _ACTIVE_DEPLOYMENT_STATES
+    if not states or state not in states:
+        raise HooksConflict("卸载事务 active state 已丢失")
+    _update_deployment_journals(states, phase)
+
+
 def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
     plan = state.plan
     manifest = plan.manifest
@@ -4932,6 +6684,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
     legacy = manifest["legacy"]
     previous = manifest["previous_manifest"]
 
+    _update_uninstall_phase(state, "config-intent")
     config_path = codex_dir / config["path"]
     if config["changed"]:
         current = plan.current_fingerprints[config_path]
@@ -4944,6 +6697,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
         )
     _record_post(state, config_path)
 
+    _update_uninstall_phase(state, "md-intent")
     md_path = codex_dir / md["path"]
     current_md = plan.current_fingerprints[md_path]
     if md["before"] is None:
@@ -4958,6 +6712,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
         )
     _record_post(state, md_path)
 
+    _update_uninstall_phase(state, "hooks-intent")
     hooks_path = codex_dir / "hooks.json"
     disabled_path = codex_dir / "hooks.json.disabled"
     if hooks["isolated"] and plan.hooks_state == "managed":
@@ -4998,6 +6753,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
         _record_post(state, hooks_path)
         _record_post(state, disabled_path)
 
+    _update_uninstall_phase(state, "legacy-intent")
     legacy_path = codex_dir / legacy["path"]
     if legacy["action"] == "archive":
         legacy_archive = codex_dir / legacy["archive"]
@@ -5010,12 +6766,14 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             raise HooksConflict(f"卸载时旧版提示词被并发创建: {legacy_path}")
         _record_post(state, legacy_path)
 
+    _update_uninstall_phase(state, "manifest-intent")
     manifest_path = codex_dir / MANIFEST_FILENAME
     manifest_current = plan.current_fingerprints[manifest_path]
     state.manifest_archive = _move_manifest_to_archive(
         manifest_path,
         manifest_current,
         timestamp,
+        exact_archive=state.manifest_archive,
     )
     state.manifest_archive_fingerprint = _fingerprint_regular_file(
         state.manifest_archive
@@ -5129,6 +6887,7 @@ def _verify_uninstall_final_state(states: List[UninstallState]) -> None:
 
 
 def uninstall(codex_dirs: List[str], yes: bool) -> None:
+    global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     if not codex_dirs:
         _print("[完成] 未找到 codex-keysmith 部署清单；无需卸载。")
         return
@@ -5168,15 +6927,39 @@ def uninstall(codex_dirs: List[str], yes: bool) -> None:
         return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    states = [UninstallState(plan=plan) for plan in actionable]
+    transaction_id = uuid.uuid4().hex
+    states = [
+        UninstallState(plan=plan, deployment_id=transaction_id)
+        for plan in actionable
+    ]
+    _ACTIVE_DEPLOYMENT_TRANSACTION_ID = transaction_id
+    _ACTIVE_DEPLOYMENT_STATES = states
+    committed = False
     try:
         for state in states:
             _verify_atomic_rename_support(state.plan.codex_dir)
+            _reject_hooks_transaction_residue(state.plan.codex_dir)
+        _create_uninstall_journals(states, timestamp)
+        for state in states:
             _prepare_uninstall_state(state)
         for state in states:
             _execute_uninstall_state(state, timestamp)
+        _update_deployment_journals(states, "final-sweep")
         _verify_uninstall_final_state(states)
+        _validate_uninstall_terminal_state(states[0].journal_data, "committed")
+        _update_deployment_journals(states, "committed")
+        committed = True
+        _remove_deployment_journals(states)
     except BaseException as exc:
+        if committed:
+            _ACTIVE_DEPLOYMENT_TRANSACTION_ID = None
+            _ACTIVE_DEPLOYMENT_STATES = None
+            _print(
+                f"[错误] 卸载已提交，但 journal 清理失败；不会回滚: {exc}"
+            )
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            sys.exit(1)
         _print(f"[错误] 卸载失败，开始反向恢复: {exc}")
         rollback_errors = []
         for state in reversed(states):
@@ -5184,23 +6967,36 @@ def uninstall(codex_dirs: List[str], yes: bool) -> None:
         for error in rollback_errors:
             _print(f"  [回滚警告] {error}")
         if not rollback_errors:
+            try:
+                _validate_uninstall_terminal_state(
+                    states[0].journal_data,
+                    "recovered",
+                )
+                _cleanup_uninstall_residues(
+                    states[0].journal_data,
+                    {
+                        str(state.codex_dir.resolve()): state.journal_dir
+                        for state in states
+                    },
+                )
+                _update_deployment_journals(states, "recovered")
+                _remove_deployment_journals(states)
+            except BaseException as recovery_exc:
+                rollback_errors.append(str(recovery_exc))
+                _print(f"  [回滚警告] durable recovery 清理失败: {recovery_exc}")
+        if not rollback_errors:
             _print("[回滚] 已恢复卸载前状态。")
+        _ACTIVE_DEPLOYMENT_TRANSACTION_ID = None
+        _ACTIVE_DEPLOYMENT_STATES = None
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
         sys.exit(1)
 
-    cleanup_errors = []
+    _ACTIVE_DEPLOYMENT_TRANSACTION_ID = None
+    _ACTIVE_DEPLOYMENT_STATES = None
     for state in states:
-        try:
-            _finish_uninstall_state(state)
-        except OSError as exc:
-            cleanup_errors.append(f"{state.plan.codex_dir}: {exc}")
         if state.manifest_archive:
             _print(f"  [清单归档] {state.manifest_archive}")
-    if cleanup_errors:
-        for error in cleanup_errors:
-            _print(f"  [事务警告] 卸载事务目录清理失败，已保留证据: {error}")
-        sys.exit(1)
     _print(f"[完成] 已卸载 {len(states)} 个受管理部署。")
 
 
@@ -5884,6 +7680,7 @@ def show_status(codex_dirs: List[str]) -> None:
             )
             continue
         status_errors = list(plan.blockers)
+        ownership_prefix = "现有部署清单所有权冲突: "
         for label, node in (
             ("当前提示词", plan.current),
             ("旧版提示词", plan.legacy),
@@ -5920,7 +7717,10 @@ def show_status(codex_dirs: List[str]) -> None:
             _print(f"    hooks 恢复: 可执行 {_format_restore_command(codex_root)}")
         elif plan.hooks.regular and plan.disabled.regular:
             _print("    hooks 恢复: conflict（恢复不会覆盖任何一方）")
-            _print("    hooks 部署: ready（部署会先备份已有 disabled）")
+            if status_errors:
+                _print("    hooks 部署: blocked")
+            else:
+                _print("    hooks 部署: ready（部署会先备份已有 disabled）")
         elif plan.hooks.regular and not plan.disabled.exists:
             _print("    hooks 状态: active（默认部署会整体隔离）")
         elif not plan.hooks.exists and not plan.disabled.exists:
@@ -5928,6 +7728,22 @@ def show_status(codex_dirs: List[str]) -> None:
 
         for warning in plan.warnings:
             _print(f"    [警告] {warning}")
+        structural_errors = [
+            error
+            for error in status_errors
+            if not error.startswith(ownership_prefix)
+        ]
+        _print(
+            "    结构健康: "
+            + ("blocked" if structural_errors else "healthy")
+        )
+        if plan.manifest.regular:
+            _print(
+                "    卸载就绪度: "
+                + ("blocked" if plan.uninstall_blockers else "ready")
+            )
+        else:
+            _print("    卸载就绪度: not-applicable")
         if status_errors:
             invalid_count += 1
             for error in status_errors:
@@ -5939,7 +7755,15 @@ def show_status(codex_dirs: List[str]) -> None:
     if invalid_count:
         _print(f"\n[错误] {invalid_count} 个目录存在冲突或异常节点。")
         sys.exit(1)
-    _print("\n[完成] 状态检查未发现阻塞问题；未读取 hooks 内容，未修改任何文件。")
+    _print(
+        _localized(
+            "\n[完成] 状态检查未发现阻塞问题；未读取或解析 live active/disabled hooks，"
+            "已读取并哈希 manifest 引用的 backup 恢复证据；未修改任何文件。",
+            "\n[Done] Status found no blockers; live active/disabled hooks were not read "
+            "or parsed, manifest-referenced backup recovery evidence was read and hashed, "
+            "and no files were changed.",
+        )
+    )
 
 
 def deploy(args) -> None:
@@ -6139,16 +7963,33 @@ def deploy(args) -> None:
 
         # Isolate hooks in every directory before modifying deployment files.
         _update_deployment_journals(states, "hooks-intent")
-        for state in states:
+        for state, plan in zip(states, plans):
             if skip_hooks_isolation:
                 continue
             hooks_path = state.codex_dir / "hooks.json"
-            if not _path_entry_exists(hooks_path):
+            disabled_path = state.codex_dir / "hooks.json.disabled"
+            if plan.hooks_fingerprint is None:
+                if _path_entry_exists(hooks_path):
+                    raise HooksConflict(
+                        f"hooks.json 已偏离 journal 发布前的 absent 前提: {hooks_path}"
+                    )
+                if plan.disabled_fingerprint is None and _path_entry_exists(
+                    disabled_path
+                ):
+                    raise HooksConflict(
+                        "hooks.json.disabled 已偏离 journal 发布前的 absent 前提: "
+                        f"{disabled_path}"
+                    )
                 _print(f"\n  [检测] 未发现 hooks.json: {hooks_path}")
                 continue
 
             _print(f"\n  [检测] 发现 hooks.json: {hooks_path}")
-            state.hooks_isolation = isolate_hooks(state.codex_dir, timestamp)
+            state.hooks_isolation = isolate_hooks(
+                state.codex_dir,
+                timestamp,
+                expected_active=plan.hooks_fingerprint,
+                expected_disabled=plan.disabled_fingerprint,
+            )
             if state.hooks_isolation:
                 isolation = state.hooks_isolation
                 _print(f"  [备份] hooks.json → {isolation.hooks_backup}")
@@ -6210,33 +8051,37 @@ def deploy(args) -> None:
                 )
             if plan.config_content is None or plan.updated_config_content is None:
                 raise HooksConflict(f"config.toml 缺少预检内容计划: {config_path}")
-            state.md_existed = _path_entry_exists(md_dest)
+            # The durable journal fixes the deployment-before state. Never
+            # adopt a path that appeared after journal publication as a new
+            # baseline or backup source.
+            state.md_existed = plan.current_fingerprint is not None
 
             _print(f"\n── 部署到: {codex_root} ──")
 
-            md_expected_fingerprint = (
-                _fingerprint_regular_file(md_dest) if state.md_existed else None
-            )
+            md_expected_fingerprint = plan.current_fingerprint
             if state.md_existed:
                 state.md_backup = backup_file(
                     md_dest,
                     timestamp,
                     expected_fingerprint=plan.current_fingerprint,
                 )
-            state.md_touched = True
             state.md_expected_sha256 = hashlib.sha256(
                 md_content.encode("utf-8")
             ).hexdigest()
+
+            def record_md_publish(
+                fingerprint: FileFingerprint,
+                current_state: DeploymentState = state,
+            ) -> None:
+                current_state.md_fingerprint = fingerprint
+                current_state.md_touched = True
+
             atomic_write_text(
                 md_dest,
                 md_content,
                 expected_fingerprint=md_expected_fingerprint,
                 require_absent=not state.md_existed,
-                on_published=lambda fingerprint, current_state=state: setattr(
-                    current_state,
-                    "md_fingerprint",
-                    fingerprint,
-                ),
+                on_published=record_md_publish,
             )
             if state.md_backup:
                 _print(f"  [备份] {md_dest.name} → {state.md_backup.name}")
@@ -6396,8 +8241,8 @@ def main() -> None:
   %(prog)s --codex-dir ~/.codex --uninstall      预览清单式卸载
   %(prog)s --codex-dir ~/.codex --uninstall --yes
                                                 执行清单式卸载
-  %(prog)s --codex-dir ~/.codex --recover          预览中断部署恢复
-  %(prog)s --codex-dir ~/.codex --recover --yes    执行中断部署恢复
+  %(prog)s --codex-dir ~/.codex --recover          预览中断事务恢复
+  %(prog)s --codex-dir ~/.codex --recover --yes    执行部署/卸载事务恢复
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 部署但保持 hooks 活跃
   %(prog)s --name my-rules --dry-run         自定义文件名 my-rules.md
@@ -6413,8 +8258,8 @@ Examples:
   %(prog)s --codex-dir ~/.codex --uninstall      Preview manifest-based uninstall
   %(prog)s --codex-dir ~/.codex --uninstall --yes
                                                 Run manifest-based uninstall
-  %(prog)s --codex-dir ~/.codex --recover          Preview interrupted deployment recovery
-  %(prog)s --codex-dir ~/.codex --recover --yes    Recover an interrupted deployment
+  %(prog)s --codex-dir ~/.codex --recover          Preview interrupted transaction recovery
+  %(prog)s --codex-dir ~/.codex --recover --yes    Recover an interrupted deploy/uninstall
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 Deploy while leaving hooks active
   %(prog)s --name my-rules --dry-run         Use custom name my-rules.md
@@ -6481,8 +8326,8 @@ Examples:
         "--recover",
         action="store_true",
         help=_localized(
-            "预览或恢复中断的持久化部署事务",
-            "Preview or recover an interrupted durable deployment",
+            "预览或恢复中断的持久化部署/卸载事务",
+            "Preview or recover an interrupted durable deploy/uninstall transaction",
         ),
     )
     parser.add_argument(

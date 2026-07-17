@@ -31,17 +31,25 @@ python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
 python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
 python3 -m coverage combine
-python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
-python3 scripts/build_release.py v0.1.0 --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
-(cd dist-candidate && sha256sum --check SHA256SUMS)
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+if [ -n "$TAG_COMMIT" ] && [ "$TAG_COMMIT" != "$SOURCE_COMMIT" ]; then
+  if REFUSAL="$(python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate 2>&1)"; then exit 1; fi
+  printf '%s\n' "$REFUSAL" | grep -F "release tag $RELEASE_TAG already points to $TAG_COMMIT, not candidate $SOURCE_COMMIT"
+  test ! -e dist-candidate
+else
+  python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
+  (cd dist-candidate && sha256sum --check SHA256SUMS)
+fi
 git diff --check
 ```
 
-当前完整测试集为 300+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 80% 门槛让 CI 通过。候选 Release 构建必须使用完整 `--source-commit` 并精确匹配 HEAD。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
+当前完整测试集为 300+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 81% 门槛让 CI 通过。Release 验证必须使用完整、非 shallow 的 checkout 并取得全部 tags。候选构建必须使用完整 `--source-commit` 并精确匹配 HEAD，并能以非交互、有限超时方式验证每个已配置 remote 的同名 tag；remote 不可达、需要认证或与本地 tag/候选 commit 不一致时必须 fail closed。如果 `v$VERSION` 已存在于其他 commit，builder 必须拒绝且不得生成同版本资产。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
 
-Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果、文档/CHANGELOG 影响，以及 Windows experimental 行为是否变化。Windows job 在 v0.1.0 中是非阻断观察项，但失败必须保留并说明，不得伪装为正式支持。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows 运行当前 unsupported，不得添加 Windows 安装入口、支持徽章或兼容性声明；恢复支持前必须先完成独立 port，并以阻断式真实 Windows CI 证明 deploy、restore、recover、uninstall 和硬中断恢复全绿。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
 
 ---
 
@@ -67,6 +75,6 @@ For a contribution:
 5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
 6. Run the complete command block above from a clean worktree.
 
-The current full suite contains 300+ tests. Do not remove tests, narrow measured source, or lower the combined 80% branch-coverage gate to make CI pass. Candidate Release builds must pass a full `--source-commit` that exactly matches HEAD. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
+The current full suite contains 300+ tests. Do not remove tests, narrow measured source, or lower the combined 81% branch-coverage gate to make CI pass. Release verification requires a complete, non-shallow checkout with all tags. Candidate builds must pass a full `--source-commit` that exactly matches HEAD and must verify the same tag on every configured remote with non-interactive access and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, must fail closed. If `v$VERSION` already exists at another commit, the builder must refuse without generating same-version assets. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
 
-A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, documentation/CHANGELOG impact, and any change to Windows experimental behavior. Windows jobs are non-blocking observation jobs in v0.1.0, but failures must remain visible and documented rather than being presented as formal support. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. Windows runtime is unsupported: do not add a Windows installation path, support badge, or compatibility claim. Restoring support requires a separate port and blocking real-Windows CI proving deploy, restore, recover, uninstall, and hard-interruption recovery green. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.

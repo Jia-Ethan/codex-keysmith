@@ -4,7 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-No unreleased user-visible changes are recorded yet.
+### Changed
+
+- Windows installation instructions and the non-blocking Windows CI matrix were withdrawn. Windows runtime is now explicitly unsupported until a dedicated filesystem/ACL port and blocking real-Windows deploy, restore, recover, uninstall, and hard-interruption evidence are available.
+- The supported-platform compatibility matrix now runs Python 3.9 and Python 3.14, and the combined branch-coverage gate is 81%.
+
+### Fixed
+
+- Deployment now preserves the journal-published absent/present Markdown premise. A late concurrent Markdown file fails closed before backup or overwrite, while an exact legacy journal-owned hard-interruption claim can restore the user's original bytes without accepting unknown residue.
+- Hook isolation now revalidates both active and disabled hook paths against the published plan. Manifests enforce consistent `disabled_before` and `previous_disabled_backup` fields, and `--status` separately reports structural health, deployability, and uninstall readiness while detecting missing required hook backups without reading active hook content.
+- Uninstall now publishes a durable multi-directory journal with immutable intent, before-state snapshots, phase and terminal state, exact residue ownership, re-enterable cleanup, reverse recovery, and tamper/drift rejection. Recovery covers intent-only and first-pending publication windows, validates every cleanup participant before mutation, and preserves cleanup anchors until remaining journal recovery succeeds. `--recover` dispatches interrupted deployment and uninstall transactions.
+- Release builds now reject shallow Git checkouts. Candidate CI fetches complete history and tags, binds VERSION and source commit to the checked-out commit, reconciles every configured remote tag non-interactively with a finite timeout, and refuses local shadow tags or any rebuild of an existing version from a different commit without moving or rewriting the signed `v0.1.0` tag.
 
 ## [0.1.0] - 2026-07-16
 

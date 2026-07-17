@@ -327,6 +327,193 @@ def test_candidate_build_rejects_conflicting_existing_release_tag(
         )
 
 
+def test_candidate_build_rejects_shallow_checkout_that_hides_release_tags(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path / "source", release_builder)
+    (repo / "later.txt").write_text("later commit\n", encoding="utf-8")
+    _run(["git", "add", "later.txt"], repo)
+    _run(["git", "commit", "-qm", "later commit"], repo)
+
+    shallow = tmp_path / "shallow"
+    _run(
+        [
+            "git",
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            "--no-tags",
+            repo.as_uri(),
+            str(shallow),
+        ],
+        tmp_path,
+    )
+    candidate = _head_commit(shallow)
+    assert (
+        _run(["git", "rev-parse", "--is-shallow-repository"], shallow).stdout.strip()
+        == "true"
+    )
+
+    with pytest.raises(release_builder.ReleaseError, match="complete Git checkout"):
+        release_builder.build_release(
+            TAG,
+            shallow,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
+
+
+def test_candidate_build_from_complete_clone_rejects_existing_version_tag(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path / "source", release_builder)
+    tagged_commit = _head_commit(repo)
+    (repo / "later.txt").write_text("later commit\n", encoding="utf-8")
+    _run(["git", "add", "later.txt"], repo)
+    _run(["git", "commit", "-qm", "later commit"], repo)
+
+    complete = tmp_path / "complete"
+    _run(["git", "clone", "-q", repo.as_uri(), str(complete)], tmp_path)
+    candidate = _head_commit(complete)
+    assert (
+        _run(["git", "rev-parse", "--is-shallow-repository"], complete)
+        .stdout.strip()
+        == "false"
+    )
+    assert (
+        _run(["git", "rev-parse", "{}^{{commit}}".format(TAG)], complete)
+        .stdout.strip()
+        == tagged_commit
+    )
+
+    with pytest.raises(release_builder.ReleaseError, match="already points to"):
+        release_builder.build_release(
+            TAG,
+            complete,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
+
+
+def test_candidate_build_from_non_shallow_no_tags_clone_rejects_remote_version_tag(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path / "source", release_builder)
+    tagged_commit = _head_commit(repo)
+    (repo / "later.txt").write_text("later commit\n", encoding="utf-8")
+    _run(["git", "add", "later.txt"], repo)
+    _run(["git", "commit", "-qm", "later commit"], repo)
+
+    no_tags = tmp_path / "no-tags"
+    _run(
+        ["git", "clone", "-q", "--no-tags", repo.as_uri(), str(no_tags)],
+        tmp_path,
+    )
+    candidate = _head_commit(no_tags)
+    output_dir = tmp_path / "assets"
+    assert (
+        _run(["git", "rev-parse", "--is-shallow-repository"], no_tags)
+        .stdout.strip()
+        == "false"
+    )
+    missing_tag = subprocess.run(
+        ["git", "rev-parse", "--verify", "refs/tags/{}".format(TAG)],
+        cwd=str(no_tags),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert missing_tag.returncode != 0
+
+    with pytest.raises(release_builder.ReleaseError, match="remote release tag"):
+        release_builder.build_release(
+            TAG,
+            no_tags,
+            output_dir,
+            source_commit=candidate,
+        )
+
+    assert tagged_commit != candidate
+    assert not output_dir.exists() or not list(output_dir.iterdir())
+
+
+def test_candidate_build_rejects_local_tag_that_shadows_conflicting_remote_tag(
+    release_builder,
+    tmp_path,
+):
+    repo, _ = _make_release_repo(tmp_path / "source", release_builder)
+    tagged_commit = _head_commit(repo)
+    (repo / "later.txt").write_text("later commit\n", encoding="utf-8")
+    _run(["git", "add", "later.txt"], repo)
+    _run(["git", "commit", "-qm", "later commit"], repo)
+
+    no_tags = tmp_path / "no-tags-shadow"
+    _run(
+        ["git", "clone", "-q", "--no-tags", repo.as_uri(), str(no_tags)],
+        tmp_path,
+    )
+    candidate = _head_commit(no_tags)
+    _run(["git", "tag", TAG, candidate], no_tags)
+    output_dir = tmp_path / "assets-shadow"
+
+    with pytest.raises(release_builder.ReleaseError, match="remote release tag"):
+        release_builder.build_release(
+            TAG,
+            no_tags,
+            output_dir,
+            source_commit=candidate,
+        )
+
+    assert tagged_commit != candidate
+    assert not output_dir.exists() or not list(output_dir.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["timeout", "authentication"])
+def test_candidate_build_fails_closed_when_remote_tag_verification_is_unavailable(
+    release_builder,
+    monkeypatch,
+    tmp_path,
+    failure,
+):
+    repo, _ = _make_release_repo(tmp_path / "source", release_builder)
+    no_tags = tmp_path / f"remote-unavailable-{failure}"
+    _run(
+        ["git", "clone", "-q", "--no-tags", repo.as_uri(), str(no_tags)],
+        tmp_path,
+    )
+    candidate = _head_commit(no_tags)
+    output_dir = tmp_path / f"assets-{failure}"
+    real_run = release_builder.subprocess.run
+    observed = []
+
+    def fail_remote(command, *args, **kwargs):
+        if "ls-remote" not in command:
+            return real_run(command, *args, **kwargs)
+        observed.append(kwargs.get("env", {}).get("GIT_TERMINAL_PROMPT"))
+        if failure == "timeout":
+            raise release_builder.subprocess.TimeoutExpired(command, 30)
+        return release_builder.subprocess.CompletedProcess(
+            command,
+            128,
+            stdout="",
+            stderr="authentication required",
+        )
+
+    monkeypatch.setattr(release_builder.subprocess, "run", fail_remote)
+
+    with pytest.raises(release_builder.ReleaseError, match="cannot verify remote"):
+        release_builder.build_release(
+            TAG,
+            no_tags,
+            output_dir,
+            source_commit=candidate,
+        )
+
+    assert observed == ["0"]
+    assert not output_dir.exists() or not list(output_dir.iterdir())
+
+
 def test_builder_fails_closed_without_git_metadata(release_builder, tmp_path):
     repo, _ = _make_release_repo(tmp_path, release_builder)
     commit = _head_commit(repo)
@@ -377,7 +564,7 @@ def test_builder_rejects_missing_file_and_incomplete_mit_notice(
         release_builder.build_release(TAG, license_repo, tmp_path / "license-assets")
 
 
-def test_ci_uses_immutable_actions_exact_dependencies_and_windows_probe():
+def test_ci_uses_full_tag_checkout_and_only_claims_supported_platforms():
     workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(
         encoding="utf-8"
     )
@@ -389,11 +576,31 @@ def test_ci_uses_immutable_actions_exact_dependencies_and_windows_probe():
     assert "actions/setup-python@v" not in workflow
     assert '"pytest==8.3.5"' in workflow
     assert '"pytest==8.4.2"' in workflow
-    assert "Windows experimental atomic no-replace probe passed" in workflow
+    assert 'python-version == \'3.9\'' in workflow
+    assert 'python-version == \'3.8\'' not in workflow
+    assert "windows-2025" not in workflow
+    assert "continue-on-error" not in workflow
+    assert "Windows experimental atomic no-replace probe passed" not in workflow
+    quality_job = workflow.split("\n  quality:", 1)[1]
+    assert "fetch-depth: 0" in quality_job
+    assert "fetch-tags: true" in quality_job
+    assert "rev-parse --is-shallow-repository" in quality_job
     assert 'release_tag="v$(tr -d' in workflow
-    assert 'python scripts/build_release.py "$release_tag" --source-commit "$GITHUB_SHA"' in workflow
-    assert "Candidate-only verification" in workflow
+    assert 'source_commit="$(git rev-parse --verify \'HEAD^{commit}\')"' in workflow
+    assert 'if [ "$tag_commit" != "$source_commit" ]; then' in workflow
+    assert "Release builder failed for an unexpected reason" in workflow
+    assert "correctly refused the conflicting candidate" in workflow
+    assert "--source-commit \"$source_commit\"" in workflow
     assert "sha256sum --check SHA256SUMS" in workflow
+    assert "--fail-under=81" in workflow
+
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pull_request_template = (
+        REPO_ROOT / ".github" / "pull_request_template.md"
+    ).read_text(encoding="utf-8")
+    assert "fail_under = 81" in pyproject
+    assert "branch coverage ≥ 81%" in pull_request_template
+    assert "branch coverage ≥ 80%" not in pull_request_template
 
     quality_requirements = (REPO_ROOT / "requirements-quality.txt").read_text(
         encoding="ascii"

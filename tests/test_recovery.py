@@ -90,6 +90,186 @@ def test_recover_fails_closed_on_owned_path_drift(tmp_path):
     assert list(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
 
 
+def test_deploy_recovery_rejects_non_string_phase_without_traceback(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "invalid-phase")
+    _prepare_journals([codex_dir])
+    journal_dir = next(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+    journal = journal_dir / codex_instruct.JOURNAL_FILENAME
+    data = json.loads(journal.read_text(encoding="utf-8"))
+    data["phase"] = {}
+    journal.write_text(json.dumps(data), encoding="utf-8")
+
+    recovered = _run(
+        "--codex-dir",
+        codex_dir,
+        "--recover",
+        "--yes",
+        "--lang",
+        "en",
+    )
+
+    assert recovered.returncode == 1
+    output = recovered.stdout + recovered.stderr
+    assert "Traceback" not in output
+    assert not any("\u3400" <= character <= "\u9fff" for character in output)
+
+
+def test_deploy_recovery_rejects_tampered_base_with_valid_pending(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "tampered-base-valid-pending")
+    _prepare_journals([codex_dir])
+    journal_dir = next(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+    journal = journal_dir / codex_instruct.JOURNAL_FILENAME
+    pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
+    valid_bytes = journal.read_bytes()
+    pending.write_bytes(valid_bytes)
+    data = json.loads(valid_bytes)
+    data["directories"] = []
+    journal.write_text(json.dumps(data), encoding="utf-8")
+    base_bytes = journal.read_bytes()
+    pending_bytes = pending.read_bytes()
+
+    recovered = _run(
+        "--codex-dir",
+        codex_dir,
+        "--recover",
+        "--yes",
+        "--lang",
+        "en",
+    )
+
+    output = recovered.stdout + recovered.stderr
+    assert recovered.returncode == 1
+    assert "Traceback" not in output
+    assert not any("\u3400" <= character <= "\u9fff" for character in output)
+    assert journal.read_bytes() == base_bytes
+    assert pending.read_bytes() == pending_bytes
+
+
+def test_deploy_keeps_journal_absent_md_precondition_after_publication(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = _make_codex_dir(tmp_path, "late-md-fail-closed")
+    prompt = codex_dir / codex_instruct.DEFAULT_MD_FILENAME
+    late_user_bytes = b"late-user-md\x00\xff\r\n"
+    monkeypatch.setattr(codex_instruct, "find_codex_dirs", lambda: [str(codex_dir)])
+    original_update = codex_instruct._update_deployment_journals
+    original_write = codex_instruct.atomic_write_text
+    md_write_intents = []
+    late_created = False
+
+    def publish_phase_then_create_late_md(states, phase, manifest_sha256=None):
+        nonlocal late_created
+        original_update(states, phase, manifest_sha256)
+        if phase == "files-intent" and not late_created:
+            late_created = True
+            prompt.write_bytes(late_user_bytes)
+
+    def record_md_write_intent(path, content, *args, **kwargs):
+        if Path(path) == prompt:
+            md_write_intents.append(
+                (
+                    kwargs.get("expected_fingerprint"),
+                    kwargs.get("require_absent", False),
+                )
+            )
+        return original_write(path, content, *args, **kwargs)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_update_deployment_journals",
+        publish_phase_then_create_late_md,
+    )
+    monkeypatch.setattr(codex_instruct, "atomic_write_text", record_md_write_intent)
+    args = types.SimpleNamespace(
+        file=None,
+        name="gpt-unrestricted",
+        dry_run=False,
+        yes=True,
+        skip_hooks_isolation=False,
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        codex_instruct.deploy(args)
+
+    assert caught.value.code == 1
+    assert md_write_intents == [(None, True)]
+    assert prompt.read_bytes() == late_user_bytes
+    assert not list(codex_dir.glob(f"{prompt.name}.bak_*"))
+    assert not codex_instruct._hooks_transaction_residue(codex_dir)
+    assert (codex_dir / "config.toml").read_bytes() == b'model = "gpt-5.6"\n'
+
+
+def test_recover_restores_late_md_claimed_during_hard_interruption(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "late-md-hard-interrupt")
+    prompt = codex_dir / codex_instruct.DEFAULT_MD_FILENAME
+    late_user_bytes = b"late-user-md\x00\xff\r\n"
+    child = tmp_path / "kill_after_late_md_publish.py"
+    child.write_text(
+        f"""
+import importlib.util, os, sys, uuid
+from pathlib import Path
+module_path = Path({str(MODULE_PATH)!r})
+codex_dir = Path({str(codex_dir)!r})
+spec = importlib.util.spec_from_file_location('late_md_child', module_path)
+m = importlib.util.module_from_spec(spec); sys.modules[spec.name] = m; spec.loader.exec_module(m)
+deployment_id = uuid.uuid4().hex
+plan = m.inspect_directory(codex_dir)
+state = m.DeploymentState(codex_dir, deployment_id=deployment_id)
+m._ACTIVE_DEPLOYMENT_TRANSACTION_ID = deployment_id
+m._ACTIVE_DEPLOYMENT_STATES = [state]
+m._create_deployment_journals(
+    [state], [plan], m.DEFAULT_MD_FILENAME, m.BUILTIN_GPT_UNRESTRICTED_MD, False
+)
+m._update_deployment_journals([state], 'files-intent')
+prompt = codex_dir / m.DEFAULT_MD_FILENAME
+prompt.write_bytes({late_user_bytes!r})
+late_fingerprint = m._fingerprint_regular_file(prompt)
+m.backup_file(prompt, '20000101_000000', expected_fingerprint=late_fingerprint)
+original_rename = m._atomic_rename_no_replace
+def kill_after_publish(source, destination):
+    published = original_rename(source, destination)
+    if published and Path(destination) == prompt and Path(source).name == 'prepared':
+        os._exit(86)
+    return published
+m._atomic_rename_no_replace = kill_after_publish
+m.atomic_write_text(
+    prompt,
+    m.BUILTIN_GPT_UNRESTRICTED_MD,
+    expected_fingerprint=late_fingerprint,
+)
+raise AssertionError('hard-interruption checkpoint was not reached')
+""",
+        encoding="utf-8",
+    )
+
+    interrupted = subprocess.run(
+        [sys.executable, str(child)],
+        text=True,
+        capture_output=True,
+    )
+
+    assert interrupted.returncode == 86, interrupted.stdout + interrupted.stderr
+    assert prompt.read_bytes() == codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode(
+        "utf-8"
+    )
+    backups = list(codex_dir.glob(f"{prompt.name}.bak_*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == late_user_bytes
+
+    preview = _run("--codex-dir", codex_dir, "--recover")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert prompt.read_bytes() == late_user_bytes
+    assert (codex_dir / "config.toml").read_bytes() == b'model = "gpt-5.6"\n'
+    assert not codex_instruct._hooks_transaction_residue(codex_dir)
+
+    repeated = _run("--codex-dir", codex_dir, "--recover", "--yes")
+    assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+    assert prompt.read_bytes() == late_user_bytes
+
+
 def test_recover_preserves_unknown_concurrent_residue(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "unknown-residue")
     _prepare_journals([codex_dir])
@@ -332,6 +512,107 @@ m.deploy(types.SimpleNamespace(file=None, name='gpt-unrestricted', dry_run=False
     assert not remaining[0].exists()
     assert (first / codex_instruct.MANIFEST_FILENAME).is_file()
     assert (second / codex_instruct.MANIFEST_FILENAME).is_file()
+
+
+@pytest.mark.parametrize("race", ["move", "replace"])
+def test_deploy_terminal_cleanup_finalizes_marker_before_journal_mutation(
+    tmp_path,
+    race,
+):
+    first = _make_codex_dir(tmp_path, f"deploy-terminal-{race}-first")
+    second = _make_codex_dir(tmp_path, f"deploy-terminal-{race}-second")
+    marker_source = f"""
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+m.find_codex_dirs = lambda: [{str(first)!r}, {str(second)!r}]
+real = m._atomic_rename_no_replace
+
+def wrapped(source, destination):
+    result = real(source, destination)
+    if (
+        result
+        and Path(source).name == m.INTENT_FILENAME
+        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
+    ):
+        os._exit(86)
+    return result
+
+m._atomic_rename_no_replace = wrapped
+m.deploy(types.SimpleNamespace(
+    file=None,
+    name="gpt-unrestricted",
+    dry_run=False,
+    yes=True,
+    skip_hooks_isolation=False,
+))
+"""
+    interrupted = tmp_path / f"interrupt-deploy-terminal-{race}.py"
+    interrupted.write_text(marker_source, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(interrupted)],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 86, result.stdout + result.stderr
+    second_journal = next(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+
+    race_source = f"""
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+real = m._cleanup_terminal_journals
+race = {race!r}
+
+def wrapped(journals, phase, yes, retained_cleanup_markers):
+    marker = retained_cleanup_markers[0][0]
+    if race == "move":
+        marker.rename(marker.with_name("moved-retained-marker"))
+    else:
+        marker.unlink()
+        marker.write_bytes(b"replacement cleanup marker\\n")
+    return real(journals, phase, yes, retained_cleanup_markers)
+
+m._cleanup_terminal_journals = wrapped
+m.recover_deployment([{str(first)!r}], True)
+"""
+    raced = tmp_path / f"race-deploy-terminal-{race}.py"
+    raced.write_text(race_source, encoding="utf-8")
+    raced_result = subprocess.run(
+        [sys.executable, str(raced)],
+        text=True,
+        capture_output=True,
+    )
+
+    assert raced_result.returncode == 1, raced_result.stdout + raced_result.stderr
+    assert second_journal.exists()
+    markers = codex_instruct._deployment_cleanup_markers(first)
+    assert markers
+    if race == "move":
+        assert not (first / "moved-retained-marker").exists()
+        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+        assert not codex_instruct._hooks_transaction_residue(first)
+        assert not codex_instruct._hooks_transaction_residue(second)
+    else:
+        assert any(
+            path.read_bytes() == b"replacement cleanup marker\n"
+            for path in markers
+        )
+        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        assert resumed.returncode == 1
+        assert second_journal.exists()
 
 
 def test_committed_terminal_cleanup_discovers_all_participant_journals(tmp_path):
@@ -899,6 +1180,52 @@ def test_default_deploy_rejects_hooks_created_during_final_sweep(
     assert not (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
 
 
+def test_deploy_rejects_disabled_created_after_journal_publication(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = _make_codex_dir(tmp_path, "late-disabled-before-isolation")
+    hooks = codex_dir / "hooks.json"
+    disabled = codex_dir / "hooks.json.disabled"
+    active_bytes = b"active-hooks\x00\xff\n"
+    late_disabled_bytes = b"late-disabled\x00\xfe\n"
+    hooks.write_bytes(active_bytes)
+    monkeypatch.setattr(codex_instruct, "find_codex_dirs", lambda: [str(codex_dir)])
+    original_update = codex_instruct._update_deployment_journals
+    late_created = False
+
+    def publish_phase_then_create_disabled(states, phase, manifest_sha256=None):
+        nonlocal late_created
+        original_update(states, phase, manifest_sha256)
+        if phase == "hooks-intent" and not late_created:
+            late_created = True
+            disabled.write_bytes(late_disabled_bytes)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_update_deployment_journals",
+        publish_phase_then_create_disabled,
+    )
+    args = types.SimpleNamespace(
+        file=None,
+        name="gpt-unrestricted",
+        dry_run=False,
+        yes=True,
+        skip_hooks_isolation=False,
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        codex_instruct.deploy(args)
+
+    assert caught.value.code == 1
+    assert hooks.read_bytes() == active_bytes
+    assert disabled.read_bytes() == late_disabled_bytes
+    assert not (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+    assert not list(codex_dir.glob("hooks.json.bak_*"))
+    assert not list(codex_dir.glob("hooks.json.disabled.bak_*"))
+    assert not codex_instruct._hooks_transaction_residue(codex_dir)
+
+
 def test_recover_final_sweep_detects_change_after_recovered_phase(
     tmp_path,
     monkeypatch,
@@ -941,7 +1268,7 @@ def test_status_and_skip_plan_do_not_open_hooks(tmp_path, monkeypatch, capsys):
     original = codex_instruct._fingerprint_regular_file
 
     def reject_hooks(path):
-        if Path(path).name.startswith("hooks.json"):
+        if Path(path).name in {"hooks.json", "hooks.json.disabled"}:
             raise AssertionError("hooks content was opened")
         return original(path)
 
@@ -950,6 +1277,73 @@ def test_status_and_skip_plan_do_not_open_hooks(tmp_path, monkeypatch, capsys):
     assert not plan.blockers
     codex_instruct.show_status([str(codex_dir)])
     assert "hooks.json" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("manifest_key", ["backup", "previous_disabled_backup"])
+@pytest.mark.parametrize("damage", ["missing", "abnormal", "drifted"])
+def test_status_blocks_when_manifest_hooks_recovery_evidence_is_unhealthy(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    manifest_key,
+    damage,
+):
+    codex_dir = _make_codex_dir(
+        tmp_path,
+        f"status-hooks-evidence-{manifest_key}-{damage}",
+    )
+    active_bytes = b"opaque-active-hooks\x00\xff\n"
+    previous_disabled_bytes = b"previous-disabled-hooks\x00\xfe\n"
+    (codex_dir / "hooks.json").write_bytes(active_bytes)
+    (codex_dir / "hooks.json.disabled").write_bytes(previous_disabled_bytes)
+    deployed = _run("--codex-dir", codex_dir, "--yes")
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    manifest = json.loads(
+        (codex_dir / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    evidence = codex_dir / manifest["hooks"][manifest_key]
+    assert evidence.is_file()
+
+    restored = _run("--codex-dir", codex_dir, "--restore-hooks")
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert (codex_dir / "hooks.json").read_bytes() == active_bytes
+    assert not (codex_dir / "hooks.json.disabled").exists()
+
+    if damage == "missing":
+        evidence.unlink()
+    elif damage == "abnormal":
+        evidence.unlink()
+        evidence.mkdir()
+    else:
+        evidence.write_bytes(b"drifted recovery evidence\n")
+
+    original_fingerprint = codex_instruct._fingerprint_regular_file
+
+    def reject_live_hooks(path):
+        if Path(path).name in {"hooks.json", "hooks.json.disabled"}:
+            raise AssertionError("status opened live hooks content")
+        return original_fingerprint(path)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_fingerprint_regular_file",
+        reject_live_hooks,
+    )
+    with pytest.raises(SystemExit) as caught:
+        codex_instruct.show_status([str(codex_dir)])
+
+    assert caught.value.code == 1
+    direct_output = capsys.readouterr().out
+    assert "ready" not in direct_output.lower()
+    assert "blocked" in direct_output.lower()
+    assert str(evidence) in direct_output
+
+    status = _run("--codex-dir", codex_dir, "--status", "--lang", "zh-CN")
+    assert status.returncode == 1
+    assert "ready" not in status.stdout.lower()
+    assert "blocked" in status.stdout.lower()
+    assert str(evidence) in status.stdout
+    assert (codex_dir / "hooks.json").read_bytes() == active_bytes
 
 
 def test_skip_deployment_never_opens_or_hashes_hooks(tmp_path, monkeypatch):

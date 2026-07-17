@@ -21,4 +21,4 @@ patch = ["subprocess"]
 include = ["codex-instruct.py", "scripts/run_prompt_bank_regression.py"]
 show_missing = true
 skip_covered = false
-fail_under = 80
+fail_under = 81

@@ -198,6 +198,103 @@ def _git_output(repo_root: Path, arguments: Sequence[str], failure: str) -> str:
     return value
 
 
+def _git_lines(repo_root: Path, arguments: Sequence[str], failure: str) -> List[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root)] + list(arguments),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise ReleaseError("{}: {}".format(failure, exc)) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "git failed"
+        raise ReleaseError("{}: {}".format(failure, detail))
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _remote_release_tag_commit(repo_root: Path, remote: str, tag: str) -> Optional[str]:
+    tag_ref = "refs/tags/{}".format(tag)
+    peeled_ref = "{}^{{}}".format(tag_ref)
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "ls-remote",
+                "--tags",
+                remote,
+                tag_ref,
+                peeled_ref,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ReleaseError(
+            "cannot verify remote release tags from {}: timed out".format(remote)
+        ) from exc
+    except OSError as exc:
+        raise ReleaseError(
+            "cannot verify remote release tags from {}: {}".format(remote, exc)
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "git failed"
+        raise ReleaseError(
+            "cannot verify remote release tags from {}: {}".format(remote, detail)
+        )
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    references = {}
+    for line in lines:
+        parts = line.split("\t", 1)
+        if len(parts) != 2 or not FULL_COMMIT_PATTERN.fullmatch(parts[0]):
+            raise ReleaseError(
+                "remote {} returned malformed release tag metadata".format(remote)
+            )
+        object_id, reference = parts
+        if reference not in {tag_ref, peeled_ref}:
+            continue
+        previous = references.get(reference)
+        if previous is not None and previous.lower() != object_id.lower():
+            raise ReleaseError(
+                "remote {} returned conflicting release tag metadata".format(remote)
+            )
+        references[reference] = object_id
+    if not references:
+        return None
+    if tag_ref not in references:
+        raise ReleaseError(
+            "remote {} returned a peeled release tag without its tag object".format(remote)
+        )
+    return references.get(peeled_ref, references[tag_ref])
+
+
+def _require_complete_git_checkout(repo_root: Path) -> None:
+    _git_output(
+        repo_root,
+        ["rev-parse", "--verify", "HEAD^{commit}"],
+        "cannot resolve repository HEAD",
+    )
+    shallow = _git_output(
+        repo_root,
+        ["rev-parse", "--is-shallow-repository"],
+        "cannot determine whether the repository is shallow",
+    )
+    if shallow not in {"true", "false"}:
+        raise ReleaseError("Git returned an invalid shallow-repository state")
+    if shallow == "true":
+        raise ReleaseError(
+            "release builds require a complete Git checkout with all tags"
+        )
+
+
 def _resolve_source_commit(
     repo_root: Path,
     tag: str,
@@ -246,6 +343,7 @@ def _resolve_source_commit(
             raise ReleaseError("cannot check release tag: {}".format(exc)) from exc
         if tag_check.returncode not in (0, 1):
             raise ReleaseError("cannot check whether release tag already exists")
+        local_tag_commit = None
         if tag_check.returncode == 0:
             tagged_commit = _git_output(
                 repo_root,
@@ -258,6 +356,35 @@ def _resolve_source_commit(
                         tag, tagged_commit, expected
                     )
                 )
+            local_tag_commit = tagged_commit
+        remotes = _git_lines(
+            repo_root,
+            ["remote"],
+            "cannot enumerate repository remotes",
+        )
+        remote_tag_commits = []
+        for remote in remotes:
+            remote_commit = _remote_release_tag_commit(repo_root, remote, tag)
+            if remote_commit is None:
+                continue
+            remote_tag_commits.append((remote, remote_commit))
+            if remote_commit.lower() != expected.lower():
+                raise ReleaseError(
+                    "remote release tag {} on {} points to {}, not candidate {}".format(
+                        tag, remote, remote_commit, expected
+                    )
+                )
+            if (
+                local_tag_commit is not None
+                and remote_commit.lower() != local_tag_commit.lower()
+            ):
+                raise ReleaseError(
+                    "local and remote release tags disagree about {}".format(tag)
+                )
+        if len({commit.lower() for _remote, commit in remote_tag_commits}) > 1:
+            raise ReleaseError(
+                "repository remotes disagree about release tag {}".format(tag)
+            )
         source_label = "candidate commit {}".format(source_commit)
 
     if not FULL_COMMIT_PATTERN.fullmatch(expected):
@@ -494,6 +621,7 @@ def build_release(
     repo_root = repo_root.resolve()
     output_dir = Path(os.path.abspath(str(output_dir)))
     version, sources = _read_and_validate_sources(repo_root, tag)
+    _require_complete_git_checkout(repo_root)
     validated_source = _resolve_source_commit(repo_root, tag, source_commit)
     _validate_output_location(repo_root, output_dir)
     if require_clean:
