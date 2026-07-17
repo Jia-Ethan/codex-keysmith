@@ -358,6 +358,35 @@ def test_uninstall_recovery_cleans_partial_initial_intent_publication(
     assert "No interrupted" in repeated.stdout
 
 
+@pytest.mark.parametrize("checkpoint", ["first-intent", "second-intent"])
+def test_initializing_uninstall_recovery_rejects_detached_participant_evidence(
+    tmp_path,
+    checkpoint,
+):
+    first = _make_rich_deployment(tmp_path, f"detached-{checkpoint}-first")
+    second = _make_rich_deployment(tmp_path, f"detached-{checkpoint}-second")
+    interrupted = _interrupt_uninstall_initialization(
+        tmp_path,
+        [first, second],
+        checkpoint,
+    )
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+
+    second_journal = next(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+    detached = tmp_path / f"detached-evidence-{checkpoint}"
+    second_journal.rename(detached)
+    first_evidence = _snapshot_tree(first)
+    second_evidence = _snapshot_tree(second)
+    detached_evidence = _snapshot_tree(detached)
+
+    recovered = _run("--codex-dir", first, "--recover", "--yes")
+
+    assert recovered.returncode == 1
+    assert _snapshot_tree(first) == first_evidence
+    assert _snapshot_tree(second) == second_evidence
+    assert _snapshot_tree(detached) == detached_evidence
+
+
 @pytest.mark.parametrize("pending_valid", [True, False])
 def test_uninstall_recovery_cleans_partial_initializing_snapshots_and_pending(
     tmp_path,
@@ -451,6 +480,63 @@ m.recover_deployment([{str(first)!r}], True)
 
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
+    for codex_dir in (first, second):
+        assert _snapshot_tree(codex_dir) == before[codex_dir]
+        _assert_no_transaction_artifacts(codex_dir)
+
+
+def test_uninstall_initializing_cleanup_retains_anchor_after_participant_removal(
+    tmp_path,
+):
+    first = _make_rich_deployment(tmp_path, "init-retained-anchor-first")
+    second = _make_rich_deployment(tmp_path, "init-retained-anchor-second")
+    before = {path: _snapshot_tree(path) for path in (first, second)}
+    interrupted = _interrupt_uninstall_initialization(
+        tmp_path,
+        [first, second],
+        "first-journal",
+    )
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+
+    source = f"""
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+real = m._safe_remove_owned_directory
+second = Path({str(second)!r}).resolve()
+
+def wrapped(path, *args, **kwargs):
+    result = real(path, *args, **kwargs)
+    if result is not None and Path(path).parent.resolve() == second:
+        os._exit({HARD_EXIT})
+    return result
+
+m._safe_remove_owned_directory = wrapped
+m.recover_deployment([{str(first)!r}], True)
+"""
+    cleanup_interrupted = _write_child(
+        tmp_path,
+        "interrupt-init-after-participant-removal.py",
+        source,
+    )
+    assert cleanup_interrupted.returncode == HARD_EXIT
+    assert list(
+        second.glob(
+            f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
+            f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
+        )
+    )
+    assert _journal_dirs(first)
+
+    recovered = _run("--codex-dir", first, "--recover", "--yes")
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     for codex_dir in (first, second):
         assert _snapshot_tree(codex_dir) == before[codex_dir]
         _assert_no_transaction_artifacts(codex_dir)

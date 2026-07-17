@@ -5465,7 +5465,7 @@ def _cleanup_initializing_uninstall(
     if not yes:
         _print("[预览] 未修改任何文件；确认清理初始化 journal 请添加 --yes。")
         return
-    _remove_retained_cleanup_markers(retained_cleanup_markers)
+    cleanup_markers = list(retained_cleanup_markers)
 
     # Empty participants are claimed first; intent-only and complete journals
     # remain as durable anchors until the end of cross-directory cleanup.
@@ -5492,19 +5492,22 @@ def _cleanup_initializing_uninstall(
             expected_members = {
                 INTENT_FILENAME: _portable_fingerprint(intent_fingerprint)
             }
-        _safe_remove_owned_directory(
+        marker = _safe_remove_owned_directory(
             journal_dir,
             identity,
             expected_members,
             require_exact_members=True,
+            retain_cleanup_marker=True,
         )
+        if marker is not None:
+            cleanup_markers.append(marker)
         _fsync_directory(journal_dir.parent)
 
     for journal_dir, data in journals:
         if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
             _atomic_write_private_json(journal_dir / JOURNAL_FILENAME, data)
         owner = data["owner_directory"]
-        _safe_remove_owned_directory(
+        marker = _safe_remove_owned_directory(
             journal_dir,
             _identity_from_portable(
                 data["directories"][owner]["journal_identity"],
@@ -5517,8 +5520,20 @@ def _cleanup_initializing_uninstall(
                 require_all_snapshots=False,
             ),
             require_exact_members=True,
+            retain_cleanup_marker=True,
         )
+        if marker is not None:
+            cleanup_markers.append(marker)
         _fsync_directory(journal_dir.parent)
+    participant_order = {
+        directory: index for index, directory in enumerate(reference["participants"])
+    }
+    # A hard exit while removing markers may leave only a participant suffix;
+    # cleanup preflight can then distinguish that state from detached evidence.
+    cleanup_markers.sort(
+        key=lambda item: participant_order[str(item[0].parent.resolve())]
+    )
+    _remove_retained_cleanup_markers(cleanup_markers)
     _print(f"[完成] 已清理卸载事务 {transaction_id} 的初始化残留。")
 
 
@@ -5639,9 +5654,16 @@ def _recover_uninstall(codex_dirs: List[str], yes: bool) -> None:
             retained_cleanup_markers,
         )
         return
-    if reference["phase"] == "initializing" and all(
+    initializing = reference["phase"] == "initializing" and all(
         data["phase"] == "initializing" for _path, data in verified
-    ):
+    )
+    if initializing and missing and not cleanup_found:
+        raise HooksConflict(
+            "初始化卸载事务缺少参与目录 journal，"
+            "且没有可验证的 cleanup 证据: "
+            + ", ".join(str(path) for path in missing)
+        )
+    if initializing:
         _cleanup_initializing_uninstall(
             reference,
             verified,
