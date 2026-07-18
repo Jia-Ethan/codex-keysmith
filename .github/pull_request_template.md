@@ -18,11 +18,11 @@
 ## 验证 / Verification
 
 - [ ] `python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py`
-- [ ] `python3 -m pytest -p no:cacheprovider -q tests`（当前完整测试集 300+ / current full suite 300+）
+- [ ] `python3 -m pytest -p no:cacheprovider -q tests`（当前完整测试集 400+ / current full suite 400+）
 - [ ] `python3 -m ruff check codex-instruct.py tests scripts`
 - [ ] 合并后的 branch coverage ≥ 81% / combined branch coverage is at least 81%
 - [ ] `python3 scripts/run_prompt_bank_regression.py --validate-only`
-- [ ] `python3 scripts/build_release.py v0.1.0 --source-commit "$(git rev-parse --verify 'HEAD^{commit}')" --output-dir dist-candidate`，且 ZIP/tar.gz/独立脚本/`SHA256SUMS` 校验通过，或已说明不适用 / full-commit candidate assets verified or marked not applicable
+- [ ] `RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"; SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"; python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate`，且 ZIP/tar.gz/独立脚本/`SHA256SUMS` 校验通过，或已说明不适用 / full-commit candidate assets verified or marked not applicable
 - [ ] `git diff --check`
 - [ ] 已按需运行临时目录 status / dry-run / deploy / recover / restore-hooks / uninstall 测试
 

@@ -11,8 +11,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.1.0"
-VERSION = "0.1.0"
+TAG = "v0.1.1"
+VERSION = "0.1.1"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "LICENSE",
@@ -54,9 +54,13 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
         if relative_path == "VERSION":
             data = (VERSION + "\n").encode("ascii")
         elif relative_path == "codex-instruct.py":
-            data = b'#!/usr/bin/env python3\n__version__ = "0.1.0"\n'
+            data = ('#!/usr/bin/env python3\n__version__ = "{}"\n'.format(VERSION)).encode(
+                "ascii"
+            )
         elif relative_path == "CHANGELOG.md":
-            data = b"# Changelog\n\n## [0.1.0] - 2026-07-16\n\n- Release.\n"
+            data = (
+                "# Changelog\n\n## [{}] - 2026-07-18\n\n- Release.\n".format(VERSION)
+            ).encode("ascii")
         elif relative_path == "LICENSE":
             data = (REPO_ROOT / "LICENSE").read_bytes()
         else:
@@ -89,6 +93,32 @@ def _asset_hashes(output_dir):
         for path in sorted(output_dir.iterdir())
         if path.is_file()
     }
+
+
+def test_repository_candidate_version_metadata_is_consistent():
+    version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
+    script = (REPO_ROOT / "codex-instruct.py").read_text(encoding="utf-8")
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert version == VERSION
+    assert '__version__ = "{}"'.format(VERSION) in script
+    assert "## [{}] - 2026-07-18".format(VERSION) in changelog
+    assert "v0.1.1 local candidate" in readme
+    assert "releases/tag/v0.1.1" not in readme
+    chinese_candidate = readme.split("### 本地 v0.1.1 候选版", 1)[1].split(
+        "\n## English\n",
+        1,
+    )[0]
+    english_candidate = readme.split("### Local v0.1.1 candidate", 1)[1]
+    assert "codex-instruct-v0.1.0.py" in readme.split(
+        "### 本地 v0.1.1 候选版",
+        1,
+    )[0]
+    assert "codex-instruct-v0.1.0.py" not in chinese_candidate
+    assert "codex-instruct-v0.1.0.py" not in english_candidate
+    assert "python3 codex-instruct.py --codex-dir" in chinese_candidate
+    assert "python3 codex-instruct.py --codex-dir" in english_candidate
 
 
 def test_release_build_is_reproducible_and_contains_required_files(
@@ -213,6 +243,31 @@ def test_builder_rejects_dirty_repository(release_builder, tmp_path):
 
     with pytest.raises(release_builder.ReleaseError, match="repository is dirty"):
         release_builder.build_release(TAG, repo, tmp_path / "assets")
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_candidate_build_rejects_index_flag_hidden_source_drift(
+    release_builder,
+    tmp_path,
+    index_flag,
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
+    candidate = _head_commit(repo)
+    readme = repo / "README.md"
+    readme.write_bytes(readme.read_bytes() + b"hidden working-tree drift\n")
+    _run(["git", "update-index", index_flag, "README.md"], repo)
+    assert _run(["git", "status", "--porcelain"], repo).stdout == ""
+
+    with pytest.raises(
+        release_builder.ReleaseError,
+        match="differs from validated source commit: README.md",
+    ):
+        release_builder.build_release(
+            TAG,
+            repo,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
 
 
 def test_formal_build_requires_exact_tag_at_head(release_builder, tmp_path):
@@ -601,6 +656,11 @@ def test_ci_uses_full_tag_checkout_and_only_claims_supported_platforms():
     assert "fail_under = 81" in pyproject
     assert "branch coverage ≥ 81%" in pull_request_template
     assert "branch coverage ≥ 80%" not in pull_request_template
+    assert "scripts/build_release.py v0.1.0" not in pull_request_template
+    assert 'RELEASE_TAG="v$(tr -d' in pull_request_template
+    assert 'SOURCE_COMMIT="$(git rev-parse --verify \'HEAD^{commit}\')"' in (
+        pull_request_template
+    )
 
     quality_requirements = (REPO_ROOT / "requirements-quality.txt").read_text(
         encoding="ascii"

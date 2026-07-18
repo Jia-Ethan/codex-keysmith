@@ -2,11 +2,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import selectors
 import shutil
 import signal
 import subprocess
 import sys
-import time
 import types
 import uuid
 from pathlib import Path
@@ -1432,33 +1432,90 @@ def test_reserved_legacy_name_and_unicode_path_translation(tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL coverage")
 def test_sigkill_deployment_is_recoverable_from_durable_journal(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "sigkill")
-    hooks_bytes = b"x" * (32 * 1024 * 1024)
+    hooks_bytes = b"checkpointed active hooks\n"
     (codex_dir / "hooks.json").write_bytes(hooks_bytes)
     original_config = (codex_dir / "config.toml").read_bytes()
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(MODULE_PATH),
-            "--codex-dir",
-            str(codex_dir),
-            "--yes",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    checkpoint_read, checkpoint_write = os.pipe()
+    process = None
+    child = tmp_path / "sigkill-checkpoint.py"
+    child.write_text(
+        f"""
+import importlib.util
+import os
+import signal
+import sys
+import types
+from pathlib import Path
+
+module_path = Path({str(MODULE_PATH)!r})
+codex_dir = Path({str(codex_dir)!r})
+checkpoint_fd = {checkpoint_write}
+spec = importlib.util.spec_from_file_location("sigkill_child", module_path)
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+m.find_codex_dirs = lambda: [str(codex_dir)]
+real_update = m._update_deployment_journals
+
+def update_then_pause(states, phase, manifest_sha256=None):
+    real_update(states, phase, manifest_sha256)
+    if phase == "legacy-intent":
+        os.write(checkpoint_fd, b"1")
+        signal.pause()
+
+m._update_deployment_journals = update_then_pause
+m.deploy(types.SimpleNamespace(
+    file=None,
+    name="gpt-unrestricted",
+    dry_run=False,
+    yes=True,
+    skip_hooks_isolation=False,
+))
+raise AssertionError("SIGKILL checkpoint was not reached")
+""",
+        encoding="utf-8",
     )
-    deadline = time.time() + 10
-    killed = False
-    while time.time() < deadline and process.poll() is None:
-        journals = list(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-        if journals and not (codex_dir / "hooks.json").exists():
-            os.kill(process.pid, signal.SIGKILL)
-            killed = True
-            break
-        time.sleep(0.001)
-    if not killed:
-        process.kill()
-    process.wait(timeout=5)
-    assert killed, "deployment completed before the SIGKILL observation window"
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(child)],
+            pass_fds=(checkpoint_write,),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        os.close(checkpoint_write)
+        checkpoint_write = None
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(checkpoint_read, selectors.EVENT_READ)
+            if not selector.select(timeout=10):
+                pytest.fail("SIGKILL deployment checkpoint timed out")
+            checkpoint = os.read(checkpoint_read, 1)
+        finally:
+            selector.close()
+        assert checkpoint == b"1"
+        assert list(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+        assert not (codex_dir / "hooks.json").exists()
+        os.kill(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=5)
+        returncode = process.returncode
+        process = None
+        assert returncode == -signal.SIGKILL, stdout + stderr
+    finally:
+        for descriptor in (checkpoint_read, checkpoint_write):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
 
     status = _run("--codex-dir", codex_dir, "--status")
     assert status.returncode == 1

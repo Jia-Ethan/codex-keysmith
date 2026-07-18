@@ -137,6 +137,48 @@ def _read_and_validate_sources(repo_root: Path, tag: str) -> Tuple[str, Dict[str
     return _validate_version(tag, sources), sources
 
 
+def _validate_sources_match_commit(
+    repo_root: Path,
+    source_commit: str,
+    sources: Dict[str, bytes],
+) -> None:
+    for relative_path in ARCHIVE_FILES:
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "cat-file",
+                    "blob",
+                    "{}:{}".format(source_commit, relative_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise ReleaseError(
+                "cannot read validated source commit file {}: {}".format(
+                    relative_path,
+                    exc,
+                )
+            ) from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise ReleaseError(
+                "cannot read validated source commit file {}: {}".format(
+                    relative_path,
+                    detail or "git cat-file failed",
+                )
+            )
+        if result.stdout != sources[relative_path]:
+            raise ReleaseError(
+                "working-tree release file differs from validated source commit: {}".format(
+                    relative_path
+                )
+            )
+
+
 def _relative_output_path(repo_root: Path, output_dir: Path) -> Optional[Path]:
     try:
         return output_dir.relative_to(repo_root)
@@ -623,6 +665,7 @@ def build_release(
     version, sources = _read_and_validate_sources(repo_root, tag)
     _require_complete_git_checkout(repo_root)
     validated_source = _resolve_source_commit(repo_root, tag, source_commit)
+    _validate_sources_match_commit(repo_root, validated_source, sources)
     _validate_output_location(repo_root, output_dir)
     if require_clean:
         _require_clean_repository(repo_root, output_dir)
@@ -665,6 +708,7 @@ def build_release(
         final_source = _resolve_source_commit(repo_root, tag, source_commit)
         if final_source != validated_source:
             raise ReleaseError("release source commit changed during the build")
+        _validate_sources_match_commit(repo_root, final_source, final_sources)
         if require_clean:
             _require_clean_repository(repo_root, output_dir)
 
@@ -686,6 +730,11 @@ def build_release(
             )
             if published_source != validated_source:
                 raise ReleaseError("release source commit changed during publication")
+            _validate_sources_match_commit(
+                repo_root,
+                published_source,
+                published_sources,
+            )
             if require_clean:
                 _require_clean_repository(repo_root, output_dir)
         except (OSError, ReleaseError) as exc:

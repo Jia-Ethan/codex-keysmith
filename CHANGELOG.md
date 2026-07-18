@@ -4,10 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-18 (local candidate; not published)
+
 ### Changed
 
+- The bundled prompt is now the byte-for-byte behavior baseline already deployed in the local Codex configuration. `examples/gpt-unrestricted.md` and the embedded script content share SHA-256 `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`; deployment can take over that unmanaged prompt without changing its bytes.
+- The CLI version is `0.1.1`. This changelog entry describes a local candidate only: no `v0.1.1` tag, GitHub Release, or published asset URL is claimed. The signed `v0.1.0` tag and existing Release remain immutable historical artifacts.
 - Windows installation instructions and the non-blocking Windows CI matrix were withdrawn. Windows runtime is now explicitly unsupported until a dedicated filesystem/ACL port and blocking real-Windows deploy, restore, recover, uninstall, and hard-interruption evidence are available.
 - The supported-platform compatibility matrix now runs Python 3.9 and Python 3.14, and the combined branch-coverage gate is 81%.
+- Deployment dry-runs now disclose collision-aware absolute backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, recognized legacy prompt, and existing manifest.
 
 ### Fixed
 
@@ -15,6 +20,9 @@ All notable changes to this project are documented here. The format follows [Kee
 - Hook isolation now revalidates both active and disabled hook paths against the published plan. Manifests enforce consistent `disabled_before` and `previous_disabled_backup` fields, and `--status` separately reports structural health, deployability, and uninstall readiness while detecting missing required hook backups without reading active hook content.
 - Uninstall now publishes a durable multi-directory journal with immutable intent, before-state snapshots, phase and terminal state, exact residue ownership, re-enterable cleanup, reverse recovery, and tamper/drift rejection. Recovery covers intent-only and first-pending publication windows, validates every cleanup participant before mutation, and preserves cleanup anchors until remaining journal recovery succeeds. `--recover` dispatches interrupted deployment and uninstall transactions.
 - Release builds now reject shallow Git checkouts. Candidate CI fetches complete history and tags, binds VERSION and source commit to the checked-out commit, reconciles every configured remote tag non-interactively with a finite timeout, and refuses local shadow tags or any rebuild of an existing version from a different commit without moving or rewriting the signed `v0.1.0` tag.
+- Candidate release builds compare every archive input byte with the validated source commit, so `assume-unchanged` or `skip-worktree` index flags cannot hide working-tree drift.
+- Deployment recovery now accepts the durable `manifest-intent` phase that the deployer publishes before manifest creation. A hard interruption immediately after manifest publication can therefore restore the exact pre-deployment prompt, config, recognized legacy file, hooks absence, and manifest absence without widening residue ownership.
+- Concurrency regressions use pipe/barrier checkpoints and explicit subprocess interruption instead of timing sleeps.
 
 ## [0.1.0] - 2026-07-16
 

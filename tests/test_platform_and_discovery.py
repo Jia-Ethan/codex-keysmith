@@ -1,9 +1,9 @@
 import importlib.util
 import os
+import selectors
 import subprocess
 import sys
 import textwrap
-import time
 import types
 from pathlib import Path
 
@@ -194,8 +194,6 @@ def test_unwritable_directory_fails_before_deployment(tmp_path):
 
 def test_atomic_no_replace_has_one_winner_across_processes(tmp_path):
     destination = tmp_path / "winner"
-    start = tmp_path / "start"
-    ready_paths = [tmp_path / "ready-1", tmp_path / "ready-2"]
     result_paths = [tmp_path / "result-1", tmp_path / "result-2"]
     sources = [tmp_path / "source-1", tmp_path / "source-2"]
     for index, source in enumerate(sources, start=1):
@@ -205,20 +203,16 @@ def test_atomic_no_replace_has_one_winner_across_processes(tmp_path):
         """
         import importlib.util
         import sys
-        import time
         from pathlib import Path
 
-        module_path, source, destination, ready, start, result = map(Path, sys.argv[1:])
+        module_path, source, destination, result = map(Path, sys.argv[1:])
         spec = importlib.util.spec_from_file_location("keysmith_worker", module_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        ready.write_text("ready", encoding="utf-8")
-        deadline = time.monotonic() + 10
-        while not start.exists():
-            if time.monotonic() > deadline:
-                raise SystemExit("start timeout")
-            time.sleep(0.01)
+        print("ready", flush=True)
+        if sys.stdin.buffer.read(1) != b"g":
+            raise SystemExit("start barrier closed")
         try:
             moved = module._atomic_rename_no_replace(source, destination)
         except module.AtomicRenameUnavailable as exc:
@@ -236,24 +230,42 @@ def test_atomic_no_replace_has_one_winner_across_processes(tmp_path):
                 str(MODULE_PATH),
                 str(source),
                 str(destination),
-                str(ready),
-                str(start),
                 str(result),
             ],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        for source, ready, result in zip(sources, ready_paths, result_paths)
+        for source, result in zip(sources, result_paths)
     ]
-    deadline = time.monotonic() + 10
-    while not all(path.exists() for path in ready_paths):
-        if time.monotonic() > deadline:
+    selector = selectors.DefaultSelector()
+    for process in processes:
+        assert process.stdout is not None
+        selector.register(process.stdout, selectors.EVENT_READ, process)
+    ready = set()
+    while len(ready) != len(processes):
+        events = selector.select(timeout=10)
+        if not events:
             for process in processes:
                 process.kill()
             pytest.fail("workers did not become ready")
-        time.sleep(0.01)
-    start.write_text("go", encoding="utf-8")
+        for key, _mask in events:
+            process = key.data
+            line = key.fileobj.readline()
+            if line != "ready\n":
+                process.kill()
+                _stdout, stderr = process.communicate(timeout=5)
+                pytest.fail(f"worker readiness failed: {line!r}; stderr={stderr!r}")
+            ready.add(process)
+            selector.unregister(key.fileobj)
+    selector.close()
+    for process in processes:
+        assert process.stdin is not None
+        process.stdin.write("g")
+        process.stdin.flush()
+        process.stdin.close()
+        process.stdin = None
     outputs = [process.communicate(timeout=15) for process in processes]
     assert all(process.returncode == 0 for process in processes), outputs
 

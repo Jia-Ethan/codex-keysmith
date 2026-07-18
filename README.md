@@ -21,7 +21,8 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Supported platform tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-0099CC">
+  <img alt="Published release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-0099CC">
+  <img alt="Local candidate v0.1.1" src="https://img.shields.io/badge/local_candidate-v0.1.1-F59E0B">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -36,9 +37,9 @@
 > [!WARNING]
 > **Read the bundled prompt before using `--yes` / 使用 `--yes` 前先阅读内置提示词**
 >
-> The v0.1.0 bundled prompt directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction, chemistry/pharmacology/weapons guides, and treats injected memory, hook, and session blocks as environment metadata that cannot override its execution mode. This is a broad global behavior change, not an authorization or safety boundary. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `0ac8420d504f1a42db87be9f8555f740bf4c1e7b72beb0dde6a4b8d70b6cda07`. Inspect it or deploy your own `--file`. The normal preview plus one explicit `--yes` remains the confirmation flow; there is no second confirmation flag.
+> The v0.1.1 local candidate bundles the byte-identical prompt currently used as the Codex behavior baseline. It directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction plus chemistry/pharmacology/weapons guides, and gives its execution mode precedence over injected context blocks. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`. This candidate is not a published Release; the signed v0.1.0 assets retain their historical bundled prompt. Inspect the current source prompt or deploy your own `--file`.
 >
-> v0.1.0 内置提示词要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等安全请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并把注入的 memory、hook 和 session 区块视为不能覆盖其执行模式的环境元数据。这是范围很广的全局行为变更，不构成授权或安全边界。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`0ac8420d504f1a42db87be9f8555f740bf4c1e7b72beb0dde6a4b8d70b6cda07`。请先审阅，或通过 `--file` 部署自己的指令。确认流程仍是常规预览加一次显式 `--yes`，不增加第二个确认参数。
+> v0.1.1 本地候选版内置提示词与当前 Codex 行为基线逐字节一致。它要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并规定执行模式优先于注入的上下文区块。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`。该候选版尚未公开发布；已签名 v0.1.0 资产仍保留其历史内置提示词。请审阅当前源码提示词，或通过 `--file` 部署自己的指令。
 
 ## 复制给智能体安装
 
@@ -62,13 +63,13 @@
 
 ### 项目定位
 
-`codex-keysmith` v0.1.0 是零运行时依赖的单文件 Python CLI。它把内置或自定义 Markdown 部署到现有 Codex 配置目录，保守更新顶层 `model_instructions_file`，默认整体隔离活跃 hooks，并用带指纹的部署清单支持分层卸载。部署和卸载都会在首次修改前发布持久化事务日志，使 `SIGKILL` 等中断可以通过显式 `--recover` 检查和恢复。
+`codex-keysmith` v0.1.1 local candidate 是零运行时依赖的单文件 Python CLI。它把内置或自定义 Markdown 部署到现有 Codex 配置目录，保守更新顶层 `model_instructions_file`，默认整体隔离活跃 hooks，并用带指纹的部署清单支持分层卸载。部署和卸载都会在首次修改前发布持久化事务日志，使 `SIGKILL` 等中断可以通过显式 `--recover` 检查和恢复。
 
-> 本 README 的事务与 CI 行为描述以当前 `Unreleased` 源码为准。已签名 `v0.1.0` tag 和现有 Release 资产保持原样，不包含 `Unreleased` 修复；在新的固定 Release 发布前，不应把以下新行为当作已发布保证。
+> 本 README 的事务与 CI 行为描述以当前 v0.1.1 本地候选源码为准。该候选版没有 tag、GitHub Release 或公开资产 URL。已签名 `v0.1.0` tag 和现有 Release 资产保持原样，不包含候选版修复。
 
-默认不写入：常规部署、卸载和中断恢复在没有 `--yes` 时都只预览。`--status` 不会打开或解析 live active/disabled hooks 内容，但会读取并哈希 manifest 引用的 backup 恢复证据；`--skip-hooks-isolation` 计划完全不读取 hooks。status 会分别报告结构健康、部署就绪度和卸载就绪度，并在持久化日志或其他事务残留存在时 fail closed。durable deploy/uninstall journal 使用 `--recover`，无 journal 的异常残留保留人工核对。
+默认不写入：常规部署、卸载和中断恢复在没有 `--yes` 时都只预览。部署 dry-run 会按当前目录碰撞状态列出目标 Markdown、需要变更的 `config.toml`、active/disabled hooks、精确匹配的 legacy 与现有 manifest 的完整时间戳备份／归档路径；不需要备份的 config 会明确标记为无。`--status` 不会打开或解析 live active/disabled hooks 内容，但会读取并哈希 manifest 引用的 backup 恢复证据；`--skip-hooks-isolation` 计划完全不读取 hooks。status 会分别报告结构健康、部署就绪度和卸载就绪度，并在持久化日志或其他事务残留存在时 fail closed。durable deploy/uninstall journal 使用 `--recover`，无 journal 的异常残留保留人工核对。
 
-### 下载、校验与安装 v0.1.0
+### 下载、校验与安装已发布 v0.1.0
 
 固定来源：
 
@@ -98,6 +99,24 @@ python3 codex-instruct-v0.1.0.py --version
 
 Linux 也可用 `sha256sum --check SHA256SUMS`。校验通过后，可直接运行独立脚本，或解压 bundle 阅读完整 README、CHANGELOG、SECURITY、示例和事务文档。
 
+### 本地 v0.1.1 候选版
+
+当前仓库 `VERSION` 与 `codex-instruct.py --version` 均为 `0.1.1`，但这是本地候选版，不存在 `v0.1.1` tag、GitHub Release 或公开下载 URL。候选版只能从已提交、工作树干净且完整包含历史与 tags 的本地 checkout 验证和使用：
+
+```bash
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+python3 scripts/build_release.py "$RELEASE_TAG" \
+  --source-commit "$SOURCE_COMMIT" \
+  --output-dir dist-candidate
+(cd dist-candidate && shasum -a 256 -c SHA256SUMS)
+```
+
+候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。正式发布仍需另行批准 tag 与 Release，不能把本地候选资产描述为公开发布。
+
 Windows：当前不提供安装入口。现有 Windows 2025 CI 证据显示 deploy、restore、recover 和 uninstall 核心流程大量失败，且没有 Windows 硬中断恢复证据，因此 Windows 运行明确为 **unsupported**。不要在 Windows 用户配置上执行 Release 脚本。重新开放安装入口前，必须完成 Windows 专用文件原语和 ACL 适配，并由阻断式真实 Windows CI 证明完整流程全绿。
 
 ### 运行环境
@@ -113,9 +132,9 @@ Windows：当前不提供安装入口。现有 Windows 2025 CI 证据显示 depl
 建议始终显式指定单个目录，并固定 CLI 语言：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --version
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang zh-CN
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
 ```
 
 检查输出中的：
@@ -130,7 +149,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang zh-CN
 确认后执行：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
 部署完成后关闭旧任务并开启一个新的 Codex 会话。Codex 在会话启动时加载配置；已经运行的会话不会可靠地热更新指令或 hooks 状态。
@@ -140,7 +159,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang zh-CN
 ### 状态输出
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
 ```
 
 稳定字段示例：
@@ -208,7 +227,7 @@ flowchart TD
 ### 自定义指令与 CLI 语言
 
 ```bash
-python3 codex-instruct-v0.1.0.py \
+python3 codex-instruct.py \
   --file ./my-prompt.md \
   --name my-rules \
   --codex-dir ~/.codex \
@@ -228,7 +247,7 @@ python3 codex-instruct-v0.1.0.py \
 ### hooks 恢复
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
 ```
 
 恢复只处理 `hooks.json.disabled -> hooks.json`，不部署 MD、不编辑 config，也不读取 JSON：
@@ -243,13 +262,13 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang zh-
 `--recover` 处理 deploy 或 uninstall 在首次修改前创建的 `.codex-keysmith-transaction-<id>/journal.json` 和快照，并按不可变 `operation` 选择恢复算法。默认仅预览：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --recover --lang zh-CN
 ```
 
 确认后恢复整个多目录事务：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --recover --yes --lang zh-CN
 ```
 
 - 指定任一参与目录即可；日志会列出并验证同一 transaction ID 的全部参与目录；
@@ -267,13 +286,13 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang zh-
 先预览：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang zh-CN
 ```
 
 确认卸载一层：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
 ```
 
 卸载仅处理 `.codex-keysmith-manifest.json` 明确拥有的最新一层：
@@ -285,7 +304,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang z
 - 当前 manifest 原子归档为 `.codex-keysmith-manifest.json.uninstalled_<timestamp>`；
 - 如果该层覆盖了上一份 manifest，则恢复上一层。再次运行 uninstall 才会继续撤销下一层；
 - 所有参与目录的恢复结果完成 final sweep 并持久化 `committed` 后，才以可重入 cleanup 清理 journal 和快照；
-- 找不到 manifest 是成功 no-op。v0.1.0 之前没有 manifest 的部署不属于自动所有权范围，首次 v0.1.0 卸载只会回到其记录的部署前状态。
+- 找不到 manifest 是成功 no-op。v0.1.0 之前没有 manifest 的部署不属于自动所有权范围，当前候选版的首次卸载只会回到其记录的部署前状态。
 
 `--restore-hooks` 只恢复 hooks；`--uninstall` 按 manifest 恢复整层用户配置。二者用途不同。
 
@@ -399,15 +418,15 @@ else
   (cd dist-candidate && sha256sum --check SHA256SUMS)
 fi
 
-# formal Release: tag 必须存在、解析到 HEAD；不要传 --source-commit
-python3 scripts/build_release.py v0.1.0 --output-dir dist
-(cd dist && sha256sum --check SHA256SUMS)
+# formal Release 仅在另行批准并创建不可变 tag 后执行；候选阶段不要运行
+# python3 scripts/build_release.py "$RELEASE_TAG" --output-dir dist
+# (cd dist && sha256sum --check SHA256SUMS)
 git diff --check
 ```
 
 Release 构建要求完整、非 shallow 的 Git checkout 和全部 tags。候选构建只接受 40/64 位完整 commit object ID，要求 HEAD 精确匹配；如果 `v$VERSION` 已存在，它也必须指向该 commit，否则只允许验证 builder 明确拒绝，不能生成同版本资产。候选模式会以禁用交互提示和有限超时查询每个已配置 remote 的同名 tag；任一 remote 不可达、需要认证或与本地 tag/候选 commit 不一致时均 fail closed，因此候选构建需要可验证的 remote 访问。正式构建不接受候选替代语义：它要求对应 tag 存在并精确指向 HEAD。两种模式都要求干净工作树并拒绝覆盖不同内容的既有资产。GitHub Actions 会完整 checkout tags，并把 VERSION、checkout commit、既有 tag commit 和候选来源绑定到同一 commit。
 
-当前测试集为 300+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
+当前测试集为 400+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
 
 ### 当前限制
 
@@ -461,13 +480,13 @@ codex-keysmith/
 
 ### Positioning
 
-`codex-keysmith` v0.1.0 is a zero-runtime-dependency, single-file Python CLI. It deploys the bundled or a custom Markdown instruction into an existing Codex configuration directory, conservatively updates the top-level `model_instructions_file`, isolates active hooks by default, and records an ownership manifest for layered uninstall. Before their first mutation, both deployment and uninstall publish a durable transaction journal so an interruption such as `SIGKILL` can be inspected and restored through explicit `--recover`.
+`codex-keysmith` v0.1.1 local candidate is a zero-runtime-dependency, single-file Python CLI. It deploys the bundled or a custom Markdown instruction into an existing Codex configuration directory, conservatively updates the top-level `model_instructions_file`, isolates active hooks by default, and records an ownership manifest for layered uninstall. Before their first mutation, both deployment and uninstall publish a durable transaction journal so an interruption such as `SIGKILL` can be inspected and restored through explicit `--recover`.
 
-> Transaction and CI behavior in this README describes the current `Unreleased` source. The signed `v0.1.0` tag and existing Release assets remain unchanged and do not contain the `Unreleased` fixes; do not treat the new behavior as a published guarantee until a new fixed Release exists.
+> Transaction and CI behavior in this README describes the current v0.1.1 local candidate source. This candidate has no tag, GitHub Release, or public asset URL. The signed `v0.1.0` tag and existing Release assets remain unchanged and do not contain the candidate fixes.
 
-Normal deployment, uninstall, and interrupted-transaction recovery are previews unless `--yes` is present. `--status` does not open or parse live active/disabled hook content, but it reads and hashes manifest-referenced backup recovery evidence; a `--skip-hooks-isolation` plan does not read hooks at all. Status reports structural health, deploy readiness, and uninstall readiness separately, and fails closed when it discovers a durable journal or other transaction residue. Use `--recover` for durable deploy/uninstall journals; preserve journal-less abnormal residue for manual inspection.
+Normal deployment, uninstall, and interrupted-transaction recovery are previews unless `--yes` is present. Deployment dry-runs disclose collision-aware absolute timestamped backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, exactly recognized legacy prompt, and an existing manifest; an unchanged config explicitly reports no backup. `--status` does not open or parse live active/disabled hook content, but it reads and hashes manifest-referenced backup recovery evidence; a `--skip-hooks-isolation` plan does not read hooks at all. Status reports structural health, deploy readiness, and uninstall readiness separately, and fails closed when it discovers a durable journal or other transaction residue. Use `--recover` for durable deploy/uninstall journals; preserve journal-less abnormal residue for manual inspection.
 
-### Download, verify, and install v0.1.0
+### Download, verify, and install published v0.1.0
 
 Fixed sources:
 
@@ -497,6 +516,24 @@ python3 codex-instruct-v0.1.0.py --version
 
 Linux users may run `sha256sum --check SHA256SUMS`. After verification, run the standalone script or extract a bundle to inspect the complete documentation, prompt, and transaction reference.
 
+### Local v0.1.1 candidate
+
+The current repository declares `0.1.1` in both `VERSION` and `codex-instruct.py --version`, but this is a local candidate with no `v0.1.1` tag, GitHub Release, or public download URL. Validate and use it only from a committed, clean checkout with complete history and tags:
+
+```bash
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+python3 scripts/build_release.py "$RELEASE_TAG" \
+  --source-commit "$SOURCE_COMMIT" \
+  --output-dir dist-candidate
+(cd dist-candidate && shasum -a 256 -c SHA256SUMS)
+```
+
+Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. A formal tag and Release still require separate approval; local candidate assets are not published artifacts.
+
 Windows: there is no supported installation path. Current Windows 2025 CI evidence shows broad failures across deploy, restore, recover, and uninstall, with no Windows hard-interruption recovery evidence. Windows runtime use is therefore explicitly **unsupported**. Do not run Release scripts against Windows user configuration. Reopening an installation path requires Windows-specific filesystem/ACL work and blocking real-Windows CI proving the complete workflow green.
 
 ### Runtime policy
@@ -512,9 +549,9 @@ Windows: there is no supported installation path. Current Windows 2025 CI eviden
 Select one directory and request English output explicitly:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --version
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang en
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang en
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
 ```
 
 Review:
@@ -529,7 +566,7 @@ Review:
 Confirm once:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --yes --lang en
 ```
 
 Close the old task and start a new Codex session after deployment. Codex loads configuration at session start; a running session is not guaranteed to hot-reload instructions or hooks.
@@ -539,7 +576,7 @@ Omitting `--codex-dir` processes every auto-discovered Codex directory. Do this 
 ### Status output
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 ```
 
 Stable field example:
@@ -607,7 +644,7 @@ flowchart TD
 ### Custom prompt and CLI language
 
 ```bash
-python3 codex-instruct-v0.1.0.py \
+python3 codex-instruct.py \
   --file ./my-prompt.md \
   --name my-rules \
   --codex-dir ~/.codex \
@@ -627,7 +664,7 @@ Replace `--dry-run` with `--yes` after review. External Markdown must be a no-fo
 ### Restore hooks
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang en
 ```
 
 Restore only performs `hooks.json.disabled -> hooks.json`; it does not deploy Markdown, edit config, or parse JSON:
@@ -642,13 +679,13 @@ Restore only performs `hooks.json.disabled -> hooks.json`; it does not deploy Ma
 `--recover` handles `.codex-keysmith-transaction-<id>/journal.json` and before-state snapshots created before a deploy or uninstall mutation, dispatching by immutable journal `operation`. It is preview-only by default:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --recover --lang en
 ```
 
 Confirm recovery of the complete multi-directory transaction:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --recover --yes --lang en
 ```
 
 - selecting any participant is sufficient; the journal lists and verifies every participant with the same transaction ID;
@@ -666,13 +703,13 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang en
 Preview:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en
 ```
 
 Uninstall one managed layer:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en
 ```
 
 Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`:
@@ -684,7 +721,7 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 - it atomically archives the current manifest as `.codex-keysmith-manifest.json.uninstalled_<timestamp>`;
 - if the deployment replaced an older manifest, uninstall restores it. Run uninstall again to remove another layer;
 - journals and snapshots are removed through re-enterable cleanup only after every participant passes a final sweep and `committed` is durable;
-- an absent manifest is a successful no-op. Pre-v0.1.0 deployments have no automatic ownership record; the first v0.1.0 uninstall returns only to the pre-deployment state recorded by v0.1.0.
+- an absent manifest is a successful no-op. Pre-v0.1.0 deployments have no automatic ownership record; the first candidate uninstall returns only to the pre-deployment state recorded by that candidate deployment.
 
 `--restore-hooks` restores hooks only. `--uninstall` restores a complete manifest-owned configuration layer.
 
@@ -798,15 +835,15 @@ else
   (cd dist-candidate && sha256sum --check SHA256SUMS)
 fi
 
-# formal Release: the tag must exist and resolve to HEAD; omit --source-commit
-python3 scripts/build_release.py v0.1.0 --output-dir dist
-(cd dist && sha256sum --check SHA256SUMS)
+# formal Release only after separate approval creates the immutable tag; do not run for a candidate
+# python3 scripts/build_release.py "$RELEASE_TAG" --output-dir dist
+# (cd dist && sha256sum --check SHA256SUMS)
 git diff --check
 ```
 
 Release builds require a complete, non-shallow Git checkout with all tags. Candidate builds accept only a full 40/64-character commit object ID and require HEAD to match it exactly. If `v$VERSION` already exists, it must point at that commit; otherwise CI may only verify that the builder refuses and must not generate same-version assets. Candidate mode queries the same tag on every configured remote with interactive prompting disabled and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, fails closed; candidate builds therefore require verifiable remote access. Formal builds require the corresponding tag to exist and resolve exactly to HEAD. Both modes require a clean worktree and refuse to overwrite an existing asset with different content. GitHub Actions fetches all tags and binds VERSION, checked-out commit, existing tag commit, and candidate source to one commit.
 
-The current suite contains 300+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
+The current suite contains 400+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
 
 ### Current limits
 
