@@ -875,7 +875,8 @@ codex-keysmith/
 │   ├── test_prompt_bank_regression.py
 │   ├── test_recovery.py
 │   ├── test_release_artifacts.py
-│   └── test_uninstall.py
+│   ├── test_uninstall.py
+│   └── test_uninstall_recovery.py
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
