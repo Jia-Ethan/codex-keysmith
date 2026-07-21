@@ -2315,14 +2315,17 @@ def test_restore_hooks_rejects_same_inode_change_during_recovery_copy(
 ):
     disabled_path = tmp_path / "hooks.json.disabled"
     disabled_path.write_text("original disabled\n", encoding="utf-8")
-    real_copy2 = codex_instruct.shutil.copy2
 
-    def copy_then_mutate(source, destination, *args, **kwargs):
-        result = real_copy2(source, destination, *args, **kwargs)
-        Path(source).write_text("mutated disabled\n", encoding="utf-8")
-        return result
+    def mutate_at_checkpoint(name):
+        if name == "restore-hooks-recovery-copy-published":
+            claim = next(tmp_path.glob(".keysmith-hooks-*/disabled"))
+            claim.write_text("mutated disabled\n", encoding="utf-8")
 
-    monkeypatch.setattr(codex_instruct.shutil, "copy2", copy_then_mutate)
+    monkeypatch.setattr(
+        codex_instruct,
+        "_FILESYSTEM_CHECKPOINT_HOOK",
+        mutate_at_checkpoint,
+    )
 
     with pytest.raises(codex_instruct.HooksConflict, match="发生变化"):
         codex_instruct.restore_hooks(tmp_path)

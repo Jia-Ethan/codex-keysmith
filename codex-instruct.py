@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -190,6 +191,7 @@ _ACTIVE_DEPLOYMENT_STATES: Optional[List["DeploymentState"]] = None
 _OWNED_DIRECTORY_RECORDS: Dict[str, Tuple["FileIdentity", Any]] = {}
 _LOADED_JOURNAL_PENDING: Dict[str, Tuple["FileFingerprint", bool]] = {}
 _LOADED_COMPANION_PENDING: Dict[str, Tuple["FileFingerprint", bool]] = {}
+_FILESYSTEM_CHECKPOINT_HOOK: Optional[Callable[[str], None]] = None
 _EN_REPLACEMENTS = (
     ("未找到 codex-keysmith 部署清单；无需卸载。", "No codex-keysmith deployment manifest was found; nothing to uninstall."),
     ("卸载预检发现", "Uninstall preflight found"),
@@ -433,6 +435,12 @@ def _print(*values, **kwargs) -> None:
     )
 
 
+def _filesystem_checkpoint(name: str) -> None:
+    hook = _FILESYSTEM_CHECKPOINT_HOOK
+    if hook is not None:
+        hook(name)
+
+
 def _transaction_temp_prefix(kind: str) -> str:
     transaction_id = _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     suffix = f"-{transaction_id}" if transaction_id else ""
@@ -509,15 +517,25 @@ def _make_registered_transaction_dir(
     kind: str,
     allowed_members: Any,
 ) -> Tuple[Path, "FileIdentity"]:
-    transaction_dir = Path(
-        tempfile.mkdtemp(prefix=_transaction_temp_prefix(kind), dir=str(parent))
-    )
-    os.chmod(transaction_dir, 0o700)
+    prefix = _transaction_temp_prefix(kind)
+    while True:
+        transaction_dir = parent / f"{prefix}{uuid.uuid4().hex}"
+        try:
+            _FILESYSTEM.create_private_directory(transaction_dir)
+        except FileExistsError:
+            continue
+        break
     try:
         identity = _register_active_residue(transaction_dir, allowed_members)
     except BaseException:
-        identity = _directory_identity(transaction_dir)
-        _safe_remove_owned_directory(transaction_dir, identity, set())
+        try:
+            identity = _directory_identity(transaction_dir)
+            _safe_remove_owned_directory(transaction_dir, identity, set())
+        except BaseException as cleanup_exc:
+            _print(
+                f"[事务警告] 临时事务目录清理失败，已保留证据: {cleanup_exc}",
+                file=sys.stderr,
+            )
         raise
     _OWNED_DIRECTORY_RECORDS[str(transaction_dir)] = (identity, allowed_members)
     return transaction_dir, identity
@@ -592,7 +610,7 @@ def atomic_write_text(
                 on_published=on_published,
             )
         else:
-            os.replace(str(tmp_path), str(path))
+            _FILESYSTEM.replace_atomic(tmp_path, path)
             if on_published:
                 on_published(_fingerprint_regular_file(path))
         tmp_path = None
@@ -801,15 +819,7 @@ def find_recovery_dirs() -> List[str]:
 
 def _open_exclusive_private_file(path: Path) -> int:
     """Create a private regular file without following links or replacing nodes."""
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    return os.open(path, flags, 0o600)
+    return _FILESYSTEM.create_private_file(path)
 
 
 def _timestamped_backup_candidate(path: Path, timestamp: str, attempt: int) -> Path:
@@ -845,9 +855,9 @@ def backup_file(
                     shutil.copyfileobj(source, destination)
                     destination.flush()
                     os.fsync(destination.fileno())
-                    os.fchmod(
+                    _FILESYSTEM.clone_file_security(
                         destination.fileno(),
-                        stat.S_IMODE(source_stat.st_mode),
+                        source_stat,
                     )
                 source_after = _fingerprint_descriptor(
                     source_descriptor,
@@ -862,10 +872,10 @@ def backup_file(
                     source_after,
                 ):
                     raise HooksConflict(f"备份内容校验失败: {backup}")
-                os.utime(
+                _FILESYSTEM.set_file_times(
                     backup,
-                    ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
-                    follow_symlinks=False,
+                    source_stat.st_atime_ns,
+                    source_stat.st_mtime_ns,
                 )
             except BaseException:
                 try:
@@ -923,6 +933,1181 @@ class FileFingerprint:
     size: int
     modified_ns: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class _DirectoryEntry:
+    name: str
+    identity: FileIdentity
+    is_directory: bool
+    is_reparse: bool = False
+
+
+@dataclass
+class _OwnedDirectoryAccess:
+    path: Path
+    identity: FileIdentity
+    names: set
+    descriptor: Optional[int] = None
+    handle: Optional[int] = None
+    entries: Optional[Dict[str, _DirectoryEntry]] = None
+
+
+class _PosixFilesystemBackend:
+    """Security-sensitive filesystem primitives used by every platform."""
+
+    def create_private_directory(self, path: Path) -> None:
+        os.mkdir(path, 0o700)
+        os.chmod(path, 0o700)
+
+    def create_private_file(self, path: Path) -> int:
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags, 0o600)
+
+    def apply_private_file_security(self, descriptor: int) -> None:
+        os.fchmod(descriptor, 0o600)
+
+    def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
+        os.fchmod(descriptor, stat.S_IMODE(source_stat.st_mode))
+
+    def verify_private_security(self, path: Path, is_directory: bool) -> None:
+        mode = stat.S_IMODE(os.lstat(path).st_mode)
+        expected = 0o700 if is_directory else 0o600
+        if mode & 0o077:
+            raise HooksConflict(f"private filesystem node has broad mode {oct(mode)}: {path}")
+        if mode & expected != expected:
+            raise HooksConflict(f"private filesystem node lacks owner access: {path}")
+
+    def set_file_times(self, path: Path, atime_ns: int, mtime_ns: int) -> None:
+        os.utime(
+            path,
+            ns=(atime_ns, mtime_ns),
+            follow_symlinks=False,
+        )
+
+    def flush_directory(self, path: Path) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(path, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def open_verified_owned_directory(
+        self,
+        path: Path,
+        expected_identity: FileIdentity,
+        expected_members: Dict[str, Any],
+        require_exact_members: bool,
+    ) -> _OwnedDirectoryAccess:
+        if _directory_identity(path) != expected_identity:
+            raise HooksConflict(f"受管事务目录 identity 已变化，保留证据: {path}")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            descriptor_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(descriptor_stat.st_mode)
+                or _identity_from_stat(descriptor_stat) != expected_identity
+            ):
+                raise HooksConflict(f"事务目录在打开前被替换，保留证据: {path}")
+            names = set(os.listdir(descriptor))
+            self._validate_member_names(path, names, expected_members, require_exact_members)
+            for name in sorted(names):
+                item_stat = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not stat.S_ISREG(item_stat.st_mode):
+                    raise HooksConflict(
+                        f"事务目录成员不是普通文件，保留证据: {path / name}"
+                    )
+                expected = expected_members[name]
+                if expected is None:
+                    continue
+                member_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                member_flags |= getattr(os, "O_NOFOLLOW", 0)
+                member_descriptor = os.open(name, member_flags, dir_fd=descriptor)
+                try:
+                    opened_stat = os.fstat(member_descriptor)
+                    if (
+                        not stat.S_ISREG(opened_stat.st_mode)
+                        or _identity_from_stat(opened_stat)
+                        != _identity_from_stat(item_stat)
+                    ):
+                        raise HooksConflict(
+                            f"事务目录成员在打开期间变化: {path / name}"
+                        )
+                    actual = _fingerprint_descriptor(
+                        member_descriptor,
+                        opened_stat,
+                        path / name,
+                    )
+                finally:
+                    os.close(member_descriptor)
+                self._validate_expected_fingerprint(path / name, actual, expected)
+            return _OwnedDirectoryAccess(
+                path=path,
+                identity=expected_identity,
+                names=names,
+                descriptor=descriptor,
+            )
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    @staticmethod
+    def _validate_member_names(
+        path: Path,
+        names: set,
+        expected_members: Dict[str, Any],
+        require_exact_members: bool,
+    ) -> None:
+        unexpected = names - set(expected_members)
+        if unexpected:
+            raise HooksConflict(
+                f"事务目录包含未授权成员，保留证据: {path}: "
+                + ", ".join(sorted(unexpected))
+            )
+        if require_exact_members and names != set(expected_members):
+            missing = set(expected_members) - names
+            raise HooksConflict(
+                f"事务目录缺少受管成员，保留证据: {path}: "
+                + ", ".join(sorted(missing))
+            )
+
+    @staticmethod
+    def _validate_expected_fingerprint(
+        path: Path,
+        actual: FileFingerprint,
+        expected: Any,
+    ) -> None:
+        if isinstance(expected, FileFingerprint):
+            expected = _portable_fingerprint(expected)
+        if not (
+            actual.size == expected["size"]
+            and actual.modified_ns == expected["mtime_ns"]
+            and actual.sha256 == expected["sha256"]
+        ):
+            raise HooksConflict(f"事务目录成员指纹不匹配，保留证据: {path}")
+
+    def remove_verified_member(
+        self,
+        access: _OwnedDirectoryAccess,
+        name: str,
+        expected: Any,
+    ) -> None:
+        if access.descriptor is None:
+            raise HooksConflict("owned directory descriptor is unavailable")
+        if expected is not None:
+            item_stat = os.stat(name, dir_fd=access.descriptor, follow_symlinks=False)
+            member_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            member_flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(name, member_flags, dir_fd=access.descriptor)
+            try:
+                opened_stat = os.fstat(descriptor)
+                if _identity_from_stat(opened_stat) != _identity_from_stat(item_stat):
+                    raise HooksConflict(f"事务目录成员在删除前变化: {access.path / name}")
+                actual = _fingerprint_descriptor(
+                    descriptor,
+                    opened_stat,
+                    access.path / name,
+                )
+            finally:
+                os.close(descriptor)
+            self._validate_expected_fingerprint(access.path / name, actual, expected)
+        os.unlink(name, dir_fd=access.descriptor)
+        access.names.discard(name)
+
+    def flush_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if access.descriptor is None:
+            raise HooksConflict("owned directory descriptor is unavailable")
+        os.fsync(access.descriptor)
+
+    def close_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if access.descriptor is not None:
+            os.close(access.descriptor)
+            access.descriptor = None
+
+    def remove_verified_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if _directory_identity(access.path) != access.identity:
+            raise HooksConflict(f"清理前事务目录 identity 已变化: {access.path}")
+        os.rmdir(access.path)
+
+    def list_directory_names(self, path: Path) -> set:
+        return set(os.listdir(path))
+
+    def atomic_rename_no_replace(self, source: Path, destination: Path) -> bool:
+        libc = ctypes.CDLL(None, use_errno=True)
+        source_bytes = os.fsencode(source)
+        destination_bytes = os.fsencode(destination)
+
+        if sys.platform == "darwin":
+            if not hasattr(libc, "renamex_np"):
+                raise AtomicRenameUnavailable(errno.ENOTSUP, "renamex_np is unavailable")
+            rename_no_replace = libc.renamex_np
+            rename_no_replace.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename_no_replace.restype = ctypes.c_int
+            result = rename_no_replace(source_bytes, destination_bytes, 0x00000004)
+        elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+            rename_no_replace = libc.renameat2
+            rename_no_replace.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename_no_replace.restype = ctypes.c_int
+            result = rename_no_replace(-100, source_bytes, -100, destination_bytes, 0x00000001)
+        else:
+            raise AtomicRenameUnavailable(
+                errno.ENOTSUP,
+                "atomic no-replace rename is unavailable",
+            )
+
+        if result == 0:
+            return True
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            return False
+        message = f"{os.strerror(error_number)}: {source} -> {destination}"
+        if error_number in {
+            errno.ENOSYS,
+            errno.ENOTSUP,
+            errno.EOPNOTSUPP,
+            errno.EINVAL,
+        }:
+            raise AtomicRenameUnavailable(error_number, message)
+        raise OSError(error_number, message)
+
+    def replace_atomic(self, source: Path, destination: Path) -> None:
+        os.replace(str(source), str(destination))
+
+    def directory_lock_key(self, path: Path) -> Tuple[Tuple[Any, ...], Path]:
+        canonical = path.resolve()
+        identity = _directory_identity(canonical)
+        return (identity.device, identity.inode, str(canonical)), canonical
+
+    def acquire_directory_lock(self, key: Tuple[Any, ...]) -> Tuple[int, Path]:
+        import fcntl
+
+        owner = getattr(os, "getuid", lambda: 0)()
+        lock_root = Path(tempfile.gettempdir()) / f"codex-keysmith-locks-{owner}"
+        lock_root.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(lock_root, 0o700)
+        digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+        lock_path = lock_root / f"{digest}.lock"
+        descriptor = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            _filesystem_checkpoint("directory-lock-wait")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _filesystem_checkpoint("directory-lock-acquired")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor, lock_path
+
+    def release_directory_lock(self, token: Tuple[int, Path]) -> None:
+        import fcntl
+
+        descriptor, _path = token
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+class _WindowsFilesystemBackend(_PosixFilesystemBackend):
+    """Native Windows handles, ACLs, sharing, identity, and persistence."""
+
+    _GENERIC_READ = 0x80000000
+    _GENERIC_WRITE = 0x40000000
+    _DELETE = 0x00010000
+    _READ_CONTROL = 0x00020000
+    _FILE_LIST_DIRECTORY = 0x0001
+    _FILE_READ_ATTRIBUTES = 0x0080
+    _FILE_WRITE_ATTRIBUTES = 0x0100
+    _SYNCHRONIZE = 0x00100000
+    _FILE_SHARE_READ = 0x00000001
+    _FILE_SHARE_WRITE = 0x00000002
+    _FILE_SHARE_DELETE = 0x00000004
+    _OPEN_EXISTING = 3
+    _CREATE_NEW = 1
+    _FILE_ATTRIBUTE_NORMAL = 0x00000080
+    _FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+    _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+    _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    _FILE_ID_BOTH_DIRECTORY_INFO = 10
+    _FILE_ID_BOTH_DIRECTORY_RESTART_INFO = 11
+    _FILE_ATTRIBUTE_TAG_INFO = 9
+    _FILE_DISPOSITION_INFO = 4
+    _FILE_DISPOSITION_INFO_EX = 21
+    _FILE_DISPOSITION_FLAG_DELETE = 0x00000001
+    _FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x00000002
+    _FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000010
+    _DACL_SECURITY_INFORMATION = 0x00000004
+    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+    _TOKEN_QUERY = 0x0008
+    _TOKEN_USER = 1
+    _SDDL_REVISION_1 = 1
+    _ERROR_FILE_EXISTS = 80
+    _ERROR_ALREADY_EXISTS = 183
+    _ERROR_NO_MORE_FILES = 18
+    _WAIT_OBJECT_0 = 0
+    _WAIT_ABANDONED = 0x00000080
+    _INFINITE = 0xFFFFFFFF
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    class _FILE_ATTRIBUTE_TAG_INFO_STRUCT(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    class _FILE_ID_BOTH_DIR_INFO_STRUCT(ctypes.Structure):
+        _fields_ = [
+            ("NextEntryOffset", wintypes.DWORD),
+            ("FileIndex", wintypes.DWORD),
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("EndOfFile", ctypes.c_longlong),
+            ("AllocationSize", ctypes.c_longlong),
+            ("FileAttributes", wintypes.DWORD),
+            ("FileNameLength", wintypes.DWORD),
+            ("EaSize", wintypes.DWORD),
+            ("ShortNameLength", ctypes.c_byte),
+            ("ShortName", wintypes.WCHAR * 12),
+            ("FileId", ctypes.c_longlong),
+            ("FileName", wintypes.WCHAR * 1),
+        ]
+
+    class _FILE_DISPOSITION_INFO_STRUCT(ctypes.Structure):
+        _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+    class _FILE_DISPOSITION_INFO_EX_STRUCT(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.DWORD)]
+
+    class _SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", wintypes.LPVOID),
+            ("bInheritHandle", wintypes.BOOL),
+        ]
+
+    def __init__(self) -> None:
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        self.msvcrt = __import__("msvcrt")
+        self._configure_prototypes()
+        self._current_sid = self._current_user_sid_string()
+        self._security_descriptor = self._build_private_security_descriptor()
+        self._security_attributes = self._SECURITY_ATTRIBUTES(
+            ctypes.sizeof(self._SECURITY_ATTRIBUTES),
+            self._security_descriptor,
+            False,
+        )
+
+    def _configure_prototypes(self) -> None:
+        self.kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(self._SECURITY_ATTRIBUTES),
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        self.kernel32.CreateFileW.restype = wintypes.HANDLE
+        self.kernel32.CreateDirectoryW.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.POINTER(self._SECURITY_ATTRIBUTES),
+        ]
+        self.kernel32.CreateDirectoryW.restype = wintypes.BOOL
+        self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.kernel32.CloseHandle.restype = wintypes.BOOL
+        self.kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(self._BY_HANDLE_FILE_INFORMATION),
+        ]
+        self.kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        self.kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        self.kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        self.kernel32.SetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        self.kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+        self.kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+        self.kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        self.kernel32.SetFileTime.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        self.kernel32.SetFileTime.restype = wintypes.BOOL
+        self.kernel32.GetFinalPathNameByHandleW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        self.kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        self.kernel32.GetVolumeInformationByHandleW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        self.kernel32.GetVolumeInformationByHandleW.restype = wintypes.BOOL
+        self.kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        self.kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        self.kernel32.LocalFree.restype = wintypes.HLOCAL
+        self.kernel32.MoveFileExW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+        ]
+        self.kernel32.MoveFileExW.restype = wintypes.BOOL
+        self.kernel32.CreateMutexW.argtypes = [
+            ctypes.POINTER(self._SECURITY_ATTRIBUTES),
+            wintypes.BOOL,
+            wintypes.LPCWSTR,
+        ]
+        self.kernel32.CreateMutexW.restype = wintypes.HANDLE
+        self.kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        self.kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        self.kernel32.ReleaseMutex.restype = wintypes.BOOL
+        self.advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        self.advapi32.OpenProcessToken.restype = wintypes.BOOL
+        self.advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.advapi32.GetTokenInformation.restype = wintypes.BOOL
+        self.advapi32.ConvertSidToStringSidW.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.LPWSTR),
+        ]
+        self.advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+        self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = (
+            wintypes.BOOL
+        )
+        self.advapi32.SetKernelObjectSecurity.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+        ]
+        self.advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+        self.advapi32.GetKernelObjectSecurity.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.advapi32.GetKernelObjectSecurity.restype = wintypes.BOOL
+        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPWSTR),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = (
+            wintypes.BOOL
+        )
+
+    @staticmethod
+    def _path(path: Path) -> str:
+        absolute = os.path.abspath(str(path))
+        if absolute.startswith("\\\\"):
+            return "\\\\?\\UNC\\" + absolute[2:]
+        if not absolute.startswith("\\\\?\\"):
+            return "\\\\?\\" + absolute
+        return absolute
+
+    @staticmethod
+    def _raise_last_error(label: str, path: Optional[Path] = None) -> None:
+        error = ctypes.get_last_error()
+        message = ctypes.FormatError(error).strip()
+        target = f": {path}" if path is not None else ""
+        raise OSError(error, f"{label}{target}: {message}")
+
+    def _open_handle(
+        self,
+        path: Path,
+        access: int,
+        creation: int = _OPEN_EXISTING,
+        security: bool = False,
+    ) -> int:
+        attributes = self._FILE_FLAG_OPEN_REPARSE_POINT
+        if path.is_dir() or creation == self._OPEN_EXISTING:
+            attributes |= self._FILE_FLAG_BACKUP_SEMANTICS
+        security_attributes = (
+            ctypes.byref(self._security_attributes) if security else None
+        )
+        handle = self.kernel32.CreateFileW(
+            self._path(path),
+            access,
+            self._FILE_SHARE_READ | self._FILE_SHARE_WRITE | self._FILE_SHARE_DELETE,
+            security_attributes,
+            creation,
+            attributes | self._FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        if handle == self._INVALID_HANDLE_VALUE:
+            self._raise_last_error("cannot open filesystem handle", path)
+        return int(handle)
+
+    def _handle_info(self, handle: int) -> _BY_HANDLE_FILE_INFORMATION:
+        info = self._BY_HANDLE_FILE_INFORMATION()
+        if not self.kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            self._raise_last_error("cannot read filesystem identity")
+        return info
+
+    def _handle_identity(self, handle: int) -> FileIdentity:
+        info = self._handle_info(handle)
+        inode = (int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow)
+        return FileIdentity(int(info.dwVolumeSerialNumber), inode)
+
+    def _handle_attributes(self, handle: int) -> _FILE_ATTRIBUTE_TAG_INFO_STRUCT:
+        info = self._FILE_ATTRIBUTE_TAG_INFO_STRUCT()
+        if not self.kernel32.GetFileInformationByHandleEx(
+            handle,
+            self._FILE_ATTRIBUTE_TAG_INFO,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            self._raise_last_error("cannot read reparse attributes")
+        return info
+
+    def _validate_ntfs(self, handle: int, path: Path) -> None:
+        filesystem = ctypes.create_unicode_buffer(64)
+        if not self.kernel32.GetVolumeInformationByHandleW(
+            handle,
+            None,
+            0,
+            None,
+            None,
+            None,
+            filesystem,
+            len(filesystem),
+        ):
+            self._raise_last_error("cannot verify filesystem type", path)
+        if filesystem.value.upper() != "NTFS":
+            raise OSError(f"Windows filesystem is unsupported (requires NTFS): {path}")
+
+    def _validate_handle_type(
+        self,
+        handle: int,
+        path: Path,
+        is_directory: bool,
+    ) -> None:
+        attributes = self._handle_attributes(handle)
+        if attributes.FileAttributes & self._FILE_ATTRIBUTE_REPARSE_POINT:
+            raise HooksConflict(f"reparse point is not allowed: {path}")
+        actual_directory = bool(
+            attributes.FileAttributes & self._FILE_ATTRIBUTE_DIRECTORY
+        )
+        if actual_directory != is_directory:
+            expected = "directory" if is_directory else "regular file"
+            raise HooksConflict(f"filesystem node is not a {expected}: {path}")
+
+    def _enumerate(self, handle: int, path: Path) -> Dict[str, _DirectoryEntry]:
+        entries: Dict[str, _DirectoryEntry] = {}
+        buffer = ctypes.create_string_buffer(65536)
+        info_class = self._FILE_ID_BOTH_DIRECTORY_RESTART_INFO
+        while True:
+            ctypes.set_last_error(0)
+            ok = self.kernel32.GetFileInformationByHandleEx(
+                handle,
+                info_class,
+                buffer,
+                len(buffer),
+            )
+            if not ok:
+                error = ctypes.get_last_error()
+                if error == self._ERROR_NO_MORE_FILES:
+                    break
+                self._raise_last_error("cannot enumerate owned directory", path)
+            offset = 0
+            while True:
+                item = self._FILE_ID_BOTH_DIR_INFO_STRUCT.from_buffer(buffer, offset)
+                name = ctypes.wstring_at(
+                    ctypes.addressof(buffer)
+                    + offset
+                    + self._FILE_ID_BOTH_DIR_INFO_STRUCT.FileName.offset,
+                    int(item.FileNameLength) // ctypes.sizeof(wintypes.WCHAR),
+                )
+                if name not in {".", ".."}:
+                    identity = FileIdentity(
+                        self._handle_identity(handle).device,
+                        int(item.FileId) & ((1 << 64) - 1),
+                    )
+                    entries[name] = _DirectoryEntry(
+                        name=name,
+                        identity=identity,
+                        is_directory=bool(
+                            item.FileAttributes & self._FILE_ATTRIBUTE_DIRECTORY
+                        ),
+                        is_reparse=bool(
+                            item.FileAttributes & self._FILE_ATTRIBUTE_REPARSE_POINT
+                        ),
+                    )
+                if item.NextEntryOffset == 0:
+                    break
+                offset += int(item.NextEntryOffset)
+            info_class = self._FILE_ID_BOTH_DIRECTORY_INFO
+        return entries
+
+    def _current_user_sid_string(self) -> str:
+        token = wintypes.HANDLE()
+        if not self.advapi32.OpenProcessToken(
+            self.kernel32.GetCurrentProcess(),
+            self._TOKEN_QUERY,
+            ctypes.byref(token),
+        ):
+            self._raise_last_error("cannot open process token")
+        try:
+            size = wintypes.DWORD()
+            self.advapi32.GetTokenInformation(
+                token,
+                self._TOKEN_USER,
+                None,
+                0,
+                ctypes.byref(size),
+            )
+            buffer = ctypes.create_string_buffer(size.value)
+            if not self.advapi32.GetTokenInformation(
+                token,
+                self._TOKEN_USER,
+                buffer,
+                size,
+                ctypes.byref(size),
+            ):
+                self._raise_last_error("cannot read process token user")
+            sid_pointer = ctypes.cast(buffer, ctypes.POINTER(wintypes.LPVOID))[0]
+            sid_string = wintypes.LPWSTR()
+            if not self.advapi32.ConvertSidToStringSidW(
+                sid_pointer,
+                ctypes.byref(sid_string),
+            ):
+                self._raise_last_error("cannot convert process SID")
+            try:
+                return sid_string.value
+            finally:
+                self.kernel32.LocalFree(sid_string)
+        finally:
+            self.kernel32.CloseHandle(token)
+
+    def _build_private_security_descriptor(self) -> int:
+        descriptor = wintypes.LPVOID()
+        size = wintypes.DWORD()
+        sddl = f"D:P(A;;FA;;;{self._current_sid})(A;;FA;;;SY)"
+        if not self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl,
+            self._SDDL_REVISION_1,
+            ctypes.byref(descriptor),
+            ctypes.byref(size),
+        ):
+            self._raise_last_error("cannot build private ACL")
+        return int(descriptor.value)
+
+    def create_private_directory(self, path: Path) -> None:
+        if not self.kernel32.CreateDirectoryW(
+            self._path(path),
+            ctypes.byref(self._security_attributes),
+        ):
+            self._raise_last_error("cannot create private directory", path)
+        self.verify_private_security(path, is_directory=True)
+
+    def create_private_file(self, path: Path) -> int:
+        handle = self._open_handle(
+            path,
+            self._GENERIC_READ
+            | self._GENERIC_WRITE
+            | self._DELETE
+            | self._READ_CONTROL
+            | self._FILE_READ_ATTRIBUTES
+            | self._FILE_WRITE_ATTRIBUTES,
+            creation=self._CREATE_NEW,
+            security=True,
+        )
+        self._validate_handle_type(handle, path, is_directory=False)
+        self._validate_ntfs(handle, path)
+        descriptor = self.msvcrt.open_osfhandle(
+            handle,
+            os.O_RDWR | getattr(os, "O_BINARY", 0),
+        )
+        return descriptor
+
+    def apply_private_file_security(self, descriptor: int) -> None:
+        handle = self.msvcrt.get_osfhandle(descriptor)
+        if not self.advapi32.SetKernelObjectSecurity(
+            handle,
+            self._DACL_SECURITY_INFORMATION
+            | self._PROTECTED_DACL_SECURITY_INFORMATION,
+            self._security_descriptor,
+        ):
+            self._raise_last_error("cannot apply private ACL")
+
+    def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
+        del source_stat
+        self.apply_private_file_security(descriptor)
+
+    def verify_private_security(self, path: Path, is_directory: bool) -> None:
+        handle = self._open_handle(
+            path,
+            self._READ_CONTROL | self._FILE_READ_ATTRIBUTES,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=is_directory)
+            needed = wintypes.DWORD()
+            self.advapi32.GetKernelObjectSecurity(
+                handle,
+                self._DACL_SECURITY_INFORMATION,
+                None,
+                0,
+                ctypes.byref(needed),
+            )
+            if not needed.value:
+                self._raise_last_error("cannot size private ACL", path)
+            descriptor = ctypes.create_string_buffer(needed.value)
+            if not self.advapi32.GetKernelObjectSecurity(
+                handle,
+                self._DACL_SECURITY_INFORMATION,
+                descriptor,
+                len(descriptor),
+                ctypes.byref(needed),
+            ):
+                self._raise_last_error("cannot read private ACL", path)
+            sddl_pointer = wintypes.LPWSTR()
+            sddl_length = wintypes.DWORD()
+            if not self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                self._SDDL_REVISION_1,
+                self._DACL_SECURITY_INFORMATION,
+                ctypes.byref(sddl_pointer),
+                ctypes.byref(sddl_length),
+            ):
+                self._raise_last_error("cannot describe private ACL", path)
+            try:
+                sddl = sddl_pointer.value or ""
+            finally:
+                self.kernel32.LocalFree(sddl_pointer)
+            if not sddl.startswith("D:P"):
+                raise HooksConflict(f"private ACL is not protected: {path}")
+            if self._current_sid not in sddl:
+                raise HooksConflict(f"private ACL does not grant the current user: {path}")
+            if "SY" not in sddl and "S-1-5-18" not in sddl:
+                raise HooksConflict(f"private ACL does not grant SYSTEM: {path}")
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    @staticmethod
+    def _filetime(value_ns: int) -> wintypes.FILETIME:
+        value = value_ns // 100 + 116444736000000000
+        return wintypes.FILETIME(value & 0xFFFFFFFF, value >> 32)
+
+    def set_file_times(self, path: Path, atime_ns: int, mtime_ns: int) -> None:
+        handle = self._open_handle(
+            path,
+            self._FILE_READ_ATTRIBUTES | self._FILE_WRITE_ATTRIBUTES,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=False)
+            access = self._filetime(atime_ns)
+            modified = self._filetime(mtime_ns)
+            if not self.kernel32.SetFileTime(
+                handle,
+                None,
+                ctypes.byref(access),
+                ctypes.byref(modified),
+            ):
+                self._raise_last_error("cannot set file times", path)
+            if not self.kernel32.FlushFileBuffers(handle):
+                self._raise_last_error("cannot persist file times", path)
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def flush_directory(self, path: Path) -> None:
+        handle = self._open_handle(
+            path,
+            self._GENERIC_READ
+            | self._GENERIC_WRITE
+            | self._FILE_LIST_DIRECTORY
+            | self._FILE_READ_ATTRIBUTES
+            | self._SYNCHRONIZE,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=True)
+            self._validate_ntfs(handle, path)
+            if not self.kernel32.FlushFileBuffers(handle):
+                self._raise_last_error("cannot persist directory metadata", path)
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def open_verified_owned_directory(
+        self,
+        path: Path,
+        expected_identity: FileIdentity,
+        expected_members: Dict[str, Any],
+        require_exact_members: bool,
+    ) -> _OwnedDirectoryAccess:
+        handle = self._open_handle(
+            path,
+            self._GENERIC_READ
+            | self._GENERIC_WRITE
+            | self._DELETE
+            | self._READ_CONTROL
+            | self._FILE_LIST_DIRECTORY
+            | self._FILE_READ_ATTRIBUTES
+            | self._SYNCHRONIZE,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=True)
+            self._validate_ntfs(handle, path)
+            identity = self._handle_identity(handle)
+            if identity != expected_identity or _directory_identity(path) != expected_identity:
+                raise HooksConflict(f"受管事务目录 identity 已变化，保留证据: {path}")
+            entries = self._enumerate(handle, path)
+            names = set(entries)
+            self._validate_member_names(path, names, expected_members, require_exact_members)
+            for name in sorted(names):
+                entry = entries[name]
+                if entry.is_directory or entry.is_reparse:
+                    raise HooksConflict(
+                        f"事务目录成员不是普通文件，保留证据: {path / name}"
+                    )
+                if expected_members[name] is not None:
+                    actual = self._fingerprint_member(path, entry, delete_access=False)
+                    self._validate_expected_fingerprint(
+                        path / name,
+                        actual,
+                        expected_members[name],
+                    )
+            return _OwnedDirectoryAccess(
+                path=path,
+                identity=identity,
+                names=names,
+                handle=handle,
+                entries=entries,
+            )
+        except BaseException:
+            self.kernel32.CloseHandle(handle)
+            raise
+
+    def _fingerprint_member(
+        self,
+        parent: Path,
+        entry: _DirectoryEntry,
+        delete_access: bool,
+    ) -> FileFingerprint:
+        access = self._GENERIC_READ | self._FILE_READ_ATTRIBUTES
+        if delete_access:
+            access |= self._DELETE
+        handle = self._open_handle(parent / entry.name, access)
+        descriptor = None
+        try:
+            self._validate_handle_type(handle, parent / entry.name, is_directory=False)
+            if self._handle_identity(handle) != entry.identity:
+                raise HooksConflict(f"事务目录成员在打开期间变化: {parent / entry.name}")
+            descriptor = self.msvcrt.open_osfhandle(
+                handle,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+            handle = 0
+            before = os.fstat(descriptor)
+            return _fingerprint_descriptor(descriptor, before, parent / entry.name)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            elif handle:
+                self.kernel32.CloseHandle(handle)
+
+    def _mark_delete(self, handle: int, path: Path) -> None:
+        extended = self._FILE_DISPOSITION_INFO_EX_STRUCT(
+            self._FILE_DISPOSITION_FLAG_DELETE
+            | self._FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | self._FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
+        )
+        if self.kernel32.SetFileInformationByHandle(
+            handle,
+            self._FILE_DISPOSITION_INFO_EX,
+            ctypes.byref(extended),
+            ctypes.sizeof(extended),
+        ):
+            return
+        basic = self._FILE_DISPOSITION_INFO_STRUCT(True)
+        if not self.kernel32.SetFileInformationByHandle(
+            handle,
+            self._FILE_DISPOSITION_INFO,
+            ctypes.byref(basic),
+            ctypes.sizeof(basic),
+        ):
+            self._raise_last_error("cannot delete verified filesystem node", path)
+
+    def remove_verified_member(
+        self,
+        access: _OwnedDirectoryAccess,
+        name: str,
+        expected: Any,
+    ) -> None:
+        if access.handle is None or access.entries is None:
+            raise HooksConflict("owned directory handle is unavailable")
+        entry = access.entries.get(name)
+        if entry is None or entry.is_directory or entry.is_reparse:
+            raise HooksConflict(f"事务目录成员在删除前变化: {access.path / name}")
+        handle = self._open_handle(
+            access.path / name,
+            self._GENERIC_READ | self._FILE_READ_ATTRIBUTES | self._DELETE,
+        )
+        descriptor = None
+        try:
+            self._validate_handle_type(handle, access.path / name, is_directory=False)
+            if self._handle_identity(handle) != entry.identity:
+                raise HooksConflict(f"事务目录成员在删除前变化: {access.path / name}")
+            descriptor = self.msvcrt.open_osfhandle(
+                handle,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+            handle = 0
+            if expected is not None:
+                before = os.fstat(descriptor)
+                actual = _fingerprint_descriptor(
+                    descriptor,
+                    before,
+                    access.path / name,
+                )
+                self._validate_expected_fingerprint(access.path / name, actual, expected)
+            raw_handle = self.msvcrt.get_osfhandle(descriptor)
+            self._mark_delete(raw_handle, access.path / name)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            elif handle:
+                self.kernel32.CloseHandle(handle)
+        entries = self._enumerate(access.handle, access.path)
+        if name in entries:
+            raise HooksConflict(f"事务目录成员删除后仍存在: {access.path / name}")
+        access.entries = entries
+        access.names = set(entries)
+
+    def flush_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if access.handle is None:
+            raise HooksConflict("owned directory handle is unavailable")
+        if not self.kernel32.FlushFileBuffers(access.handle):
+            self._raise_last_error("cannot persist owned directory", access.path)
+
+    def close_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if access.handle is not None:
+            self.kernel32.CloseHandle(access.handle)
+            access.handle = None
+
+    def remove_verified_directory(self, access: _OwnedDirectoryAccess) -> None:
+        if access.handle is None:
+            raise HooksConflict("owned directory handle is unavailable")
+        entries = self._enumerate(access.handle, access.path)
+        if entries:
+            raise HooksConflict(f"清理前事务目录不是空目录: {access.path}")
+        if self._handle_identity(access.handle) != access.identity:
+            raise HooksConflict(f"清理前事务目录 identity 已变化: {access.path}")
+        self._mark_delete(access.handle, access.path)
+        self.close_owned_directory(access)
+        if _path_entry_exists(access.path):
+            raise HooksConflict(f"事务目录删除后仍存在: {access.path}")
+
+    def list_directory_names(self, path: Path) -> set:
+        handle = self._open_handle(
+            path,
+            self._FILE_LIST_DIRECTORY | self._FILE_READ_ATTRIBUTES,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=True)
+            return set(self._enumerate(handle, path))
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def atomic_rename_no_replace(self, source: Path, destination: Path) -> bool:
+        if self.kernel32.MoveFileExW(self._path(source), self._path(destination), 0):
+            return True
+        error = ctypes.get_last_error()
+        if error in {self._ERROR_FILE_EXISTS, self._ERROR_ALREADY_EXISTS}:
+            return False
+        self._raise_last_error("atomic no-replace rename failed", source)
+        return False
+
+    def replace_atomic(self, source: Path, destination: Path) -> None:
+        flags = 0x00000001 | 0x00000008
+        if not self.kernel32.MoveFileExW(
+            self._path(source),
+            self._path(destination),
+            flags,
+        ):
+            self._raise_last_error("atomic replace failed", destination)
+
+    def _canonical_path(self, handle: int, fallback: Path) -> Path:
+        length = self.kernel32.GetFinalPathNameByHandleW(handle, None, 0, 0)
+        if not length:
+            self._raise_last_error("cannot resolve canonical directory", fallback)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        if not self.kernel32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0):
+            self._raise_last_error("cannot resolve canonical directory", fallback)
+        value = buffer.value
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return Path(value)
+
+    def directory_lock_key(self, path: Path) -> Tuple[Tuple[Any, ...], Path]:
+        handle = self._open_handle(
+            path,
+            self._FILE_LIST_DIRECTORY | self._FILE_READ_ATTRIBUTES,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=True)
+            self._validate_ntfs(handle, path)
+            identity = self._handle_identity(handle)
+            canonical = self._canonical_path(handle, path)
+            key = (
+                identity.device,
+                identity.inode,
+                os.path.normcase(str(canonical)),
+            )
+            return key, canonical
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def acquire_directory_lock(self, key: Tuple[Any, ...]) -> int:
+        digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+        name = f"Global\\JiaEthan.CodexKeysmith.{digest}"
+        handle = self.kernel32.CreateMutexW(
+            ctypes.byref(self._security_attributes),
+            False,
+            name,
+        )
+        if not handle:
+            self._raise_last_error("cannot create directory mutex")
+        _filesystem_checkpoint("directory-lock-wait")
+        result = self.kernel32.WaitForSingleObject(handle, self._INFINITE)
+        if result not in {self._WAIT_OBJECT_0, self._WAIT_ABANDONED}:
+            self.kernel32.CloseHandle(handle)
+            raise OSError(f"cannot acquire directory mutex: wait result {result}")
+        _filesystem_checkpoint("directory-lock-acquired")
+        return int(handle)
+
+    def release_directory_lock(self, token: int) -> None:
+        try:
+            if not self.kernel32.ReleaseMutex(token):
+                self._raise_last_error("cannot release directory mutex")
+        finally:
+            self.kernel32.CloseHandle(token)
+
+
+_FILESYSTEM = (
+    _WindowsFilesystemBackend() if os.name == "nt" else _PosixFilesystemBackend()
+)
+
+
+@dataclass(frozen=True)
+class _OperationDirectory:
+    path: Path
+    lock_key: Tuple[Any, ...]
+
+
+def _normalize_operation_directories(paths: List[str]) -> List[_OperationDirectory]:
+    unique: Dict[Tuple[Any, ...], _OperationDirectory] = {}
+    for value in paths:
+        key, canonical = _FILESYSTEM.directory_lock_key(Path(value))
+        if key not in unique:
+            unique[key] = _OperationDirectory(canonical, key)
+    return sorted(unique.values(), key=lambda item: item.lock_key)
+
+
+class _DirectoryLockSet:
+    def __init__(self, paths: List[str]) -> None:
+        self.directories = _normalize_operation_directories(paths)
+        self.tokens: List[Any] = []
+
+    def __enter__(self) -> "_DirectoryLockSet":
+        try:
+            for directory in self.directories:
+                self.tokens.append(
+                    _FILESYSTEM.acquire_directory_lock(directory.lock_key)
+                )
+        except BaseException:
+            self._release()
+            raise
+        return self
+
+    def _release(self) -> None:
+        while self.tokens:
+            token = self.tokens.pop()
+            _FILESYSTEM.release_directory_lock(token)
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+        self._release()
 
 
 @dataclass(frozen=True)
@@ -1020,23 +2205,8 @@ def _path_entry_exists(path: Path) -> bool:
 
 
 def _fsync_directory(path: Path) -> None:
-    """Persist directory entry changes when the platform supports it."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError:
-        # Directory fsync support varies on Windows, which is currently unsupported.
-        if os.name == "nt":
-            return
-        raise
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        if os.name != "nt":
-            raise
-    finally:
-        os.close(descriptor)
+    """Persist directory entry changes through the platform backend."""
+    _FILESYSTEM.flush_directory(path)
 
 
 def _deployment_journal_dirs(codex_dir: Path) -> List[Path]:
@@ -1092,74 +2262,14 @@ def _open_verified_owned_directory(
     expected_identity: FileIdentity,
     expected_members: Dict[str, Any],
     require_exact_members: bool,
-) -> Tuple[int, set]:
-    if _directory_identity(path) != expected_identity:
-        raise HooksConflict(f"受管事务目录 identity 已变化，保留证据: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        descriptor_stat = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(descriptor_stat.st_mode)
-            or _identity_from_stat(descriptor_stat) != expected_identity
-        ):
-            raise HooksConflict(f"事务目录在打开前被替换，保留证据: {path}")
-        names = set(os.listdir(descriptor))
-        unexpected = names - set(expected_members)
-        if unexpected:
-            raise HooksConflict(
-                f"事务目录包含未授权成员，保留证据: {path}: "
-                + ", ".join(sorted(unexpected))
-            )
-        if require_exact_members and names != set(expected_members):
-            missing = set(expected_members) - names
-            raise HooksConflict(
-                f"事务目录缺少受管成员，保留证据: {path}: "
-                + ", ".join(sorted(missing))
-            )
-        for name in sorted(names):
-            item_stat = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-            if not stat.S_ISREG(item_stat.st_mode):
-                raise HooksConflict(
-                    f"事务目录成员不是普通文件，保留证据: {path / name}"
-                )
-            expected = expected_members[name]
-            if expected is not None:
-                member_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-                member_flags |= getattr(os, "O_NOFOLLOW", 0)
-                member_descriptor = os.open(name, member_flags, dir_fd=descriptor)
-                try:
-                    opened_stat = os.fstat(member_descriptor)
-                    if (
-                        not stat.S_ISREG(opened_stat.st_mode)
-                        or _identity_from_stat(opened_stat)
-                        != _identity_from_stat(item_stat)
-                    ):
-                        raise HooksConflict(
-                            f"事务目录成员在打开期间变化: {path / name}"
-                        )
-                    actual = _fingerprint_descriptor(
-                        member_descriptor,
-                        opened_stat,
-                        path / name,
-                    )
-                finally:
-                    os.close(member_descriptor)
-                if isinstance(expected, FileFingerprint):
-                    expected = _portable_fingerprint(expected)
-                if not (
-                    actual.size == expected["size"]
-                    and actual.modified_ns == expected["mtime_ns"]
-                    and actual.sha256 == expected["sha256"]
-                ):
-                    raise HooksConflict(
-                        f"事务目录成员指纹不匹配，保留证据: {path / name}"
-                    )
-        return descriptor, names
-    except BaseException:
-        os.close(descriptor)
-        raise
+) -> Tuple[_OwnedDirectoryAccess, set]:
+    access = _FILESYSTEM.open_verified_owned_directory(
+        path,
+        expected_identity,
+        expected_members,
+        require_exact_members,
+    )
+    return access, set(access.names)
 
 
 def _safe_remove_owned_directory(
@@ -1175,13 +2285,13 @@ def _safe_remove_owned_directory(
     if not isinstance(expected_members, dict):
         raise HooksConflict("事务目录成员所有权定义无效")
 
-    descriptor, _names = _open_verified_owned_directory(
+    access, _names = _open_verified_owned_directory(
         path,
         expected_identity,
         expected_members,
         require_exact_members,
     )
-    os.close(descriptor)
+    _FILESYSTEM.close_owned_directory(access)
 
     claimed_path = path
     if _cleanup_claim_base(path.name) is None:
@@ -1194,7 +2304,7 @@ def _safe_remove_owned_directory(
             raise HooksConflict(f"无法原子认领事务目录: {path}")
         _fsync_directory(path.parent)
     path = claimed_path
-    descriptor, names = _open_verified_owned_directory(
+    access, names = _open_verified_owned_directory(
         path,
         expected_identity,
         expected_members,
@@ -1222,27 +2332,51 @@ def _safe_remove_owned_directory(
                 MANIFEST_INTENT_FILENAME,
             }
             for name in sorted(names - retained):
-                os.unlink(name, dir_fd=descriptor)
-            os.fsync(descriptor)
+                _FILESYSTEM.remove_verified_member(
+                    access,
+                    name,
+                    expected_members[name],
+                )
+            _FILESYSTEM.flush_owned_directory(access)
             if JOURNAL_FILENAME in names:
-                os.unlink(JOURNAL_FILENAME, dir_fd=descriptor)
-                os.fsync(descriptor)
+                _FILESYSTEM.remove_verified_member(
+                    access,
+                    JOURNAL_FILENAME,
+                    expected_members[JOURNAL_FILENAME],
+                )
+                _FILESYSTEM.flush_owned_directory(access)
             if MANIFEST_INTENT_FILENAME in names:
-                os.unlink(MANIFEST_INTENT_FILENAME, dir_fd=descriptor)
-                os.fsync(descriptor)
+                _FILESYSTEM.remove_verified_member(
+                    access,
+                    MANIFEST_INTENT_FILENAME,
+                    expected_members[MANIFEST_INTENT_FILENAME],
+                )
+                _FILESYSTEM.flush_owned_directory(access)
+            expected_intent = expected_members[INTENT_FILENAME]
+            portable_intent = (
+                _portable_fingerprint(expected_intent)
+                if isinstance(expected_intent, FileFingerprint)
+                else expected_intent
+            )
+            if not _portable_matches(path / INTENT_FILENAME, portable_intent):
+                raise HooksConflict(
+                    f"事务 journal intent 在 cleanup 发布前变化: {path / INTENT_FILENAME}"
+                )
             if not _atomic_rename_no_replace(path / INTENT_FILENAME, marker):
                 raise HooksConflict(f"无法发布事务 journal cleanup marker: {marker}")
-            os.fsync(descriptor)
+            _FILESYSTEM.flush_owned_directory(access)
             cleanup_marker = (marker, expected_members[INTENT_FILENAME])
         else:
             for name in sorted(names):
-                os.unlink(name, dir_fd=descriptor)
-            os.fsync(descriptor)
+                _FILESYSTEM.remove_verified_member(
+                    access,
+                    name,
+                    expected_members[name],
+                )
+            _FILESYSTEM.flush_owned_directory(access)
+        _FILESYSTEM.remove_verified_directory(access)
     finally:
-        os.close(descriptor)
-    if _directory_identity(path) != expected_identity:
-        raise HooksConflict(f"清理前事务目录 identity 已变化: {path}")
-    os.rmdir(path)
+        _FILESYSTEM.close_owned_directory(access)
     _fsync_directory(path.parent)
     if cleanup_marker is not None:
         marker, expected = cleanup_marker
@@ -1641,7 +2775,7 @@ def _atomic_write_private_json(path: Path, data: Dict[str, Any]) -> None:
         ):
             raise HooksConflict(f"事务日志 pending 文件不属于已验证恢复状态: {temporary}")
         if pending_record[1]:
-            os.replace(str(temporary), str(path))
+            _FILESYSTEM.replace_atomic(temporary, path)
         else:
             temporary.unlink()
         _fsync_directory(path.parent)
@@ -1651,9 +2785,8 @@ def _atomic_write_private_json(path: Path, data: Dict[str, Any]) -> None:
             stream.write(content.encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
-            if hasattr(os, "fchmod"):
-                os.fchmod(stream.fileno(), 0o600)
-        os.replace(str(temporary), str(path))
+            _FILESYSTEM.apply_private_file_security(stream.fileno())
+        _FILESYSTEM.replace_atomic(temporary, path)
         _fsync_directory(path.parent)
     finally:
         if _path_entry_exists(temporary):
@@ -1671,8 +2804,7 @@ def _write_exclusive_private_json(path: Path, data: Dict[str, Any]) -> None:
             stream.write(content.encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
-            if hasattr(os, "fchmod"):
-                os.fchmod(stream.fileno(), 0o600)
+            _FILESYSTEM.apply_private_file_security(stream.fileno())
         _fsync_directory(path.parent)
     except BaseException:
         try:
@@ -1695,7 +2827,7 @@ def _publish_exclusive_private_json(
         raise HooksConflict(f"事务 JSON pending 文件已存在: {pending}")
     try:
         _write_exclusive_private_json(pending, data)
-        os.replace(str(pending), str(path))
+        _FILESYSTEM.replace_atomic(pending, path)
         _fsync_directory(path.parent)
     finally:
         if _path_entry_exists(pending):
@@ -1715,7 +2847,7 @@ def _reconcile_loaded_companion_pending(path: Path) -> None:
     if record[1]:
         if _path_entry_exists(path):
             raise HooksConflict(f"manifest intent 与 pending 同时存在: {path}")
-        os.replace(str(pending), str(path))
+        _FILESYSTEM.replace_atomic(pending, path)
     else:
         pending.unlink()
     _fsync_directory(path.parent)
@@ -1865,9 +2997,7 @@ def _create_deployment_journals(
         # discard a missing snapshot only while its live path still matches before.
         for state in states:
             journal_dir = state.codex_dir / f"{JOURNAL_PREFIX}{transaction_id}"
-            os.mkdir(journal_dir, 0o700)
-            if hasattr(os, "chmod"):
-                os.chmod(journal_dir, 0o700)
+            _FILESYSTEM.create_private_directory(journal_dir)
             state.journal_dir = journal_dir
             state.journal_identity = _directory_identity(journal_dir)
             directories[str(state.codex_dir.resolve())]["journal_identity"] = (
@@ -1907,24 +3037,30 @@ def _create_deployment_journals(
         # Ordinary failures occur before deployment mutation and may clean up.
         # Hard termination leaves the published initializing journal recoverable.
         for state in reversed(states):
-            if state.journal_dir and _path_entry_exists(state.journal_dir):
-                if state.journal_identity is None or state.journal_data is None:
-                    raise HooksConflict(
-                        f"初始化失败的 journal 缺少所有权记录: {state.journal_dir}"
-                    ) from None
-                _safe_remove_owned_directory(
-                    state.journal_dir,
-                    state.journal_identity,
-                    _journal_expected_members(
-                        state.journal_data,
-                        str(state.codex_dir.resolve()),
+            try:
+                if state.journal_dir and _path_entry_exists(state.journal_dir):
+                    if state.journal_identity is None or state.journal_data is None:
+                        raise HooksConflict(
+                            f"初始化失败的 journal 缺少所有权记录: {state.journal_dir}"
+                        )
+                    _safe_remove_owned_directory(
                         state.journal_dir,
-                        require_all_snapshots=False,
-                    ),
-                    require_exact_members=True,
+                        state.journal_identity,
+                        _journal_expected_members(
+                            state.journal_data,
+                            str(state.codex_dir.resolve()),
+                            state.journal_dir,
+                            require_all_snapshots=False,
+                        ),
+                        require_exact_members=True,
+                    )
+                    _fsync_directory(state.codex_dir)
+                    state.journal_dir = None
+            except BaseException as cleanup_exc:
+                _print(
+                    f"[事务警告] 初始化 journal 清理失败，已保留证据: {cleanup_exc}",
+                    file=sys.stderr,
                 )
-                _fsync_directory(state.codex_dir)
-                state.journal_dir = None
         raise
 
 def _update_deployment_journals(
@@ -2285,55 +3421,7 @@ def _validate_hooks_for_isolation(codex_dir: Path) -> Optional[dict]:
 
 def _atomic_rename_no_replace(source: Path, destination: Path) -> bool:
     """Atomically rename source while preserving an existing destination."""
-    if os.name == "nt":
-        try:
-            os.rename(str(source), str(destination))
-        except FileExistsError:
-            return False
-        except OSError as exc:
-            if exc.errno in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
-                raise AtomicRenameUnavailable(exc.errno, str(exc)) from exc
-            raise
-        return True
-
-    libc = ctypes.CDLL(None, use_errno=True)
-    source_bytes = os.fsencode(source)
-    destination_bytes = os.fsencode(destination)
-
-    if sys.platform == "darwin":
-        if not hasattr(libc, "renamex_np"):
-            raise AtomicRenameUnavailable(errno.ENOTSUP, "renamex_np is unavailable")
-        rename_no_replace = libc.renamex_np
-        rename_no_replace.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        rename_no_replace.restype = ctypes.c_int
-        result = rename_no_replace(source_bytes, destination_bytes, 0x00000004)
-    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
-        rename_no_replace = libc.renameat2
-        rename_no_replace.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        rename_no_replace.restype = ctypes.c_int
-        result = rename_no_replace(-100, source_bytes, -100, destination_bytes, 0x00000001)
-    else:
-        raise AtomicRenameUnavailable(
-            errno.ENOTSUP,
-            "atomic no-replace rename is unavailable",
-        )
-
-    if result == 0:
-        return True
-
-    error_number = ctypes.get_errno()
-    if error_number == errno.EEXIST:
-        return False
-    message = f"{os.strerror(error_number)}: {source} -> {destination}"
-    if error_number in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
-        raise AtomicRenameUnavailable(error_number, message)
-    raise OSError(error_number, message)
+    return _FILESYSTEM.atomic_rename_no_replace(source, destination)
 
 
 def _verify_atomic_rename_support(codex_dir: Path) -> None:
@@ -2341,22 +3429,21 @@ def _verify_atomic_rename_support(codex_dir: Path) -> None:
     source_path = None
     destination_path = None
     try:
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            dir=str(codex_dir),
-            prefix=".keysmith-rename-source-",
-            delete=False,
-        ) as source_file:
-            source_file.write(b"source")
-            source_path = Path(source_file.name)
-        with tempfile.NamedTemporaryFile(
-            "wb",
-            dir=str(codex_dir),
-            prefix=".keysmith-rename-destination-",
-            delete=False,
-        ) as destination_file:
-            destination_file.write(b"destination")
-            destination_path = Path(destination_file.name)
+        source_path = codex_dir / f".keysmith-rename-source-{uuid.uuid4().hex}"
+        destination_path = codex_dir / (
+            f".keysmith-rename-destination-{uuid.uuid4().hex}"
+        )
+        for path, content in (
+            (source_path, b"source"),
+            (destination_path, b"destination"),
+        ):
+            descriptor = _open_exclusive_private_file(path)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+                _FILESYSTEM.apply_private_file_security(stream.fileno())
+        _fsync_directory(codex_dir)
 
         if _atomic_rename_no_replace(source_path, destination_path):
             raise OSError("atomic no-replace rename replaced an existing destination")
@@ -2457,9 +3544,9 @@ def _copy_to_unique_backup(
                 shutil.copyfileobj(source_file, destination)
                 destination.flush()
                 os.fsync(destination.fileno())
-                os.fchmod(
+                _FILESYSTEM.clone_file_security(
                     destination.fileno(),
-                    stat.S_IMODE(source_stat.st_mode),
+                    source_stat,
                 )
             source_after = _fingerprint_descriptor(
                 source_descriptor,
@@ -2474,10 +3561,10 @@ def _copy_to_unique_backup(
                 raise HooksConflict(
                     f"源文件在备份期间发生变化，已拒绝不一致备份: {source}"
                 )
-            os.utime(
+            _FILESYSTEM.set_file_times(
                 backup,
-                ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
-                follow_symlinks=False,
+                source_stat.st_atime_ns,
+                source_stat.st_mtime_ns,
             )
         except BaseException:
             try:
@@ -2556,10 +3643,11 @@ def _copy_file_no_replace(
             shutil.copyfileobj(source_file, temporary)
             temporary.flush()
             os.fsync(temporary.fileno())
-            os.fchmod(temporary.fileno(), stat.S_IMODE(source_stat.st_mode))
-        os.utime(
+            _FILESYSTEM.clone_file_security(temporary.fileno(), source_stat)
+        _FILESYSTEM.set_file_times(
             temporary_path,
-            ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+            source_stat.st_atime_ns,
+            source_stat.st_mtime_ns,
         )
         source_after = _fingerprint_descriptor(
             source_descriptor,
@@ -2962,7 +4050,7 @@ def rollback_hooks_isolation(isolation: HooksIsolation) -> None:
         raise
 
 
-def restore_hooks(codex_dir: Path) -> bool:
+def _restore_hooks_locked(codex_dir: Path) -> bool:
     """Atomically claim and restore hooks.json.disabled."""
     hooks_path = codex_dir / "hooks.json"
     disabled_path = codex_dir / "hooks.json.disabled"
@@ -2999,7 +4087,8 @@ def restore_hooks(codex_dir: Path) -> bool:
             raise HooksConflict(
                 f"hooks.json.disabled 在事务登记后发生变化: {disabled_path}"
             )
-        shutil.copy2(disabled_claim, recovery_copy, follow_symlinks=False)
+        _copy_snapshot(disabled_claim, recovery_copy)
+        _filesystem_checkpoint("restore-hooks-recovery-copy-published")
         if (
             _fingerprint_regular_file(disabled_claim) != disabled_fingerprint
             or not _same_file_content(disabled_claim, recovery_copy)
@@ -3065,6 +4154,11 @@ def restore_hooks(codex_dir: Path) -> bool:
         raise
 
 
+def restore_hooks(codex_dir: Path) -> bool:
+    with _DirectoryLockSet([str(codex_dir)]):
+        return _restore_hooks_locked(codex_dir)
+
+
 def write_md_with_backup(md_dest: Path, md_content: str, timestamp: Optional[str] = None) -> Optional[Path]:
     """Write the MD file and back up any existing file first."""
     backup = backup_file(md_dest, timestamp) if _path_entry_exists(md_dest) else None
@@ -3074,26 +4168,28 @@ def write_md_with_backup(md_dest: Path, md_content: str, timestamp: Optional[str
 
 def _restore_file_from_backup(backup: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    transaction_dir = None
     temporary_path = None
     try:
-        with backup.open("rb") as source, tempfile.NamedTemporaryFile(
-            "wb",
-            dir=str(destination.parent),
-            delete=False,
-        ) as temporary:
-            shutil.copyfileobj(source, temporary)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        shutil.copystat(backup, temporary_path)
-        os.replace(temporary_path, destination)
+        transaction_dir, _identity = _make_registered_transaction_dir(
+            destination.parent,
+            "restore-file",
+            {"prepared": None},
+        )
+        temporary_path = transaction_dir / "prepared"
+        _copy_snapshot(backup, temporary_path)
+        _FILESYSTEM.replace_atomic(temporary_path, destination)
         temporary_path = None
+        _remove_transaction_dir(transaction_dir)
+        transaction_dir = None
     finally:
         if temporary_path is not None:
             try:
                 temporary_path.unlink()
             except OSError:
                 pass
+        if transaction_dir is not None:
+            _cleanup_transaction_dir_after_error(transaction_dir)
 
 
 def rollback_deployment_state(state: DeploymentState, md_filename: str) -> List[str]:
@@ -3726,12 +4822,11 @@ def _copy_snapshot(source: Path, destination: Path) -> None:
                 shutil.copyfileobj(source_file, target)
                 target.flush()
                 os.fsync(target.fileno())
-                if hasattr(os, "fchmod"):
-                    os.fchmod(target.fileno(), stat.S_IMODE(source_stat.st_mode))
-            os.utime(
+                _FILESYSTEM.clone_file_security(target.fileno(), source_stat)
+            _FILESYSTEM.set_file_times(
                 destination,
-                ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
-                follow_symlinks=False,
+                source_stat.st_atime_ns,
+                source_stat.st_mtime_ns,
             )
         except BaseException:
             try:
@@ -4051,7 +5146,7 @@ def _finish_cleanup_intent_artifact(
     if not marker_mode:
         if cleanup_dir is None or _directory_identity(cleanup_dir) != expected_identity:
             raise HooksConflict(f"cleanup 目录 identity 已变化: {cleanup_dir}")
-        names = set(os.listdir(cleanup_dir))
+        names = _FILESYSTEM.list_directory_names(cleanup_dir)
         allowed = {INTENT_FILENAME, MANIFEST_INTENT_FILENAME}
         if not names <= allowed or INTENT_FILENAME not in names:
             raise HooksConflict(f"cleanup 目录包含未授权成员: {cleanup_dir}")
@@ -4059,22 +5154,44 @@ def _finish_cleanup_intent_artifact(
             raise HooksConflict(f"cleanup marker 已存在: {marker}")
         if not _atomic_rename_no_replace(intent_path, marker):
             raise HooksConflict(f"无法认领 cleanup intent: {intent_path}")
+        expected_remaining: Dict[str, Any] = {}
         if MANIFEST_INTENT_FILENAME in names:
             companion = cleanup_dir / MANIFEST_INTENT_FILENAME
             companion_fingerprint = _fingerprint_regular_file(companion)
             if not _path_has_fingerprint(companion, companion_fingerprint):
                 raise HooksConflict(f"cleanup companion 已漂移: {companion}")
-            companion.unlink()
-        if _directory_identity(cleanup_dir) != expected_identity or os.listdir(cleanup_dir):
-            raise HooksConflict(f"cleanup 目录在 rmdir 前变化: {cleanup_dir}")
-        os.rmdir(cleanup_dir)
+            expected_remaining[MANIFEST_INTENT_FILENAME] = companion_fingerprint
+        access, remaining_names = _open_verified_owned_directory(
+            cleanup_dir,
+            expected_identity,
+            expected_remaining,
+            require_exact_members=True,
+        )
+        try:
+            for name in sorted(remaining_names):
+                _FILESYSTEM.remove_verified_member(
+                    access,
+                    name,
+                    expected_remaining[name],
+                )
+            _FILESYSTEM.flush_owned_directory(access)
+            _FILESYSTEM.remove_verified_directory(access)
+        finally:
+            _FILESYSTEM.close_owned_directory(access)
         _fsync_directory(owner)
         path = marker
 
     if cleanup_dir is not None and _path_entry_exists(cleanup_dir):
-        if _directory_identity(cleanup_dir) != expected_identity or os.listdir(cleanup_dir):
-            raise HooksConflict(f"cleanup marker 对应目录不是空受管目录: {cleanup_dir}")
-        os.rmdir(cleanup_dir)
+        access, _remaining_names = _open_verified_owned_directory(
+            cleanup_dir,
+            expected_identity,
+            {},
+            require_exact_members=True,
+        )
+        try:
+            _FILESYSTEM.remove_verified_directory(access)
+        finally:
+            _FILESYSTEM.close_owned_directory(access)
         _fsync_directory(owner)
     if not _path_has_fingerprint(path, fingerprint):
         raise HooksConflict(f"cleanup marker 已漂移: {path}")
@@ -4176,7 +5293,9 @@ def _recover_cleanup_artifacts(
                 marker = codex_dir / (
                     f"{CLEANUP_MARKER_PREFIX}{transaction_id}{CLEANUP_MARKER_SUFFIX}"
                 )
-                if _path_entry_exists(marker) and not os.listdir(journal):
+                if _path_entry_exists(marker) and not _FILESYSTEM.list_directory_names(
+                    journal
+                ):
                     continue
                 raise HooksConflict(f"cleanup journal 缺少可验证 intent: {journal}")
     if cleanup_intent is not None:
@@ -5067,13 +6186,13 @@ def _late_absent_md_recovery_claim(
             "published": published,
             "previous_in_claim": False,
         }
-    descriptor, names = _open_verified_owned_directory(
+    access, names = _open_verified_owned_directory(
         residue_path,
         _identity_from_portable(record["identity"], "late-MD residue"),
         record["members"],
         require_exact_members=False,
     )
-    os.close(descriptor)
+    _FILESYSTEM.close_owned_directory(access)
     previous_path = residue_path / "previous"
     previous_in_claim = "previous" in names
     published_in_claim = "published" in names
@@ -5295,7 +6414,7 @@ def _uninstall_recovery_preflight(
                 blockers.append(f"{residue}: 不属于卸载事务")
                 continue
             try:
-                descriptor, _names = _open_verified_owned_directory(
+                access, _names = _open_verified_owned_directory(
                     residue,
                     _identity_from_portable(
                         record["identity"],
@@ -5304,7 +6423,7 @@ def _uninstall_recovery_preflight(
                     record["members"],
                     require_exact_members=False,
                 )
-                os.close(descriptor)
+                _FILESYSTEM.close_owned_directory(access)
             except (OSError, ValueError) as exc:
                 blockers.append(str(exc))
         for resource in resources.values():
@@ -5475,13 +6594,13 @@ def _cleanup_initializing_uninstall(
             "initializing uninstall journal identity",
         )
         if not expected_members:
-            descriptor, _names = _open_verified_owned_directory(
+            access, _names = _open_verified_owned_directory(
                 journal_dir,
                 identity,
                 {},
                 require_exact_members=True,
             )
-            os.close(descriptor)
+            _FILESYSTEM.close_owned_directory(access)
             intent_path = journal_dir / INTENT_FILENAME
             _write_exclusive_private_json(intent_path, expected_intent)
             intent_fingerprint = _fingerprint_regular_file(intent_path)
@@ -5598,7 +6717,7 @@ def _recover_uninstall(codex_dirs: List[str], yes: bool) -> None:
             )
             if _directory_identity(expected) != expected_identity:
                 raise HooksConflict(f"初始化 uninstall journal identity 已变化: {expected}")
-            names = set(os.listdir(expected))
+            names = _FILESYSTEM.list_directory_names(expected)
             if not names:
                 partial_journals.append((expected, {}))
                 continue
@@ -5732,7 +6851,7 @@ def _recover_uninstall(codex_dirs: List[str], yes: bool) -> None:
     _print(f"[完成] 已恢复卸载事务 {transaction_id}。")
 
 
-def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
+def _recover_deployment_locked(codex_dirs: List[str], yes: bool) -> None:
     """Preview or safely recover an interrupted durable deployment."""
     global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     try:
@@ -5792,7 +6911,7 @@ def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
                     raise HooksConflict(
                         "remaining intent does not match the verified cleanup intent"
                     )
-                names = set(os.listdir(journal))
+                names = _FILESYSTEM.list_directory_names(journal)
                 if names == {INTENT_FILENAME}:
                     continue
                 if (
@@ -6483,9 +7602,7 @@ def _create_uninstall_journals(
     try:
         for state in states:
             journal_dir = state.codex_dir / f"{JOURNAL_PREFIX}{transaction_id}"
-            os.mkdir(journal_dir, 0o700)
-            if hasattr(os, "chmod"):
-                os.chmod(journal_dir, 0o700)
+            _FILESYSTEM.create_private_directory(journal_dir)
             state.journal_dir = journal_dir
             state.journal_identity = _directory_identity(journal_dir)
             directories[str(state.codex_dir.resolve())]["journal_identity"] = (
@@ -6525,23 +7642,31 @@ def _create_uninstall_journals(
         _update_deployment_journals(states, "prepared")
     except BaseException:
         for state in reversed(states):
-            if state.journal_dir and _path_entry_exists(state.journal_dir):
-                if state.journal_identity is None or state.journal_data is None:
-                    raise HooksConflict(
-                        f"初始化失败的 uninstall journal 缺少所有权: {state.journal_dir}"
-                    ) from None
-                _safe_remove_owned_directory(
-                    state.journal_dir,
-                    state.journal_identity,
-                    _journal_expected_members(
-                        state.journal_data,
-                        str(state.codex_dir.resolve()),
+            try:
+                if state.journal_dir and _path_entry_exists(state.journal_dir):
+                    if state.journal_identity is None or state.journal_data is None:
+                        raise HooksConflict(
+                            "初始化失败的 uninstall journal 缺少所有权: "
+                            f"{state.journal_dir}"
+                        )
+                    _safe_remove_owned_directory(
                         state.journal_dir,
-                        require_all_snapshots=False,
-                    ),
-                    require_exact_members=True,
+                        state.journal_identity,
+                        _journal_expected_members(
+                            state.journal_data,
+                            str(state.codex_dir.resolve()),
+                            state.journal_dir,
+                            require_all_snapshots=False,
+                        ),
+                        require_exact_members=True,
+                    )
+                    state.journal_dir = None
+            except BaseException as cleanup_exc:
+                _print(
+                    "[事务警告] 初始化 uninstall journal 清理失败，已保留证据: "
+                    f"{cleanup_exc}",
+                    file=sys.stderr,
                 )
-                state.journal_dir = None
         raise
 
 
@@ -6615,7 +7740,7 @@ def _replace_owned_from_backup(
             shutil.copyfileobj(source, temporary)
             temporary.flush()
             os.fsync(temporary.fileno())
-            os.fchmod(temporary.fileno(), stat.S_IMODE(source_stat.st_mode))
+            _FILESYSTEM.clone_file_security(temporary.fileno(), source_stat)
         source_after = _fingerprint_descriptor(
             source_descriptor,
             source_stat,
@@ -6623,10 +7748,10 @@ def _replace_owned_from_backup(
         )
         if expected_backup and source_after != expected_backup:
             raise HooksConflict(f"卸载备份在预检后发生变化: {backup}")
-        os.utime(
+        _FILESYSTEM.set_file_times(
             temporary_path,
-            ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
-            follow_symlinks=False,
+            source_stat.st_atime_ns,
+            source_stat.st_mtime_ns,
         )
         _transactional_replace_existing(
             destination,
@@ -6904,7 +8029,7 @@ def _verify_uninstall_final_state(states: List[UninstallState]) -> None:
                 )
 
 
-def uninstall(codex_dirs: List[str], yes: bool) -> None:
+def _uninstall_locked(codex_dirs: List[str], yes: bool) -> None:
     global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     if not codex_dirs:
         _print("[完成] 未找到 codex-keysmith 部署清单；无需卸载。")
@@ -7016,6 +8141,14 @@ def uninstall(codex_dirs: List[str], yes: bool) -> None:
         if state.manifest_archive:
             _print(f"  [清单归档] {state.manifest_archive}")
     _print(f"[完成] 已卸载 {len(states)} 个受管理部署。")
+
+
+def uninstall(codex_dirs: List[str], yes: bool) -> None:
+    if not yes or not codex_dirs:
+        _uninstall_locked(codex_dirs, yes)
+        return
+    with _DirectoryLockSet(codex_dirs) as locks:
+        _uninstall_locked([str(item.path) for item in locks.directories], yes)
 
 
 @dataclass(frozen=True)
@@ -7784,7 +8917,7 @@ def show_status(codex_dirs: List[str]) -> None:
     )
 
 
-def deploy(args) -> None:
+def _deploy_locked(args, codex_dirs: Optional[List[str]] = None) -> None:
     """主部署逻辑"""
     global _ACTIVE_DEPLOYMENT_STATES, _ACTIVE_DEPLOYMENT_TRANSACTION_ID
     try:
@@ -7794,7 +8927,8 @@ def deploy(args) -> None:
         _print(f"[错误] {exc}")
         sys.exit(1)
 
-    codex_dirs = find_codex_dirs()
+    if codex_dirs is None:
+        codex_dirs = find_codex_dirs()
     if not codex_dirs:
         _print(
             _localized(
@@ -8289,6 +9423,81 @@ def deploy(args) -> None:
     _print(f"\n[完成] 已部署到 {len(codex_dirs)} 个 Codex 配置目录。")
     if skip_hooks_isolation:
         _print("[警告] hooks.json 未被隔离，仍保持活跃。")
+
+
+def _discover_recovery_lock_directories(codex_dirs: List[str]) -> List[str]:
+    discovered = list(codex_dirs)
+    queue = list(codex_dirs)
+    seen = set()
+    while queue:
+        directory = queue.pop(0)
+        canonical = str(Path(directory).resolve())
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        root = Path(directory)
+        candidates = list(_deployment_cleanup_markers(root))
+        candidates.extend(_deployment_journal_dirs(root))
+        for candidate in candidates:
+            payload_path = candidate
+            if candidate.is_dir():
+                if _is_regular_path(candidate / JOURNAL_FILENAME):
+                    payload_path = candidate / JOURNAL_FILENAME
+                elif _is_regular_path(candidate / INTENT_FILENAME):
+                    payload_path = candidate / INTENT_FILENAME
+                else:
+                    continue
+            try:
+                content, _fingerprint = _read_regular_bytes_with_fingerprint(
+                    payload_path,
+                    "recovery lock discovery",
+                )
+                payload = json.loads(content.decode("utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, TypeError):
+                continue
+            participants = payload.get("participants")
+            if not isinstance(participants, list):
+                continue
+            for participant in participants:
+                if isinstance(participant, str) and participant not in discovered:
+                    discovered.append(participant)
+                    queue.append(participant)
+    return discovered
+
+
+def recover_deployment(codex_dirs: List[str], yes: bool) -> None:
+    if not yes or not codex_dirs:
+        _recover_deployment_locked(codex_dirs, yes)
+        return
+    candidates = _discover_recovery_lock_directories(codex_dirs)
+    for _attempt in range(3):
+        locks = _DirectoryLockSet(candidates)
+        locks.__enter__()
+        try:
+            expanded = _discover_recovery_lock_directories(codex_dirs)
+            expanded_keys = {
+                item.lock_key for item in _normalize_operation_directories(expanded)
+            }
+            locked_keys = {item.lock_key for item in locks.directories}
+            if expanded_keys <= locked_keys:
+                _recover_deployment_locked(codex_dirs, yes)
+                return
+            candidates = expanded
+        finally:
+            locks.__exit__(None, None, None)
+    raise HooksConflict("recovery participant set did not stabilize while acquiring locks")
+
+def deploy(args) -> None:
+    preview_only = args.dry_run or not args.yes
+    if preview_only:
+        _deploy_locked(args)
+        return
+    codex_dirs = find_codex_dirs()
+    if not codex_dirs:
+        _deploy_locked(args, codex_dirs)
+        return
+    with _DirectoryLockSet(codex_dirs) as locks:
+        _deploy_locked(args, [str(item.path) for item in locks.directories])
 
 
 def main() -> None:

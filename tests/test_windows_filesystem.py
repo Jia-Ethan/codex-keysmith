@@ -2,12 +2,12 @@ import importlib.util
 import inspect
 import json
 import os
+import selectors
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex-instruct.py"
 spec = importlib.util.spec_from_file_location("codex_instruct_windows_fs", MODULE_PATH)
@@ -174,6 +174,50 @@ def test_operation_directories_are_identity_deduplicated_and_stably_sorted(tmp_p
     keys = [item.lock_key for item in normalized]
     assert keys == sorted(keys)
     assert {item.path for item in normalized} == {first.resolve(), second.resolve()}
+
+
+def test_directory_lock_excludes_second_process_without_sleep(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "lock target")
+    worker = """
+import importlib.util
+import sys
+from pathlib import Path
+
+module_path = Path(sys.argv[1])
+target = sys.argv[2]
+spec = importlib.util.spec_from_file_location("keysmith_lock_worker", module_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+def checkpoint(name):
+    if name in {"directory-lock-wait", "directory-lock-acquired"}:
+        print(name, flush=True)
+
+module._FILESYSTEM_CHECKPOINT_HOOK = checkpoint
+with module._DirectoryLockSet([target]):
+    pass
+"""
+    process = None
+    selector = selectors.DefaultSelector()
+    with codex_instruct._DirectoryLockSet([str(codex_dir)]):
+        process = subprocess.Popen(
+            [sys.executable, "-c", worker, str(MODULE_PATH), str(codex_dir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdout is not None
+        selector.register(process.stdout, selectors.EVENT_READ)
+        events = selector.select(timeout=10)
+        assert events, "lock worker did not reach the wait checkpoint"
+        assert process.stdout.readline() == "directory-lock-wait\n"
+        assert not selector.select(timeout=0.2), "worker acquired an already-held lock"
+    assert process is not None
+    stdout, stderr = process.communicate(timeout=10)
+    selector.close()
+    assert process.returncode == 0, stderr
+    assert stdout == "directory-lock-acquired\n"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native ACL contract")
