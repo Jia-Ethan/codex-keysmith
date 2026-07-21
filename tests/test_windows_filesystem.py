@@ -262,6 +262,16 @@ def test_operation_directories_are_identity_deduplicated_and_stably_sorted(tmp_p
     assert {item.path for item in normalized} == {first.resolve(), second.resolve()}
 
 
+def test_windows_native_identity_matches_python_portable_device_encoding():
+    native = codex_instruct.FileIdentity(0x428342FD, 123)
+    portable = codex_instruct.FileIdentity(0xFA428383428342FD, 123)
+
+    assert codex_instruct._WindowsFilesystemBackend._handle_matches_portable_identity(
+        native,
+        portable,
+    )
+
+
 @pytest.mark.parametrize(
     "name",
     ["CON", "prn.md", "AUX", "nul.txt", "COM1", "lpt9.md"],

@@ -1642,6 +1642,16 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         inode = (int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow)
         return FileIdentity(int(info.dwVolumeSerialNumber), inode)
 
+    @staticmethod
+    def _handle_matches_portable_identity(
+        handle_identity: FileIdentity,
+        portable_identity: FileIdentity,
+    ) -> bool:
+        return (
+            handle_identity.inode == portable_identity.inode
+            and handle_identity.device == portable_identity.device & 0xFFFFFFFF
+        )
+
     def _handle_attributes(self, handle: int) -> _FILE_ATTRIBUTE_TAG_INFO_STRUCT:
         info = self._FILE_ATTRIBUTE_TAG_INFO_STRUCT()
         if not self.kernel32.GetFileInformationByHandleEx(
@@ -1997,7 +2007,10 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             self._validate_ntfs(handle, path)
             identity = self._handle_identity(handle)
             path_identity = _directory_identity(path)
-            if identity != expected_identity or path_identity != expected_identity:
+            if (
+                not self._handle_matches_portable_identity(identity, expected_identity)
+                or path_identity != expected_identity
+            ):
                 raise HooksConflict(
                     "受管事务目录 identity 已变化，保留证据: "
                     f"{path}; expected={expected_identity}, handle={identity}, "
@@ -2140,7 +2153,10 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         descriptor = None
         try:
             self._validate_handle_type(handle, path, is_directory=False)
-            if self._handle_identity(handle) != expected_identity:
+            if not self._handle_matches_portable_identity(
+                self._handle_identity(handle),
+                expected_identity,
+            ):
                 raise HooksConflict(f"待删除文件 identity 已变化，保留证据: {path}")
             descriptor = self.msvcrt.open_osfhandle(
                 handle,
