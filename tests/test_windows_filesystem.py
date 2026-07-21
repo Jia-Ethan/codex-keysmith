@@ -449,7 +449,7 @@ def test_windows_verified_delete_preserves_occupied_evidence_then_retries(tmp_pa
                 identity,
                 fingerprint,
             )
-        assert caught.value.winerror == 32
+        assert caught.value.errno == 32
         assert target.read_bytes() == b"owned marker\n"
 
     codex_instruct._FILESYSTEM.remove_verified_file(
