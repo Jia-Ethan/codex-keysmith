@@ -1021,12 +1021,17 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    (remaining_journal / codex_instruct.JOURNAL_FILENAME).write_text(
+        "{",
+        encoding="utf-8",
+    )
     first_evidence = _snapshot_tree(first)
-    second_journal = _single_journal(second) / codex_instruct.JOURNAL_FILENAME
-    second_journal.write_text("{", encoding="utf-8")
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
