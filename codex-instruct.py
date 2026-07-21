@@ -555,6 +555,14 @@ def normalize_md_name(name: str) -> str:
         raise ValueError("--name 不能包含 '..'")
     if not SAFE_NAME_RE.fullmatch(raw):
         raise ValueError("--name 只能包含字母、数字、点、下划线和连字符")
+    windows_stem = raw.split(".", 1)[0].upper()
+    if (
+        windows_stem in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+        or re.fullmatch(r"COM[1-9]", windows_stem)
+        or re.fullmatch(r"LPT[1-9]", windows_stem)
+        or raw.endswith(".")
+    ):
+        raise ValueError("--name uses a Windows reserved device name")
     if raw == LEGACY_MD_FILENAME[:-3]:
         raise ValueError(
             f"--name 保留给旧版迁移，不能使用 {LEGACY_MD_FILENAME[:-3]}"
