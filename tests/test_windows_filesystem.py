@@ -176,6 +176,15 @@ def test_operation_directories_are_identity_deduplicated_and_stably_sorted(tmp_p
     assert {item.path for item in normalized} == {first.resolve(), second.resolve()}
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["CON", "prn.md", "AUX", "nul.txt", "COM1", "lpt9.md"],
+)
+def test_windows_reserved_device_names_are_rejected(name):
+    with pytest.raises(ValueError, match="reserved"):
+        codex_instruct.normalize_md_name(name)
+
+
 def test_directory_lock_excludes_second_process_without_sleep(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "lock target")
     worker = """
@@ -218,6 +227,75 @@ with module._DirectoryLockSet([target]):
     selector.close()
     assert process.returncode == 0, stderr
     assert stdout == "directory-lock-acquired\n"
+
+
+def test_process_termination_releases_directory_lock(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "terminated lock")
+    holder = """
+import importlib.util
+import sys
+from pathlib import Path
+
+module_path = Path(sys.argv[1])
+target = sys.argv[2]
+spec = importlib.util.spec_from_file_location("keysmith_lock_holder", module_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+def checkpoint(name):
+    if name == "directory-lock-acquired":
+        print(name, flush=True)
+
+module._FILESYSTEM_CHECKPOINT_HOOK = checkpoint
+with module._DirectoryLockSet([target]):
+    sys.stdin.buffer.read(1)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", holder, str(MODULE_PATH), str(codex_dir)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline() == "directory-lock-acquired\n"
+    process.kill()
+    process.communicate(timeout=10)
+
+    worker = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util,sys; from pathlib import Path; "
+                "p=Path(sys.argv[1]); s=importlib.util.spec_from_file_location('m',p); "
+                "m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; "
+                "s.loader.exec_module(m); "
+                "lock=m._DirectoryLockSet([sys.argv[2]]); lock.__enter__(); "
+                "print('acquired'); lock.__exit__(None,None,None)"
+            ),
+            str(MODULE_PATH),
+            str(codex_dir),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert worker.returncode == 0, worker.stderr
+    assert worker.stdout == "acquired\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows case-insensitive identity contract")
+def test_windows_case_aliases_are_identity_deduplicated(tmp_path):
+    directory = _make_codex_dir(tmp_path, "CaseAlias")
+    alias = Path(str(directory).swapcase())
+
+    normalized = codex_instruct._normalize_operation_directories(
+        [str(directory), str(alias)]
+    )
+
+    assert len(normalized) == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native ACL contract")

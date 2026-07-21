@@ -619,7 +619,7 @@ def test_builder_rejects_missing_file_and_incomplete_mit_notice(
         release_builder.build_release(TAG, license_repo, tmp_path / "license-assets")
 
 
-def test_ci_uses_full_tag_checkout_and_only_claims_supported_platforms():
+def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(
         encoding="utf-8"
     )
@@ -633,9 +633,15 @@ def test_ci_uses_full_tag_checkout_and_only_claims_supported_platforms():
     assert '"pytest==8.4.2"' in workflow
     assert 'python-version == \'3.9\'' in workflow
     assert 'python-version == \'3.8\'' not in workflow
-    assert "windows-2025" not in workflow
+    assert "windows-2025" in workflow
+    assert '"3.10"' in workflow
+    assert '"3.14"' in workflow
     assert "continue-on-error" not in workflow
     assert "Windows experimental atomic no-replace probe passed" not in workflow
+    windows_job = workflow.split("\n  windows:", 1)[1].split("\n  quality:", 1)[0]
+    assert "runs-on: windows-2025" in windows_job
+    assert "python -m py_compile codex-instruct.py" in windows_job
+    assert "python -m pytest -p no:cacheprovider -q tests" in windows_job
     quality_job = workflow.split("\n  quality:", 1)[1]
     assert "fetch-depth: 0" in quality_job
     assert "fetch-tags: true" in quality_job
