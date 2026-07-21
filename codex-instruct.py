@@ -1783,7 +1783,9 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     def set_file_times(self, path: Path, atime_ns: int, mtime_ns: int) -> None:
         handle = self._open_handle(
             path,
-            self._FILE_READ_ATTRIBUTES | self._FILE_WRITE_ATTRIBUTES,
+            self._GENERIC_WRITE
+            | self._FILE_READ_ATTRIBUTES
+            | self._FILE_WRITE_ATTRIBUTES,
         )
         try:
             self._validate_handle_type(handle, path, is_directory=False)
