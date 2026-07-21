@@ -323,6 +323,53 @@ def test_transactional_replace_cleanup_preserves_concurrent_destination(
     assert not list(tmp_path.glob(".keysmith-write-*"))
 
 
+def test_transactional_replace_acl_failure_preserves_claim_on_restore_race(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "target.txt"
+    target.write_text("old\n", encoding="utf-8")
+    expected = codex_instruct._fingerprint_regular_file(target)
+    real_atomic_rename = codex_instruct._atomic_rename_no_replace
+    raced = False
+
+    def fail_claim_security(_path, _fingerprint):
+        raise PermissionError("primary ACL persistence failure")
+
+    def race_restore(source, destination):
+        nonlocal raced
+        source = Path(source)
+        destination = Path(destination)
+        if source.name == "previous" and destination == target and not raced:
+            target.write_text("concurrent\n", encoding="utf-8")
+            raced = True
+        return real_atomic_rename(source, destination)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_secure_verified_transaction_claim",
+        fail_claim_security,
+    )
+    monkeypatch.setattr(
+        codex_instruct,
+        "_atomic_rename_no_replace",
+        race_restore,
+    )
+
+    with pytest.raises(PermissionError, match="primary ACL persistence failure"):
+        codex_instruct.atomic_write_text(
+            target,
+            "new\n",
+            expected_fingerprint=expected,
+        )
+
+    assert target.read_text(encoding="utf-8") == "concurrent\n"
+    recovery_files = list(tmp_path.glob("target.txt.recovery_*"))
+    assert len(recovery_files) == 1
+    assert recovery_files[0].read_text(encoding="utf-8") == "old\n"
+    assert not list(tmp_path.glob(".keysmith-write-*"))
+
+
 def test_rollback_owned_file_preserves_same_content_replacement(tmp_path):
     target = tmp_path / "target.txt"
     target.write_text("same content\n", encoding="utf-8")
