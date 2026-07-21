@@ -1764,12 +1764,12 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             finally:
                 self.kernel32.LocalFree(sddl_pointer)
             if not sddl.startswith("D:P"):
-                raise HooksConflict(f"private ACL is not protected: {path}: {sddl}")
-            if self._current_sid not in sddl:
-                raise HooksConflict(
-                    f"private ACL does not grant the current user: {path}: "
-                    f"sid={self._current_sid}; acl={sddl}"
-                )
+                raise HooksConflict(f"private ACL is not protected: {path}")
+            current_user_present = self._current_sid in sddl or (
+                self._current_sid.endswith("-500") and ";;;LA)" in sddl
+            )
+            if not current_user_present:
+                raise HooksConflict(f"private ACL does not grant the current user: {path}")
             if "SY" not in sddl and "S-1-5-18" not in sddl:
                 raise HooksConflict(f"private ACL does not grant SYSTEM: {path}")
         finally:
