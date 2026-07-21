@@ -458,13 +458,19 @@ def test_windows_lock_pin_revalidates_reparse_components_after_key_handoff(
         backend.pin_directory_for_lock(canonical, key)
 
 
-def test_file_claim_into_owned_transaction_applies_private_security(
+def test_verified_file_claim_applies_identity_bound_private_security(
     tmp_path,
     monkeypatch,
 ):
     transaction_dir = tmp_path / "owned transaction"
     destination = transaction_dir / "claimed"
     secured = []
+    fingerprint = codex_instruct.FileFingerprint(
+        codex_instruct.FileIdentity(3, 4),
+        5,
+        6,
+        "7" * 64,
+    )
     monkeypatch.setitem(
         codex_instruct._OWNED_DIRECTORY_RECORDS,
         str(transaction_dir),
@@ -472,20 +478,60 @@ def test_file_claim_into_owned_transaction_applies_private_security(
     )
     monkeypatch.setattr(
         codex_instruct._FILESYSTEM,
-        "atomic_rename_no_replace",
-        lambda _source, _destination: True,
-    )
-    monkeypatch.setattr(
-        codex_instruct._FILESYSTEM,
         "apply_private_path_security",
-        lambda path: secured.append(path),
+        lambda path, expected: secured.append((path, expected)),
     )
 
-    assert codex_instruct._atomic_rename_no_replace(
-        tmp_path / "source",
+    codex_instruct._secure_verified_transaction_claim(
         destination,
+        fingerprint,
     )
-    assert secured == [destination]
+    assert secured == [(destination, fingerprint)]
+
+
+def test_windows_private_acl_update_rejects_replaced_claim(monkeypatch):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    closed = []
+    open_kwargs = []
+    security_updates = []
+    backend.kernel32 = types.SimpleNamespace(
+        CloseHandle=lambda handle: closed.append(handle) or True,
+        FlushFileBuffers=lambda _handle: True,
+    )
+    backend.advapi32 = types.SimpleNamespace(
+        SetKernelObjectSecurity=lambda *_args: security_updates.append(True) or True,
+    )
+    backend._security_descriptor = object()
+
+    def open_handle(*_args, **kwargs):
+        open_kwargs.append(kwargs)
+        return 101
+
+    monkeypatch.setattr(backend, "_open_handle", open_handle)
+    monkeypatch.setattr(backend, "_validate_handle_type", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backend, "_validate_ntfs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        backend,
+        "_handle_identity",
+        lambda _handle: codex_instruct.FileIdentity(5, 6),
+    )
+
+    with pytest.raises(codex_instruct.HooksConflict, match="identity changed"):
+        backend.apply_private_path_security(
+            Path("C:/claimed"),
+            codex_instruct.FileFingerprint(
+                codex_instruct.FileIdentity(7, 8),
+                9,
+                10,
+                "a" * 64,
+            ),
+        )
+
+    assert open_kwargs == [{"share_mode": backend._FILE_SHARE_READ}]
+    assert security_updates == []
+    assert closed == [101]
+    source = inspect.getsource(backend.apply_private_path_security)
+    assert source.count("_fingerprint_descriptor") == 2
 
 
 def test_failure_cleanup_contract_preserves_primary_exception(capsys):

@@ -1002,8 +1002,12 @@ class _PosixFilesystemBackend:
     def apply_private_file_security(self, descriptor: int) -> None:
         os.fchmod(descriptor, 0o600)
 
-    def apply_private_path_security(self, path: Path) -> None:
-        del path
+    def apply_private_path_security(
+        self,
+        path: Path,
+        expected: FileFingerprint,
+    ) -> None:
+        del path, expected
 
     def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
         os.fchmod(descriptor, stat.S_IMODE(source_stat.st_mode))
@@ -1981,7 +1985,11 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         ):
             self._raise_last_error("cannot apply private ACL")
 
-    def apply_private_path_security(self, path: Path) -> None:
+    def apply_private_path_security(
+        self,
+        path: Path,
+        expected: FileFingerprint,
+    ) -> None:
         handle = self._open_handle(
             path,
             self._GENERIC_READ
@@ -1989,20 +1997,46 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._READ_CONTROL
             | self._WRITE_DAC
             | self._FILE_READ_ATTRIBUTES,
+            share_mode=self._FILE_SHARE_READ,
         )
+        descriptor = None
         try:
             self._validate_handle_type(handle, path, is_directory=False)
             self._validate_ntfs(handle, path)
-            if not self.advapi32.SetKernelObjectSecurity(
+            if not self._handle_matches_portable_identity(
+                self._handle_identity(handle),
+                expected.identity,
+            ):
+                raise HooksConflict(
+                    f"private ACL target identity changed before update: {path}"
+                )
+            descriptor = self.msvcrt.open_osfhandle(
                 handle,
+                os.O_RDWR | getattr(os, "O_BINARY", 0),
+            )
+            handle = 0
+            opened = os.fstat(descriptor)
+            actual = _fingerprint_descriptor(descriptor, opened, path)
+            self._validate_expected_fingerprint(path, actual, expected)
+            raw_handle = self.msvcrt.get_osfhandle(descriptor)
+            if not self.advapi32.SetKernelObjectSecurity(
+                raw_handle,
                 self._DACL_SECURITY_INFORMATION,
                 self._security_descriptor,
             ):
                 self._raise_last_error("cannot apply private ACL", path)
-            if not self.kernel32.FlushFileBuffers(handle):
+            if not self.kernel32.FlushFileBuffers(raw_handle):
                 self._raise_last_error("cannot persist private ACL", path)
+            self._validate_expected_fingerprint(
+                path,
+                _fingerprint_descriptor(descriptor, os.fstat(descriptor), path),
+                expected,
+            )
         finally:
-            self.kernel32.CloseHandle(handle)
+            if descriptor is not None:
+                os.close(descriptor)
+            elif handle:
+                self.kernel32.CloseHandle(handle)
 
     def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
         del source_stat
@@ -4012,10 +4046,17 @@ def _validate_hooks_for_isolation(codex_dir: Path) -> Optional[dict]:
 
 def _atomic_rename_no_replace(source: Path, destination: Path) -> bool:
     """Atomically rename source while preserving an existing destination."""
-    renamed = _FILESYSTEM.atomic_rename_no_replace(source, destination)
-    if renamed and str(destination.parent) in _OWNED_DIRECTORY_RECORDS:
-        _FILESYSTEM.apply_private_path_security(destination)
-    return renamed
+    return _FILESYSTEM.atomic_rename_no_replace(source, destination)
+
+
+def _secure_verified_transaction_claim(
+    path: Path,
+    fingerprint: FileFingerprint,
+) -> None:
+    # Windows claims intentionally retain a private ACL when restored or published.
+    if str(path.parent) not in _OWNED_DIRECTORY_RECORDS:
+        raise HooksConflict(f"verified claim is outside an owned transaction: {path}")
+    _FILESYSTEM.apply_private_path_security(path, fingerprint)
 
 
 def _verify_atomic_rename_support(codex_dir: Path) -> None:
@@ -4319,6 +4360,7 @@ def _transactional_replace_existing(
         if claimed_fingerprint != expected_fingerprint:
             _rollback_claim(previous_claim, destination, timestamp)
             raise HooksConflict(f"目标文件在写入前发生变化: {destination}")
+        _secure_verified_transaction_claim(previous_claim, claimed_fingerprint)
 
         if not _atomic_rename_no_replace(prepared_file, destination):
             _rollback_claim(previous_claim, destination, timestamp)
@@ -4343,6 +4385,10 @@ def _transactional_replace_existing(
                         published_claim
                     )
                     if published_fingerprint == prepared_fingerprint:
+                        _secure_verified_transaction_claim(
+                            published_claim,
+                            published_fingerprint,
+                        )
                         published_claim.unlink()
                         if not _atomic_rename_no_replace(
                             previous_claim,
@@ -4365,7 +4411,12 @@ def _transactional_replace_existing(
                             timestamp,
                         )
                 else:
-                    _atomic_rename_no_replace(previous_claim, destination)
+                    if not _atomic_rename_no_replace(previous_claim, destination):
+                        _move_to_unique_recovery(
+                            previous_claim,
+                            destination,
+                            timestamp,
+                        )
         except BaseException as cleanup_exc:
             _print(
                 f"[事务警告] 写入回滚未完整完成: {cleanup_exc}",
@@ -4395,6 +4446,7 @@ def _rollback_owned_file(
         claimed_fingerprint = _fingerprint_regular_file(installed_claim)
         if claimed_fingerprint != installed_fingerprint:
             raise HooksConflict(f"待回滚文件已被并发替换: {destination}")
+        _secure_verified_transaction_claim(installed_claim, claimed_fingerprint)
         claim_verified = True
 
         if backup:
@@ -4520,6 +4572,7 @@ def isolate_hooks(
         active_fingerprint = _fingerprint_regular_file(active_claim)
         if active_fingerprint != expected_active:
             raise HooksConflict(f"hooks.json 在事务登记后发生变化: {hooks_path}")
+        _secure_verified_transaction_claim(active_claim, active_fingerprint)
         hooks_backup = _copy_to_unique_backup(
             active_claim,
             hooks_path,
@@ -4540,6 +4593,10 @@ def isolate_hooks(
                 raise HooksConflict(
                     f"hooks.json.disabled 在事务登记后发生变化: {disabled_path}"
                 )
+            _secure_verified_transaction_claim(
+                disabled_claim,
+                disabled_fingerprint,
+            )
             previous_disabled_backup = _move_to_unique_backup(
                 disabled_claim,
                 disabled_path,
@@ -4657,6 +4714,7 @@ def rollback_hooks_isolation(isolation: HooksIsolation) -> None:
             raise HooksConflict(
                 f"回滚时 hooks.json.disabled 已发生变化: {disabled_path}"
             )
+        _secure_verified_transaction_claim(disabled_claim, claimed_fingerprint)
 
         if not _atomic_rename_no_replace(disabled_claim, hooks_path):
             raise HooksConflict(f"回滚时 hooks.json 被并发创建: {hooks_path}")
@@ -4752,6 +4810,7 @@ def _restore_hooks_locked(codex_dir: Path) -> bool:
             raise HooksConflict(
                 f"hooks.json.disabled 在事务登记后发生变化: {disabled_path}"
             )
+        _secure_verified_transaction_claim(disabled_claim, disabled_fingerprint)
         _copy_snapshot(disabled_claim, recovery_copy)
         _filesystem_checkpoint("restore-hooks-recovery-copy-published")
         if (
@@ -4997,6 +5056,7 @@ def archive_legacy_file(
         claimed_fingerprint = _fingerprint_regular_file(legacy_claim)
         if claimed_fingerprint != expected_fingerprint:
             raise HooksConflict(f"旧版文件在预检后发生变化: {legacy_path}")
+        _secure_verified_transaction_claim(legacy_claim, claimed_fingerprint)
         config_path = state.codex_dir / "config.toml"
         if not _path_has_fingerprint(config_path, expected_config_fingerprint):
             raise HooksConflict(f"config.toml 在旧版文件认领后发生变化: {config_path}")
@@ -8543,6 +8603,7 @@ def _remove_owned_file(path: Path, expected: FileFingerprint) -> None:
         claimed = _fingerprint_regular_file(claim)
         if claimed != expected:
             raise HooksConflict(f"待删除文件已漂移: {path}")
+        _secure_verified_transaction_claim(claim, claimed)
         claim.unlink()
         _remove_transaction_dir(transaction_dir)
     except BaseException as primary:
