@@ -2,7 +2,6 @@ import importlib.util
 import inspect
 import json
 import os
-import selectors
 import subprocess
 import sys
 from pathlib import Path
@@ -208,7 +207,6 @@ with module._DirectoryLockSet([target]):
     pass
 """
     process = None
-    selector = selectors.DefaultSelector()
     with codex_instruct._DirectoryLockSet([str(codex_dir)]):
         process = subprocess.Popen(
             [sys.executable, "-c", worker, str(MODULE_PATH), str(codex_dir)],
@@ -217,14 +215,11 @@ with module._DirectoryLockSet([target]):
             text=True,
         )
         assert process.stdout is not None
-        selector.register(process.stdout, selectors.EVENT_READ)
-        events = selector.select(timeout=10)
-        assert events, "lock worker did not reach the wait checkpoint"
         assert process.stdout.readline() == "directory-lock-wait\n"
-        assert not selector.select(timeout=0.2), "worker acquired an already-held lock"
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.2)
     assert process is not None
     stdout, stderr = process.communicate(timeout=10)
-    selector.close()
     assert process.returncode == 0, stderr
     assert stdout == "directory-lock-acquired\n"
 

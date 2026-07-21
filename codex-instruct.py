@@ -1241,13 +1241,14 @@ class _PosixFilesystemBackend:
             os.close(descriptor)
 
 
-class _WindowsFilesystemBackend(_PosixFilesystemBackend):
+class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     """Native Windows handles, ACLs, sharing, identity, and persistence."""
 
     _GENERIC_READ = 0x80000000
     _GENERIC_WRITE = 0x40000000
     _DELETE = 0x00010000
     _READ_CONTROL = 0x00020000
+    _WRITE_DAC = 0x00040000
     _FILE_LIST_DIRECTORY = 0x0001
     _FILE_READ_ATTRIBUTES = 0x0080
     _FILE_WRITE_ATTRIBUTES = 0x0100
@@ -1695,6 +1696,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):
             | self._GENERIC_WRITE
             | self._DELETE
             | self._READ_CONTROL
+            | self._WRITE_DAC
             | self._FILE_READ_ATTRIBUTES
             | self._FILE_WRITE_ATTRIBUTES,
             creation=self._CREATE_NEW,
@@ -1712,8 +1714,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):
         handle = self.msvcrt.get_osfhandle(descriptor)
         if not self.advapi32.SetKernelObjectSecurity(
             handle,
-            self._DACL_SECURITY_INFORMATION
-            | self._PROTECTED_DACL_SECURITY_INFORMATION,
+            self._DACL_SECURITY_INFORMATION,
             self._security_descriptor,
         ):
             self._raise_last_error("cannot apply private ACL")
@@ -1763,9 +1764,12 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):
             finally:
                 self.kernel32.LocalFree(sddl_pointer)
             if not sddl.startswith("D:P"):
-                raise HooksConflict(f"private ACL is not protected: {path}")
+                raise HooksConflict(f"private ACL is not protected: {path}: {sddl}")
             if self._current_sid not in sddl:
-                raise HooksConflict(f"private ACL does not grant the current user: {path}")
+                raise HooksConflict(
+                    f"private ACL does not grant the current user: {path}: "
+                    f"sid={self._current_sid}; acl={sddl}"
+                )
             if "SY" not in sddl and "S-1-5-18" not in sddl:
                 raise HooksConflict(f"private ACL does not grant SYSTEM: {path}")
         finally:
