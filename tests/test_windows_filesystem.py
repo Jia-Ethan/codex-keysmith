@@ -699,3 +699,12 @@ def test_uninstall_intent_reads_are_bound_to_verified_directory_evidence(
 
     assert len(calls) == expected_calls
     assert all("," in call.split(")", 1)[0] for call in calls)
+
+
+def test_initializing_uninstall_member_set_uses_verified_directory_evidence():
+    source = inspect.getsource(
+        codex_instruct._load_initializing_uninstall_pending
+    )
+
+    assert "MANIFEST_INTENT_FILENAME in evidence" in source
+    assert "_path_entry_exists(journal_dir / MANIFEST_INTENT_FILENAME)" not in source
