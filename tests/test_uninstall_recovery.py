@@ -32,20 +32,28 @@ def _run(*args):
     )
 
 
+def _write_private_bytes(path, content):
+    descriptor = codex_instruct._open_exclusive_private_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+        codex_instruct._FILESYSTEM.apply_private_file_security(stream.fileno())
+    codex_instruct._fsync_directory(path.parent)
+
+
 def _make_rich_deployment(tmp_path, name):
     codex_dir = tmp_path / name
     codex_dir.mkdir()
-    (codex_dir / "config.toml").write_text(
-        'model_instructions_file = "./gpt5.5-unrestricted.md"\n'
-        'model = "gpt-5.6"\n',
-        encoding="utf-8",
+    (codex_dir / "config.toml").write_bytes(
+        (
+            'model_instructions_file = "./gpt5.5-unrestricted.md"\n'
+            'model = "gpt-5.6"\n'
+        ).encode("utf-8"),
     )
     (codex_dir / "hooks.json").write_bytes(b"\x00active hooks\xff")
     (codex_dir / "hooks.json.disabled").write_bytes(b"previous disabled\n")
-    (codex_dir / codex_instruct.LEGACY_MD_FILENAME).write_text(
-        "legacy prompt\n",
-        encoding="utf-8",
-    )
+    (codex_dir / codex_instruct.LEGACY_MD_FILENAME).write_bytes(b"legacy prompt\n")
     deployed = _run("--codex-dir", codex_dir, "--yes")
     assert deployed.returncode == 0, deployed.stdout + deployed.stderr
     return codex_dir
@@ -83,6 +91,24 @@ def _write_child(tmp_path, name, source):
         text=True,
         capture_output=True,
     )
+
+
+def _filesystem_exit_hook_source(checkpoint, *, hit=1):
+    return f"""
+target_checkpoint = {checkpoint!r}
+target_hit = {hit}
+checkpoint_seen = 0
+
+def interrupt_at_filesystem_checkpoint(name):
+    global checkpoint_seen
+    if name != target_checkpoint:
+        return
+    checkpoint_seen += 1
+    if checkpoint_seen == target_hit:
+        os._exit({HARD_EXIT})
+
+m._FILESYSTEM_CHECKPOINT_HOOK = interrupt_at_filesystem_checkpoint
+"""
 
 
 def _interrupt_uninstall(tmp_path, codex_dirs, checkpoint, *, hit=1):
@@ -190,41 +216,27 @@ sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 
 checkpoint = {checkpoint!r}
-if checkpoint in {{"first-intent", "second-intent"}}:
-    real = m._write_exclusive_private_json
-    published = 0
-    target = 1 if checkpoint == "first-intent" else 2
-    def wrapped(path, data):
-        global published
-        result = real(path, data)
-        if Path(path).name == m.INTENT_FILENAME:
-            published += 1
-            if published == target:
-                os._exit({HARD_EXIT})
-        return result
-    m._write_exclusive_private_json = wrapped
-elif checkpoint == "first-journal-pending":
-    real = m.os.replace
-    def wrapped(source, destination):
-        if (
-            Path(source).name == m.JOURNAL_PENDING_FILENAME
-            and Path(destination).name == m.JOURNAL_FILENAME
-        ):
+if checkpoint in {{
+    "first-intent",
+    "second-intent",
+    "first-journal-pending",
+    "first-journal",
+}}:
+    checkpoint_name, target = {{
+        "first-intent": ("journal-intent-published", 1),
+        "second-intent": ("journal-intent-published", 2),
+        "first-journal-pending": ("journal-pending-published", 1),
+        "first-journal": ("journal-file-published", 1),
+    }}[checkpoint]
+    seen = 0
+    def interrupt_at_checkpoint(name):
+        global seen
+        if name != checkpoint_name:
+            return
+        seen += 1
+        if seen == target:
             os._exit({HARD_EXIT})
-        return real(source, destination)
-    m.os.replace = wrapped
-elif checkpoint == "first-journal":
-    real = m._atomic_write_private_json
-    published = 0
-    def wrapped(path, data):
-        global published
-        result = real(path, data)
-        if Path(path).name == m.JOURNAL_FILENAME:
-            published += 1
-            if published == 1:
-                os._exit({HARD_EXIT})
-        return result
-    m._atomic_write_private_json = wrapped
+    m._FILESYSTEM_CHECKPOINT_HOOK = interrupt_at_checkpoint
 elif checkpoint == "first-snapshot":
     real = m._copy_snapshot
     copied = 0
@@ -258,6 +270,71 @@ def _single_journal(codex_dir):
     return journals[0]
 
 
+def _single_journal_node(codex_dir):
+    nodes = [
+        path
+        for path in codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+        if path.is_dir() and codex_instruct._cleanup_claim_base(path.name) is None
+    ]
+    assert len(nodes) == 1
+    return nodes[0]
+
+
+def _journal_node_members(codex_dirs):
+    result = {}
+    for directory in codex_dirs:
+        nodes = list(directory.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+        assert len(nodes) == 1
+        result[directory] = {path.name for path in nodes[0].iterdir()}
+    return result
+
+
+def _directory_with_journal_member(codex_dirs, member):
+    matches = [
+        directory
+        for directory in codex_dirs
+        if any(
+            (node / member).is_file()
+            for node in directory.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+            if node.is_dir()
+        )
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _directory_with_journal_snapshot(codex_dirs):
+    matches = [
+        directory
+        for directory in codex_dirs
+        if any(
+            member.name.startswith("snapshot-")
+            for node in directory.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+            if node.is_dir()
+            for member in node.iterdir()
+        )
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _cleanup_marker_owner_and_remaining_journal(codex_dirs):
+    marker_owners = [
+        directory
+        for directory in codex_dirs
+        if codex_instruct._deployment_cleanup_markers(directory)
+    ]
+    remaining = [
+        node
+        for directory in codex_dirs
+        for node in directory.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+        if node.is_dir() and codex_instruct._cleanup_claim_base(node.name) is None
+    ]
+    assert len(marker_owners) == 1
+    assert len(remaining) == 1
+    return marker_owners[0], remaining[0]
+
+
 def _assert_no_transaction_artifacts(codex_dir):
     assert not codex_instruct._hooks_transaction_residue(codex_dir)
 
@@ -278,13 +355,21 @@ def test_uninstall_recovery_cleans_partial_multi_directory_journal_publication(t
     )
 
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    assert len(_journal_dirs(first)) == 1
-    second_nodes = list(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    assert len(second_nodes) == 1
-    assert second_nodes[0].is_dir()
-    assert not list(second_nodes[0].iterdir())
+    members = _journal_node_members((first, second))
+    assert sorted(members.values(), key=len) == [
+        set(),
+        {
+            codex_instruct.INTENT_FILENAME,
+            codex_instruct.JOURNAL_FILENAME,
+        },
+    ]
+    anchor = next(
+        directory
+        for directory, names in members.items()
+        if codex_instruct.JOURNAL_FILENAME in names
+    )
 
-    preview = _run("--codex-dir", first, "--recover")
+    preview = _run("--codex-dir", anchor, "--recover")
     assert preview.returncode == 0, preview.stdout + preview.stderr
     _assert_no_cjk(preview.stdout + preview.stderr)
     for codex_dir in (first, second):
@@ -294,7 +379,7 @@ def test_uninstall_recovery_cleans_partial_multi_directory_journal_publication(t
             if not key.startswith(codex_instruct.JOURNAL_PREFIX)
         }
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", anchor, "--recover", "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
     for codex_dir in (first, second):
@@ -325,27 +410,31 @@ def test_uninstall_recovery_cleans_partial_initial_intent_publication(
     )
 
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    first_nodes = list(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    second_nodes = list(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    assert len(first_nodes) == len(second_nodes) == 1
+    members = _journal_node_members((first, second))
     if checkpoint == "first-intent":
-        assert {path.name for path in first_nodes[0].iterdir()} == {
-            codex_instruct.INTENT_FILENAME
-        }
-        assert not list(second_nodes[0].iterdir())
+        assert sorted(members.values(), key=len) == [
+            set(),
+            {codex_instruct.INTENT_FILENAME},
+        ]
     elif checkpoint == "second-intent":
-        assert (first_nodes[0] / codex_instruct.JOURNAL_FILENAME).is_file()
-        assert {path.name for path in second_nodes[0].iterdir()} == {
-            codex_instruct.INTENT_FILENAME
-        }
+        assert sorted(members.values(), key=len) == [
+            {codex_instruct.INTENT_FILENAME},
+            {
+                codex_instruct.INTENT_FILENAME,
+                codex_instruct.JOURNAL_FILENAME,
+            },
+        ]
     else:
-        assert {path.name for path in first_nodes[0].iterdir()} == {
-            codex_instruct.INTENT_FILENAME,
-            codex_instruct.JOURNAL_PENDING_FILENAME,
-        }
-        assert not list(second_nodes[0].iterdir())
+        assert sorted(members.values(), key=len) == [
+            set(),
+            {
+                codex_instruct.INTENT_FILENAME,
+                codex_instruct.JOURNAL_PENDING_FILENAME,
+            },
+        ]
+    anchor = next(directory for directory, names in members.items() if names)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", anchor, "--recover", "--yes")
 
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
@@ -371,15 +460,30 @@ def test_initializing_uninstall_recovery_rejects_detached_participant_evidence(
         checkpoint,
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-
-    second_journal = next(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+    members = _journal_node_members((first, second))
+    anchor = next(
+        (
+            directory
+            for directory, names in members.items()
+            if codex_instruct.JOURNAL_FILENAME in names
+        ),
+        next(
+            directory
+            for directory, names in members.items()
+            if codex_instruct.INTENT_FILENAME in names
+        ),
+    )
+    detached_owner = next(directory for directory in (first, second) if directory != anchor)
+    detached_journal = next(
+        detached_owner.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+    )
     detached = tmp_path / f"detached-evidence-{checkpoint}"
-    second_journal.rename(detached)
+    detached_journal.rename(detached)
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
     detached_evidence = _snapshot_tree(detached)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", anchor, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -402,14 +506,16 @@ def test_uninstall_recovery_cleans_partial_initializing_snapshots_and_pending(
         "first-snapshot",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    first_journal = _single_journal(first)
-    pending = first_journal / codex_instruct.JOURNAL_PENDING_FILENAME
+    snapshot_owner = _directory_with_journal_snapshot((first, second))
+    snapshot_journal = _single_journal(snapshot_owner)
+    pending = snapshot_journal / codex_instruct.JOURNAL_PENDING_FILENAME
     if pending_valid:
-        pending.write_bytes(
-            (first_journal / codex_instruct.JOURNAL_FILENAME).read_bytes()
+        _write_private_bytes(
+            pending,
+            (snapshot_journal / codex_instruct.JOURNAL_FILENAME).read_bytes()
         )
     else:
-        pending.write_text('{"phase":', encoding="utf-8")
+        _write_private_bytes(pending, b'{"phase":')
 
     recovered = _run("--codex-dir", second, "--recover", "--yes")
 
@@ -436,6 +542,10 @@ def test_uninstall_initializing_cleanup_is_reentrant_after_empty_marker_publicat
         "first-journal",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    journal_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.JOURNAL_FILENAME,
+    )
 
     source = f"""
 import importlib.util
@@ -447,20 +557,8 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
-m.recover_deployment([{str(first)!r}], True)
+{_filesystem_exit_hook_source("cleanup-marker-published")}
+m.recover_deployment([{str(journal_owner)!r}], True)
 """
     cleanup_interrupted = _write_child(
         tmp_path,
@@ -468,15 +566,11 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    assert list(
-        second.glob(
-            f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
-            f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
-        )
+    marker_owner, _remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
     )
-    assert _journal_dirs(first)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
@@ -497,6 +591,10 @@ def test_uninstall_initializing_cleanup_retains_anchor_after_participant_removal
         "first-journal",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    journal_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.JOURNAL_FILENAME,
+    )
 
     source = f"""
 import importlib.util
@@ -508,17 +606,8 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-second = Path({str(second)!r}).resolve()
-
-def wrapped(path, *args, **kwargs):
-    result = real(path, *args, **kwargs)
-    if result is not None and Path(path).parent.resolve() == second:
-        os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
-m.recover_deployment([{str(first)!r}], True)
+{_filesystem_exit_hook_source("journal-directory-removed")}
+m.recover_deployment([{str(journal_owner)!r}], True)
 """
     cleanup_interrupted = _write_child(
         tmp_path,
@@ -526,15 +615,16 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    assert list(
-        second.glob(
-            f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
-            f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
-        )
+    _marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
     )
-    assert _journal_dirs(first)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run(
+        "--codex-dir",
+        remaining_journal.parent,
+        "--recover",
+        "--yes",
+    )
 
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     for codex_dir in (first, second):
@@ -697,20 +787,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-seen = 0
-
-def wrapped(path, *args, **kwargs):
-    global seen
-    name = m._cleanup_claim_base(Path(path).name) or Path(path).name
-    result = real(path, *args, **kwargs)
-    if name.startswith(m.JOURNAL_PREFIX):
-        seen += 1
-        if seen == 1:
-            os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
+    {_filesystem_exit_hook_source("journal-directory-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(tmp_path, "interrupt-journal-cleanup.py", source)
@@ -741,19 +818,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(codex_dir)!r}], True)
 """
     cleanup_interrupted = _write_child(tmp_path, "interrupt-cleanup-marker.py", source)
@@ -789,19 +854,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -810,15 +863,11 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    assert list(
-        first.glob(
-            f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
-            f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
-        )
+    marker_owner, _remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
     )
-    assert _journal_dirs(second)
 
-    resumed = _run("--codex-dir", first, "--recover", "--yes")
+    resumed = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     _assert_no_cjk(resumed.stdout + resumed.stderr)
@@ -847,19 +896,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -868,7 +905,9 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
     race_source = f"""
 import importlib.util
@@ -891,17 +930,22 @@ def wrapped(journals, phase, yes, retained_cleanup_markers):
     return real(journals, phase, yes, retained_cleanup_markers)
 
 m._cleanup_uninstall_terminal_journals = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = _write_child(tmp_path, f"race-terminal-{race}.py", race_source)
 
     assert raced.returncode == 1, raced.stdout + raced.stderr
-    assert second_journal.exists()
-    markers = codex_instruct._deployment_cleanup_markers(first)
+    assert remaining_journal.exists()
+    markers = codex_instruct._deployment_cleanup_markers(marker_owner)
     assert markers
     if race == "move":
-        assert not (first / "moved-retained-marker").exists()
-        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        assert not (marker_owner / "moved-retained-marker").exists()
+        resumed = _run(
+            "--codex-dir",
+            remaining_journal.parent,
+            "--recover",
+            "--yes",
+        )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         for codex_dir in (first, second):
             _assert_no_transaction_artifacts(codex_dir)
@@ -910,9 +954,14 @@ m.recover_deployment([{str(first)!r}], True)
             path.read_bytes() == b"replacement cleanup marker\n"
             for path in markers
         )
-        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        resumed = _run(
+            "--codex-dir",
+            remaining_journal.parent,
+            "--recover",
+            "--yes",
+        )
         assert resumed.returncode == 1
-        assert second_journal.exists()
+        assert remaining_journal.exists()
 
 
 def test_uninstall_terminal_cleanup_resumes_after_marker_delete_hard_exit(tmp_path):
@@ -931,19 +980,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -952,7 +989,9 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
     delete_source = f"""
 import importlib.util
@@ -963,14 +1002,8 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._remove_retained_cleanup_markers
-
-def wrapped(markers):
-    real(markers)
-    os._exit({HARD_EXIT})
-
-m._remove_retained_cleanup_markers = wrapped
-m.recover_deployment([{str(first)!r}], True)
+{_filesystem_exit_hook_source("cleanup-marker-removed")}
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     deleted = _write_child(
         tmp_path,
@@ -979,9 +1012,14 @@ m.recover_deployment([{str(first)!r}], True)
     )
 
     assert deleted.returncode == HARD_EXIT
-    assert second_journal.exists()
-    assert not codex_instruct._deployment_cleanup_markers(first)
-    resumed = _run("--codex-dir", second, "--recover", "--yes")
+    assert remaining_journal.exists()
+    assert not codex_instruct._deployment_cleanup_markers(marker_owner)
+    resumed = _run(
+        "--codex-dir",
+        remaining_journal.parent,
+        "--recover",
+        "--yes",
+    )
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     for codex_dir in (first, second):
         _assert_no_transaction_artifacts(codex_dir)
@@ -1005,19 +1043,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1026,12 +1052,17 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    (remaining_journal / codex_instruct.JOURNAL_FILENAME).write_text(
+        "{",
+        encoding="utf-8",
+    )
     first_evidence = _snapshot_tree(first)
-    second_journal = _single_journal(second) / codex_instruct.JOURNAL_FILENAME
-    second_journal.write_text("{", encoding="utf-8")
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -1054,19 +1085,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1075,7 +1094,10 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_evidence = _snapshot_tree(first)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    marker_evidence = _snapshot_tree(marker_owner)
 
     race_source = f"""
 import importlib.util
@@ -1087,21 +1109,21 @@ m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 real = m._recover_uninstall
-second = Path({str(second)!r})
+remaining = Path({str(remaining_journal.parent)!r})
 
 def wrapped(codex_dirs, yes):
-    journal = next(second.glob(f"{{m.JOURNAL_PREFIX}}*")) / m.JOURNAL_FILENAME
+    journal = next(remaining.glob(f"{{m.JOURNAL_PREFIX}}*")) / m.JOURNAL_FILENAME
     journal.write_text("{{", encoding="utf-8")
     return real(codex_dirs, yes)
 
 m._recover_uninstall = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = _write_child(tmp_path, "race-after-cleanup-preflight.py", race_source)
 
     assert raced.returncode == 1
-    assert _snapshot_tree(first) == first_evidence
-    assert (_single_journal(second) / codex_instruct.JOURNAL_FILENAME).read_text(
+    assert _snapshot_tree(marker_owner) == marker_evidence
+    assert (remaining_journal / codex_instruct.JOURNAL_FILENAME).read_text(
         encoding="utf-8"
     ) == "{"
 
@@ -1122,19 +1144,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1143,7 +1153,9 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
     race_source = f"""
 import importlib.util
@@ -1156,28 +1168,28 @@ sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 real = m._recover_cleanup_artifacts
 calls = 0
-first = Path({str(first)!r})
+marker_owner = Path({str(marker_owner)!r})
 
 def wrapped(*args, **kwargs):
     global calls
     result = real(*args, **kwargs)
     calls += 1
     if calls == 2:
-        marker = next(first.glob(
+        marker = next(marker_owner.glob(
             f"{{m.CLEANUP_MARKER_PREFIX}}*{{m.CLEANUP_MARKER_SUFFIX}}"
         ))
         marker.write_text("{{", encoding="utf-8")
     return result
 
 m._recover_cleanup_artifacts = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = _write_child(tmp_path, "race-after-inner-cleanup-preflight.py", race_source)
 
     assert raced.returncode == 1
-    assert second_journal.exists()
+    assert remaining_journal.exists()
     assert list(
-        first.glob(
+        marker_owner.glob(
             f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
             f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
         )
@@ -1200,19 +1212,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1221,15 +1221,19 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_evidence = _snapshot_tree(first)
-    moved = second.with_name(second.name + "-moved")
-    second.rename(moved)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    anchor_evidence = _snapshot_tree(marker_owner)
+    participant = remaining_journal.parent
+    moved = participant.with_name(participant.name + "-moved")
+    participant.rename(moved)
     moved_evidence = _snapshot_tree(moved)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
-    assert _snapshot_tree(first) == first_evidence
+    assert _snapshot_tree(marker_owner) == anchor_evidence
     assert _snapshot_tree(moved) == moved_evidence
 
 
@@ -1242,6 +1246,10 @@ def test_cleanup_marker_preflight_validates_remaining_initial_pending(tmp_path):
         "first-journal-pending",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    pending_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.JOURNAL_PENDING_FILENAME,
+    )
 
     source = f"""
 import importlib.util
@@ -1253,20 +1261,8 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
-m.recover_deployment([{str(first)!r}], True)
+{_filesystem_exit_hook_source("cleanup-marker-published")}
+m.recover_deployment([{str(pending_owner)!r}], True)
 """
     cleanup_interrupted = _write_child(
         tmp_path,
@@ -1274,13 +1270,15 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_node = next(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    pending = first_node / codex_instruct.JOURNAL_PENDING_FILENAME
-    pending.write_text("{", encoding="utf-8")
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    pending = remaining_journal / codex_instruct.JOURNAL_PENDING_FILENAME
+    pending.write_bytes(b"{")
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", second, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -1296,15 +1294,21 @@ def test_initial_pending_structure_tamper_fails_closed_without_traceback(tmp_pat
         "first-journal-pending",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    first_journal = next(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    pending = first_journal / codex_instruct.JOURNAL_PENDING_FILENAME
+    pending_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.JOURNAL_PENDING_FILENAME,
+    )
+    pending = (
+        _single_journal_node(pending_owner)
+        / codex_instruct.JOURNAL_PENDING_FILENAME
+    )
     data = json.loads(pending.read_text(encoding="utf-8"))
     data["directories"] = []
     pending.write_text(json.dumps(data), encoding="utf-8")
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", pending_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert "Traceback" not in recovered.stdout + recovered.stderr
@@ -1321,7 +1325,7 @@ def test_uninstall_recovery_rejects_tampered_base_with_valid_pending(tmp_path):
     journal = journal_dir / codex_instruct.JOURNAL_FILENAME
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
     valid_bytes = journal.read_bytes()
-    pending.write_bytes(valid_bytes)
+    _write_private_bytes(pending, valid_bytes)
     data = json.loads(valid_bytes)
     data["directories"] = []
     journal.write_text(json.dumps(data), encoding="utf-8")
@@ -1351,19 +1355,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1372,12 +1364,14 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
-    second_journal.rename(second / "moved-evidence")
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    remaining_journal.rename(remaining_journal.parent / "moved-evidence")
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -1400,19 +1394,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1421,12 +1403,14 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
-    second_journal.rename(tmp_path / "detached-transaction-evidence")
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    remaining_journal.rename(tmp_path / "detached-transaction-evidence")
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -1442,6 +1426,10 @@ def test_cleanup_marker_preflight_rejects_replaced_intent_only_directory(tmp_pat
         "first-intent",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    intent_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.INTENT_FILENAME,
+    )
 
     source = f"""
 import importlib.util
@@ -1453,20 +1441,8 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
-m.recover_deployment([{str(first)!r}], True)
+{_filesystem_exit_hook_source("cleanup-marker-published")}
+m.recover_deployment([{str(intent_owner)!r}], True)
 """
     cleanup_interrupted = _write_child(
         tmp_path,
@@ -1474,15 +1450,26 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_journal = next(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    intent_bytes = (first_journal / codex_instruct.INTENT_FILENAME).read_bytes()
-    first_journal.rename(tmp_path / "original-intent-evidence")
-    first_journal.mkdir()
-    (first_journal / codex_instruct.INTENT_FILENAME).write_bytes(intent_bytes)
+    marker_owner = next(
+        directory
+        for directory in (first, second)
+        if codex_instruct._deployment_cleanup_markers(directory)
+    )
+    intent_owner = _directory_with_journal_member(
+        (first, second),
+        codex_instruct.INTENT_FILENAME,
+    )
+    intent_journal = next(
+        intent_owner.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+    )
+    intent_bytes = (intent_journal / codex_instruct.INTENT_FILENAME).read_bytes()
+    intent_journal.rename(tmp_path / "original-intent-evidence")
+    intent_journal.mkdir()
+    (intent_journal / codex_instruct.INTENT_FILENAME).write_bytes(intent_bytes)
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
-    recovered = _run("--codex-dir", second, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
     assert _snapshot_tree(first) == first_evidence
@@ -1566,20 +1553,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-removed = 0
-
-def wrapped(path, *args, **kwargs):
-    global removed
-    base = m._cleanup_claim_base(Path(path).name) or Path(path).name
-    result = real(path, *args, **kwargs)
-    if base.startswith(m.JOURNAL_PREFIX):
-        removed += 1
-        if removed == 1:
-            os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
+{_filesystem_exit_hook_source("journal-directory-removed")}
 m.uninstall([{str(first)!r}, {str(second)!r}], True)
 """
     interrupted = _write_child(tmp_path, "interrupt-committed-cleanup.py", source)
@@ -1594,11 +1568,11 @@ m.uninstall([{str(first)!r}, {str(second)!r}], True)
 
     preview = _run("--codex-dir", remaining, "--recover")
     assert preview.returncode == 0, preview.stdout + preview.stderr
-    assert "committed" in preview.stdout
+    assert "Cleanup residue" in preview.stdout
     assert journal_dir.exists()
 
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
-    pending.write_bytes(journal_path.read_bytes())
+    _write_private_bytes(pending, journal_path.read_bytes())
     recovered = _run("--codex-dir", remaining, "--recover", "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     for codex_dir in (first, second):
@@ -1674,9 +1648,9 @@ def test_uninstall_journal_loader_rejects_structural_evidence_tampering(
             encoding="utf-8",
         )
     else:
-        (journal_dir / codex_instruct.MANIFEST_INTENT_FILENAME).write_text(
-            "{}\n",
-            encoding="utf-8",
+        codex_instruct._write_exclusive_private_json(
+            journal_dir / codex_instruct.MANIFEST_INTENT_FILENAME,
+            {},
         )
 
     if damage not in {"intent-json", "manifest-companion"}:
@@ -1771,12 +1745,15 @@ def test_uninstall_resource_invariants_reject_ambiguous_recovery_state(
 @pytest.mark.parametrize("damage", ["invalid-json", "invalid-operation"])
 def test_journal_operation_rejects_unusable_dispatch_metadata(tmp_path, damage):
     journal_dir = tmp_path / f"operation-{damage}"
-    journal_dir.mkdir()
+    codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
     journal = journal_dir / codex_instruct.JOURNAL_FILENAME
     if damage == "invalid-json":
-        journal.write_text("{", encoding="utf-8")
+        _write_private_bytes(journal, b"{")
     else:
-        journal.write_text(json.dumps({"operation": "unknown"}), encoding="utf-8")
+        codex_instruct._write_exclusive_private_json(
+            journal,
+            {"operation": "unknown"},
+        )
 
     with pytest.raises(ValueError):
         codex_instruct._journal_operation(journal_dir)

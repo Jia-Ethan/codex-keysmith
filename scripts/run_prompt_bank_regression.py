@@ -5,6 +5,7 @@ import argparse
 import ctypes
 import errno
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -167,6 +168,26 @@ PASSTHROUGH_ENV_NAMES = (
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_VERSION",
 )
+
+_KEYSMITH_FILESYSTEM = None
+
+
+def _keysmith_filesystem():
+    global _KEYSMITH_FILESYSTEM
+    if _KEYSMITH_FILESYSTEM is not None:
+        return _KEYSMITH_FILESYSTEM
+    module_path = REPO_ROOT / "codex-instruct.py"
+    spec = importlib.util.spec_from_file_location(
+        "codex_instruct_prompt_bank_filesystem",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load the keysmith filesystem backend")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _KEYSMITH_FILESYSTEM = module._FILESYSTEM
+    return _KEYSMITH_FILESYSTEM
 
 
 class BankValidationError(ValueError):
@@ -775,19 +796,14 @@ def _atomic_report_rename_no_replace(source: Path, destination: Path) -> bool:
 
 
 def _fsync_report_directory(path: Path) -> None:
+    if os.name == "nt":
+        _keysmith_filesystem().flush_directory(path)
+        return
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(str(path), flags)
-    except OSError:
-        if os.name == "nt":
-            return
-        raise
+    descriptor = os.open(str(path), flags)
     try:
         os.fsync(descriptor)
-    except OSError:
-        if os.name != "nt":
-            raise
     finally:
         os.close(descriptor)
 
@@ -830,18 +846,24 @@ def _open_report(
     temporary_path = report_path.with_name(
         ".{}.keysmith-report-{}.tmp".format(report_path.name, uuid.uuid4().hex)
     )
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(str(temporary_path), flags, 0o600)
+        if os.name == "nt":
+            descriptor = _keysmith_filesystem().create_private_file(
+                temporary_path,
+                deny_delete=True,
+            )
+        else:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(str(temporary_path), flags, 0o600)
     except OSError as exc:
         raise RuntimeError("cannot create secure report file: {}".format(exc)) from exc
     try:
-        if hasattr(os, "fchmod"):
+        if os.name == "nt":
+            _keysmith_filesystem().apply_private_file_security(descriptor)
+        elif hasattr(os, "fchmod"):
             os.fchmod(descriptor, 0o600)
-        else:  # pragma: no cover - Windows uses ACLs rather than POSIX modes
-            os.chmod(temporary_path, 0o600)
         report = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
     except BaseException:
         os.close(descriptor)
