@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Supported platform tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="Published release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-0099CC">
   <img alt="Local candidate v0.1.1" src="https://img.shields.io/badge/local_candidate-v0.1.1-F59E0B">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
@@ -117,7 +117,7 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 
 候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。正式发布仍需另行批准 tag 与 Release，不能把本地候选资产描述为公开发布。
 
-Windows：当前不提供安装入口。现有 Windows 2025 CI 证据显示 deploy、restore、recover 和 uninstall 核心流程大量失败，且没有 Windows 硬中断恢复证据，因此 Windows 运行明确为 **unsupported**。不要在 Windows 用户配置上执行 Release 脚本。重新开放安装入口前，必须完成 Windows 专用文件原语和 ACL 适配，并由阻断式真实 Windows CI 证明完整流程全绿。
+Windows：当前不提供安装入口。候选分支已经实现 Windows 原生句柄、ACL、共享模式、稳定 File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.14 阻断矩阵已覆盖 deploy、restore、recover、uninstall 与 Issue #1 恢复，且完成一次 Windows 11 标准用户候选验收。Windows 运行仍明确为 **unsupported**：P1 的逐阶段硬中断矩阵、真实路径别名与扩展环境覆盖，以及 P2 支持/Release 文档尚未完成。不要在 Windows 用户配置上执行 Release 脚本，也不要把候选证据解释为正式支持声明。
 
 ### 运行环境
 
@@ -125,7 +125,7 @@ Windows：当前不提供安装入口。现有 Windows 2025 CI 证据显示 depl
 - Python 3.9：保留 compatibility 测试，但 Python 3.9 已 EOL，不作为首选生产运行时。
 - 已验证 Codex CLI：`codex-cli 0.144.1`。其他 Codex 版本需重新核对配置格式和实际模型行为。
 - macOS / Linux：当前主要支持范围。
-- Windows：unsupported；不提供安装入口，也不纳入“支持平台测试”绿色徽章。正式支持必须先完成独立 port，并以阻断式真实 Windows CI 覆盖 deploy、restore、recover、uninstall 和硬中断恢复。
+- Windows：unsupported；不提供安装入口，也不使用平台支持徽章。当前阻断式 Windows CI 证明 P0 候选主流程，但正式支持仍需完成逐阶段硬中断、真实路径别名、长路径/本地化用户目录等 P1 覆盖及 P2 Release 验证。
 
 ### 第一次部署
 
@@ -361,12 +361,12 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
 ### 事务边界与已知限制
 
 - 文件内容会 `fsync`，目标发布使用同卷原子无覆盖重命名，并在关键阶段复核完整指纹；
-- 复制型备份以独占 no-follow 的 `0600` 文件创建，复制和 `fsync` 完成后再应用原文件权限；disabled hooks 与 legacy 归档使用已验证的原子移动；
-- 多目录 deploy/uninstall 先全部预检，再持久化 `0700` journal 目录、`0600` journal/intent JSON 和 before snapshots，之后才修改资源；deploy 另持久化 manifest companion，固定 pending 文件可在硬中断后完成或丢弃；
+- 复制型备份通过集中式文件系统后端独占、no-follow 创建并持久化：POSIX 使用 `0600` 后再应用原文件权限；Windows 使用受保护 ACL，并以原生句柄复核稳定身份与完整指纹；disabled hooks 与 legacy 归档使用已验证的原子移动；
+- 多目录 deploy/uninstall 先全部预检，再持久化私有 journal 目录、journal/intent JSON 和 before snapshots，之后才修改资源；POSIX 私有契约为 `0700`/`0600`，Windows 私有契约为仅当前用户与 SYSTEM 拥有完全访问权的受保护 ACL，不把 POSIX mode 数值当作 Windows 权限证据；
 - 部署、`--recover` 和 uninstall 都在删除自身恢复证据前执行全部受管理参与目录的 final fingerprint sweep；
 - 不跟随 symlink，不使用完整 TOML 解析器；遇到歧义、重复目标键、占用命名空间或不安全语法时停止；
 - `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
-- journal 文件、journal 目录及 journal 在 Codex 目录中的创建/删除会执行可用的 directory `fsync`。资源文件内容会 `fsync`，但不是每一次资源 rename 都会对父目录执行 directory `fsync`；这项持久化保证只适用于受支持的 macOS/Linux 范围，Windows 不在支持边界内；
+- macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`，原子 no-replace/replace rename 使用 write-through，并在 create、rename 和 verified delete 后刷新父目录。Windows 逐 journal phase 的硬中断证据仍属 P1，因此这项实现契约不改变 unsupported 支持边界；
 - 在遵守操作系统和文件系统 `fsync` 语义的正常崩溃模型中，已发布 immutable intent 的中断 deploy/uninstall 由 durable journal 覆盖。两个窄窗口刻意 fail closed 并需要人工核对：journal 目录 `mkdir` 后、首份 intent 发布前，以及单步骤临时目录 `mkdtemp` 后、residue record 持久化前；
 - 原子目录 claim 后在原路径出现的并发替换会保留。journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；这类主动篡改，以及极端断电、设备不兑现 flush、文件系统损坏或目录项持久化异常，超出可证明边界；
 - `model_instructions_file` 是全局配置，没有 profile 隔离；hooks 只能整份隔离；
@@ -534,7 +534,7 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 
 Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. A formal tag and Release still require separate approval; local candidate assets are not published artifacts.
 
-Windows: there is no supported installation path. Current Windows 2025 CI evidence shows broad failures across deploy, restore, recover, and uninstall, with no Windows hard-interruption recovery evidence. Windows runtime use is therefore explicitly **unsupported**. Do not run Release scripts against Windows user configuration. Reopening an installation path requires Windows-specific filesystem/ACL work and blocking real-Windows CI proving the complete workflow green.
+Windows: there is no supported installation path. The candidate branch now has a native-handle filesystem backend for ACLs, share modes, stable File IDs, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.14 jobs on `windows-2025` cover deploy, restore, recover, uninstall, and the Issue #1 fixture, and one Windows 11 standard-user candidate acceptance has completed. Windows remains explicitly **unsupported** because the P1 per-phase hard-interruption matrix, real path-alias and extended-environment coverage, and P2 support/Release documentation are still incomplete. Do not run Release scripts against Windows user configuration or treat candidate evidence as a formal support claim.
 
 ### Runtime policy
 
@@ -542,7 +542,7 @@ Windows: there is no supported installation path. Current Windows 2025 CI eviden
 - Python 3.9 remains in compatibility tests, but it is EOL and is not the preferred production runtime.
 - Verified Codex CLI: `codex-cli 0.144.1`. Recheck configuration compatibility and live model behavior for other versions.
 - macOS and Linux are the primary support range.
-- Windows is unsupported, has no installation entry, and is excluded from the green supported-platform badge. Formal support requires a separate port plus blocking real-Windows CI for deploy, restore, recover, uninstall, and hard-interruption recovery.
+- Windows is unsupported, has no installation entry, and has no platform-support badge. Current blocking Windows CI proves the P0 candidate workflow; formal support still requires per-phase hard-interruption, real path-alias, long-path/localized-profile P1 coverage, and P2 Release validation.
 
 ### First deployment
 
@@ -778,12 +778,12 @@ For the default bundled `gpt-unrestricted.md` deployment, the tool inspects `gpt
 ### Transaction boundaries and known limits
 
 - File content is `fsync`ed, publication uses same-volume atomic no-replace renames, and full fingerprints are rechecked at critical stages.
-- Copy-created backups use exclusive no-follow `0600` files; source permissions are applied only after copy and `fsync` complete. Disabled-hook and legacy archives use validated atomic moves.
-- Multi-directory deploy/uninstall preflights every directory, then persists private `0700` journal directories, `0600` journal/intent JSON, and before-state snapshots before resource mutation. Deploy additionally persists a manifest companion; fixed-name pending files can be completed or discarded after interruption.
+- Copy-created backups are created and persisted through the centralized filesystem backend with exclusive no-follow semantics: POSIX starts with `0600` before applying source permissions, while Windows uses a protected ACL and revalidates stable native identity plus the full fingerprint. Disabled-hook and legacy archives use validated atomic moves.
+- Multi-directory deploy/uninstall preflights every directory, then persists private journal directories, journal/intent JSON, and before-state snapshots before resource mutation. POSIX uses `0700`/`0600`; Windows requires a protected DACL granting full access only to the current user and SYSTEM, and never treats POSIX mode bits as Windows permission evidence.
 - Deployment, `--recover`, and uninstall perform a complete final fingerprint sweep across every managed participant before deleting their own recovery evidence.
 - The CLI never follows symlinks and does not use a full TOML editor. Ambiguous, duplicate, namespace-occupying, or unsafe syntax stops the operation.
 - `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first deploy/uninstall mutation; later status detects it and fails closed until explicit `--recover`.
-- Journal files, journal directories, and journal creation/removal in the Codex directory use directory `fsync` where available. Resource content is file-`fsync`ed, but not every resource rename is followed by parent-directory `fsync`. This durability claim covers the supported macOS/Linux range only; Windows is outside the support boundary.
+- macOS/Linux use file and directory `fsync`. The Windows P0 backend calls `FlushFileBuffers` on managed file/directory handles, uses write-through atomic no-replace/replace renames, and flushes parent directories after create, rename, and verified delete. The per-journal-phase Windows hard-interruption matrix remains P1, so this implementation contract does not change the unsupported support boundary.
 - Under normal operating-system and filesystem `fsync` semantics, interrupted deploy/uninstall is covered once immutable intent is published. Two narrow windows deliberately fail closed for manual inspection: journal-directory `mkdir` before the first intent publish, and per-step `mkdtemp` before its residue record is durable.
 - Replacements created at the original path after an atomic directory claim are preserved. Journal, intent, companion, manifest, and cleanup-claim evidence protects against accidental drift and ordinary races; it is not cryptographic authentication against coordinated same-user tampering. Such active tampering, extreme power loss, devices that ignore flush, filesystem corruption, and abnormal directory-entry persistence remain outside the provable boundary.
 - `model_instructions_file` is global rather than profile-scoped; hook isolation is whole-file only.

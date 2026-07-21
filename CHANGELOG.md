@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Added a centralized Windows filesystem backend using native handles, stable volume/File ID identities, protected ACLs, explicit share modes, write-through rename, parent-directory flushes, verified deletion, reparse-point rejection, and per-directory cross-process locks.
+- Restored blocking `windows-2025` CI for Python 3.10 and 3.14. The final P0 matrix passes deploy, rollback, recover, restore-hooks, repeated deployment, uninstall, cleanup-marker re-entry, and multi-directory recovery coverage.
+
+### Fixed
+
+- Recovery now safely clears v0.1.0-style `intent.json` plus `journal.json` initialization evidence, including empty initializing journals and partial multi-directory uninstall publication, returning `--status` to ready without manual deletion.
+- Rollback and cleanup paths preserve the primary exception while reporting cleanup failures as secondary evidence. Windows recovery also revalidates directory/member ACLs, identity, membership, and fingerprints before mutation.
+
+### Changed
+
+- Windows P0 passed blocking CI and one Windows 11 standard-user candidate acceptance. Windows remains unsupported with no installation entry or formal support claim until the P1 hard-interruption/path-environment matrix and P2 documentation/Release validation are complete.
+
 ## [0.1.1] - 2026-07-18 (local candidate; not published)
 
 ### Changed
