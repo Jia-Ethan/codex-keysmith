@@ -1,6 +1,6 @@
 import importlib.util
 import os
-import selectors
+import socket
 import subprocess
 import sys
 import textwrap
@@ -197,76 +197,75 @@ def test_atomic_no_replace_has_one_winner_across_processes(tmp_path):
     result_paths = [tmp_path / "result-1", tmp_path / "result-2"]
     sources = [tmp_path / "source-1", tmp_path / "source-2"]
     for index, source in enumerate(sources, start=1):
-        source.write_text(f"worker-{index}\n", encoding="utf-8")
+        source.write_bytes(f"worker-{index}\n".encode("utf-8"))
 
     worker = textwrap.dedent(
         """
         import importlib.util
+        import socket
         import sys
         from pathlib import Path
 
-        module_path, source, destination, result = map(Path, sys.argv[1:])
+        module_path, source, destination, result = map(Path, sys.argv[1:5])
+        barrier_port = int(sys.argv[5])
         spec = importlib.util.spec_from_file_location("keysmith_worker", module_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        print("ready", flush=True)
-        if sys.stdin.buffer.read(1) != b"g":
-            raise SystemExit("start barrier closed")
+        with socket.create_connection(("127.0.0.1", barrier_port), timeout=10) as barrier:
+            barrier.sendall(b"r")
+            if barrier.recv(1) != b"g":
+                raise SystemExit("start barrier closed")
         try:
             moved = module._atomic_rename_no_replace(source, destination)
         except module.AtomicRenameUnavailable as exc:
-            result.write_text("unsupported:" + str(exc), encoding="utf-8")
+            result.write_bytes(("unsupported:" + str(exc)).encode("utf-8"))
         else:
-            result.write_text("won" if moved else "lost", encoding="utf-8")
+            result.write_bytes(b"won" if moved else b"lost")
         """
     )
-    processes = [
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                worker,
-                str(MODULE_PATH),
-                str(source),
-                str(destination),
-                str(result),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for source, result in zip(sources, result_paths)
-    ]
-    selector = selectors.DefaultSelector()
-    for process in processes:
-        assert process.stdout is not None
-        selector.register(process.stdout, selectors.EVENT_READ, process)
-    ready = set()
-    while len(ready) != len(processes):
-        events = selector.select(timeout=10)
-        if not events:
+    processes = []
+    barriers = []
+    outputs = []
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        server.settimeout(10)
+        barrier_port = server.getsockname()[1]
+        try:
+            processes = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        worker,
+                        str(MODULE_PATH),
+                        str(source),
+                        str(destination),
+                        str(result),
+                        str(barrier_port),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for source, result in zip(sources, result_paths)
+            ]
+            for _process in processes:
+                barrier, _address = server.accept()
+                barrier.settimeout(5)
+                assert barrier.recv(1) == b"r"
+                barriers.append(barrier)
+            for barrier in barriers:
+                barrier.sendall(b"g")
+                barrier.close()
+            barriers.clear()
+            outputs = [process.communicate(timeout=15) for process in processes]
+        finally:
+            for barrier in barriers:
+                barrier.close()
             for process in processes:
-                process.kill()
-            pytest.fail("workers did not become ready")
-        for key, _mask in events:
-            process = key.data
-            line = key.fileobj.readline()
-            if line != "ready\n":
-                process.kill()
-                _stdout, stderr = process.communicate(timeout=5)
-                pytest.fail(f"worker readiness failed: {line!r}; stderr={stderr!r}")
-            ready.add(process)
-            selector.unregister(key.fileobj)
-    selector.close()
-    for process in processes:
-        assert process.stdin is not None
-        process.stdin.write("g")
-        process.stdin.flush()
-        process.stdin.close()
-        process.stdin = None
-    outputs = [process.communicate(timeout=15) for process in processes]
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
     assert all(process.returncode == 0 for process in processes), outputs
 
     results = [path.read_text(encoding="utf-8") for path in result_paths]

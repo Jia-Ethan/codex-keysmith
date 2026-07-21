@@ -49,6 +49,7 @@ def test_codex_dir_expands_user_and_requires_config(tmp_path, monkeypatch):
     codex_dir.mkdir(parents=True)
     (codex_dir / "config.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
 
     assert codex_instruct.resolve_codex_dir("~/.codex") == codex_dir.resolve()
 
@@ -149,7 +150,7 @@ def test_atomic_write_cleans_temp_file_when_replace_fails(tmp_path, monkeypatch)
     def fail_replace(_source, _destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(codex_instruct.os, "replace", fail_replace)
+    monkeypatch.setattr(codex_instruct._FILESYSTEM, "replace_atomic", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         codex_instruct.atomic_write_text(target, "new\n")
@@ -352,7 +353,7 @@ def test_restore_file_cleans_temp_file_when_replace_fails(tmp_path, monkeypatch)
     def fail_replace(_source, _destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(codex_instruct.os, "replace", fail_replace)
+    monkeypatch.setattr(codex_instruct._FILESYSTEM, "replace_atomic", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         codex_instruct._restore_file_from_backup(backup, destination)
@@ -373,6 +374,47 @@ def test_backup_file_uses_incrementing_suffix_on_name_collision(tmp_path):
     assert second_backup.name == "rules.md.bak_20260628_120000_1"
     assert first_backup.read_text(encoding="utf-8") == "first"
     assert second_backup.read_text(encoding="utf-8") == "second"
+
+
+@pytest.mark.parametrize(
+    "winerror",
+    [
+        codex_instruct._WindowsFilesystemBackend._ERROR_FILE_EXISTS,
+        codex_instruct._WindowsFilesystemBackend._ERROR_ALREADY_EXISTS,
+    ],
+)
+def test_windows_create_new_collision_maps_to_file_exists(
+    tmp_path,
+    monkeypatch,
+    winerror,
+):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    backend.kernel32 = types.SimpleNamespace(
+        CreateFileW=lambda *_args: backend._INVALID_HANDLE_VALUE,
+    )
+    monkeypatch.setattr(
+        codex_instruct.ctypes,
+        "get_last_error",
+        lambda: winerror,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        codex_instruct.ctypes,
+        "FormatError",
+        lambda error: f"Windows error {error}",
+        raising=False,
+    )
+    destination = tmp_path / "existing"
+
+    with pytest.raises(FileExistsError) as caught:
+        backend._open_handle(
+            destination,
+            access=backend._GENERIC_READ,
+            creation=backend._CREATE_NEW,
+        )
+
+    assert caught.value.errno == winerror
+    assert caught.value.filename == str(destination)
 
 
 def test_regular_and_private_file_opens_request_binary_mode(tmp_path, monkeypatch):
@@ -400,22 +442,31 @@ def test_regular_and_private_file_opens_request_binary_mode(tmp_path, monkeypatc
     destination_descriptor = codex_instruct._open_exclusive_private_file(destination)
     os.close(destination_descriptor)
 
-    assert len(observed_flags) == 2
+    expected_open_calls = 1 if os.name == "nt" else 2
+    assert len(observed_flags) == expected_open_calls
     assert all(flags & binary_flag for flags in observed_flags)
+    codex_instruct._FILESYSTEM.verify_private_security(
+        destination,
+        is_directory=False,
+    )
 
 
-def test_backup_creation_starts_private_and_fchmod_failure_is_not_silent(
+def test_backup_creation_starts_private_and_security_failure_is_not_silent(
     tmp_path,
     monkeypatch,
 ):
     target = tmp_path / "rules.md"
     target.write_text("sensitive\n", encoding="utf-8")
     real_open_private = codex_instruct._open_exclusive_private_file
-    observed_modes = []
+    observed_private_paths = []
 
     def observe_private_creation(path):
         descriptor = real_open_private(path)
-        observed_modes.append(os.fstat(descriptor).st_mode & 0o777)
+        codex_instruct._FILESYSTEM.verify_private_security(
+            path,
+            is_directory=False,
+        )
+        observed_private_paths.append(path)
         return descriptor
 
     monkeypatch.setattr(
@@ -423,35 +474,42 @@ def test_backup_creation_starts_private_and_fchmod_failure_is_not_silent(
         "_open_exclusive_private_file",
         observe_private_creation,
     )
-    real_fchmod = codex_instruct.os.fchmod
 
-    def fail_fchmod(descriptor, mode):
-        if observed_modes:
-            raise OSError("simulated fchmod failure")
-        return real_fchmod(descriptor, mode)
+    def fail_security_clone(_descriptor, _source_stat):
+        raise OSError("simulated private security failure")
 
-    monkeypatch.setattr(codex_instruct.os, "fchmod", fail_fchmod)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "clone_file_security",
+        fail_security_clone,
+    )
 
-    with pytest.raises(OSError, match="simulated fchmod failure"):
+    with pytest.raises(OSError, match="simulated private security failure"):
         codex_instruct.backup_file(target, "20260716_120000")
 
-    assert observed_modes == [0o600]
+    assert observed_private_paths == [
+        tmp_path / "rules.md.bak_20260716_120000"
+    ]
     assert not list(tmp_path.glob("rules.md.bak_*"))
 
 
-def test_copy_to_unique_backup_does_not_silence_fchmod_failure(
+def test_copy_to_unique_backup_does_not_silence_security_failure(
     tmp_path,
     monkeypatch,
 ):
     source = tmp_path / "claimed"
     source.write_text("hooks\n", encoding="utf-8")
 
-    def fail_fchmod(_descriptor, _mode):
-        raise OSError("simulated fchmod failure")
+    def fail_security_clone(_descriptor, _source_stat):
+        raise OSError("simulated private security failure")
 
-    monkeypatch.setattr(codex_instruct.os, "fchmod", fail_fchmod)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "clone_file_security",
+        fail_security_clone,
+    )
 
-    with pytest.raises(OSError, match="simulated fchmod failure"):
+    with pytest.raises(OSError, match="simulated private security failure"):
         codex_instruct._copy_to_unique_backup(
             source,
             tmp_path / "hooks.json",
@@ -1222,6 +1280,9 @@ def test_atomic_rename_probe_cleans_up_when_unsupported(tmp_path, monkeypatch):
 
 
 def test_linux_renameat2_enosys_maps_to_atomic_unavailable(tmp_path, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("Linux renameat2 is not part of the Windows backend contract")
+
     class FakeRename:
         argtypes = None
         restype = None
@@ -2261,9 +2322,10 @@ def test_historical_legacy_hashes_are_detected(final_newline, tmp_path):
     codex_dir.mkdir()
     (codex_dir / "config.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
     legacy = codex_dir / codex_instruct.LEGACY_MD_FILENAME
-    legacy.write_text(
-        HISTORICAL_LEGACY_PROMPT + ("\n" if final_newline else ""),
-        encoding="utf-8",
+    legacy.write_bytes(
+        (HISTORICAL_LEGACY_PROMPT + ("\n" if final_newline else "")).encode(
+            "utf-8"
+        )
     )
 
     plan = codex_instruct.inspect_directory(codex_dir)

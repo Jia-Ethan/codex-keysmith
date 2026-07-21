@@ -2,11 +2,12 @@ import hashlib
 import importlib.util
 import json
 import os
-import selectors
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import types
 import uuid
 from pathlib import Path
@@ -19,12 +20,36 @@ codex_instruct = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = codex_instruct
 spec.loader.exec_module(codex_instruct)
 
+HARD_EXIT = 86
+
 
 def _make_codex_dir(tmp_path, name):
     codex_dir = tmp_path / name
     codex_dir.mkdir()
-    (codex_dir / "config.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
+    (codex_dir / "config.toml").write_bytes(b'model = "gpt-5.6"\n')
     return codex_dir
+
+
+def _write_exact_text(path, content):
+    path.write_bytes(content.encode("utf-8"))
+
+
+def _filesystem_exit_hook_source(checkpoint, *, hit=1, exit_code=HARD_EXIT):
+    return f"""
+target_checkpoint = {checkpoint!r}
+target_hit = {hit}
+checkpoint_seen = 0
+
+def interrupt_at_filesystem_checkpoint(name):
+    global checkpoint_seen
+    if name != target_checkpoint:
+        return
+    checkpoint_seen += 1
+    if checkpoint_seen == target_hit:
+        os._exit({exit_code})
+
+m._FILESYSTEM_CHECKPOINT_HOOK = interrupt_at_filesystem_checkpoint
+"""
 
 
 def _run(*args):
@@ -52,19 +77,33 @@ def _prepare_journals(codex_dirs):
     return states, plans
 
 
+def _cleanup_marker_owner_and_remaining_journal(codex_dirs):
+    marker_owners = [
+        directory
+        for directory in codex_dirs
+        if codex_instruct._deployment_cleanup_markers(directory)
+    ]
+    remaining = [
+        journal
+        for directory in codex_dirs
+        for journal in codex_instruct._deployment_journal_dirs(directory)
+        if codex_instruct._cleanup_claim_base(journal.name) is None
+    ]
+    assert len(marker_owners) == 1
+    assert len(remaining) == 1
+    return marker_owners[0], remaining[0]
+
+
 def test_multi_directory_recover_restores_before_state(tmp_path):
     first = _make_codex_dir(tmp_path, "first")
     second = _make_codex_dir(tmp_path, "second")
     states, plans = _prepare_journals([first, second])
     for codex_dir, plan in zip((first, second), plans):
-        (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+        _write_exact_text(
+            codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
             codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-            encoding="utf-8",
         )
-        (codex_dir / "config.toml").write_text(
-            plan.updated_config_content,
-            encoding="utf-8",
-        )
+        _write_exact_text(codex_dir / "config.toml", plan.updated_config_content)
 
     codex_instruct.recover_deployment([str(first)], yes=True)
 
@@ -487,29 +526,25 @@ def test_committed_multi_directory_cleanup_resumes_after_first_journal_removed(
     child = tmp_path / "kill_committed.py"
     child.write_text(
         f"""
-import importlib.util, os, signal, types
+import importlib.util, os, types
 spec = importlib.util.spec_from_file_location('child_keysmith', {str(MODULE_PATH)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.find_codex_dirs = lambda: [{str(first)!r}, {str(second)!r}]
-original = m._remove_deployment_journals
-def kill_after_first(states):
-    original(states[:1])
-    os.kill(os.getpid(), signal.SIGKILL)
-m._remove_deployment_journals = kill_after_first
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.deploy(types.SimpleNamespace(file=None, name='gpt-unrestricted', dry_run=False, yes=True, skip_hooks_isolation=False))
 """,
         encoding="utf-8",
     )
     child_result = subprocess.run([sys.executable, str(child)])
-    assert child_result.returncode < 0
-    assert not list(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    remaining = list(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    assert len(remaining) == 1
+    assert child_result.returncode == HARD_EXIT
+    marker_owner, remaining = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
-    resumed = _run("--codex-dir", second, "--recover", "--yes")
+    resumed = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-    assert not remaining[0].exists()
+    assert not remaining.exists()
     assert (first / codex_instruct.MANIFEST_FILENAME).is_file()
     assert (second / codex_instruct.MANIFEST_FILENAME).is_file()
 
@@ -533,19 +568,7 @@ m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 m.find_codex_dirs = lambda: [{str(first)!r}, {str(second)!r}]
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit(86)
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.deploy(types.SimpleNamespace(
     file=None,
     name="gpt-unrestricted",
@@ -561,8 +584,10 @@ m.deploy(types.SimpleNamespace(
         text=True,
         capture_output=True,
     )
-    assert result.returncode == 86, result.stdout + result.stderr
-    second_journal = next(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+    assert result.returncode == HARD_EXIT, result.stdout + result.stderr
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
     race_source = f"""
 import importlib.util
@@ -585,7 +610,7 @@ def wrapped(journals, phase, yes, retained_cleanup_markers):
     return real(journals, phase, yes, retained_cleanup_markers)
 
 m._cleanup_terminal_journals = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = tmp_path / f"race-deploy-terminal-{race}.py"
     raced.write_text(race_source, encoding="utf-8")
@@ -596,12 +621,17 @@ m.recover_deployment([{str(first)!r}], True)
     )
 
     assert raced_result.returncode == 1, raced_result.stdout + raced_result.stderr
-    assert second_journal.exists()
-    markers = codex_instruct._deployment_cleanup_markers(first)
+    assert remaining_journal.exists()
+    markers = codex_instruct._deployment_cleanup_markers(marker_owner)
     assert markers
     if race == "move":
-        assert not (first / "moved-retained-marker").exists()
-        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        assert not (marker_owner / "moved-retained-marker").exists()
+        resumed = _run(
+            "--codex-dir",
+            remaining_journal.parent,
+            "--recover",
+            "--yes",
+        )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         assert not codex_instruct._hooks_transaction_residue(first)
         assert not codex_instruct._hooks_transaction_residue(second)
@@ -610,9 +640,14 @@ m.recover_deployment([{str(first)!r}], True)
             path.read_bytes() == b"replacement cleanup marker\n"
             for path in markers
         )
-        resumed = _run("--codex-dir", second, "--recover", "--yes")
+        resumed = _run(
+            "--codex-dir",
+            remaining_journal.parent,
+            "--recover",
+            "--yes",
+        )
         assert resumed.returncode == 1
-        assert second_journal.exists()
+        assert remaining_journal.exists()
 
 
 def test_committed_terminal_cleanup_discovers_all_participant_journals(tmp_path):
@@ -653,44 +688,32 @@ def test_recovered_multi_directory_cleanup_resumes_after_first_journal_removed(
     second = _make_codex_dir(tmp_path, "recovered-second")
     _states, plans = _prepare_journals([first, second])
     for codex_dir, plan in zip((first, second), plans):
-        (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+        _write_exact_text(
+            codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
             codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-            encoding="utf-8",
         )
-        (codex_dir / "config.toml").write_text(
-            plan.updated_config_content,
-            encoding="utf-8",
-        )
+        _write_exact_text(codex_dir / "config.toml", plan.updated_config_content)
     child = tmp_path / "kill_recovered.py"
     child.write_text(
         f"""
-import importlib.util, os, signal
+import importlib.util, os
 spec = importlib.util.spec_from_file_location('child_keysmith', {str(MODULE_PATH)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-original = m._safe_remove_owned_directory
-seen = 0
-def kill_before_second(path, identity, members, require_exact_members=False):
-    global seen
-    if path.name.startswith(m.JOURNAL_PREFIX):
-        seen += 1
-        if seen == 2:
-            os.kill(os.getpid(), signal.SIGKILL)
-    return original(path, identity, members, require_exact_members)
-m._safe_remove_owned_directory = kill_before_second
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """,
         encoding="utf-8",
     )
     child_result = subprocess.run([sys.executable, str(child)])
-    assert child_result.returncode < 0
-    assert not list(first.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    remaining = list(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    assert len(remaining) == 1
+    assert child_result.returncode == HARD_EXIT
+    marker_owner, remaining = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
-    resumed = _run("--codex-dir", second, "--recover", "--yes")
+    resumed = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-    assert not remaining[0].exists()
+    assert not remaining.exists()
     for codex_dir in (first, second):
         assert (codex_dir / "config.toml").read_text(encoding="utf-8") == (
             'model = "gpt-5.6"\n'
@@ -698,31 +721,21 @@ m.recover_deployment([{str(first)!r}], True)
         assert not (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX hard-exit coverage")
 def test_recover_resumes_after_journal_member_cleanup_interruption(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "journal-cleanup-kill")
     _states, plans = _prepare_journals([codex_dir])
-    (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+    _write_exact_text(
+        codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
     )
-    (codex_dir / "config.toml").write_text(
-        plans[0].updated_config_content,
-        encoding="utf-8",
-    )
+    _write_exact_text(codex_dir / "config.toml", plans[0].updated_config_content)
     child = tmp_path / "kill_journal_cleanup.py"
     child.write_text(
         f"""
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location('child_keysmith', {str(MODULE_PATH)!r})
 m = importlib.util.module_from_spec(spec); sys.modules[spec.name] = m; spec.loader.exec_module(m)
-real = m.os.unlink
-def kill_after_journal(name, *args, **kwargs):
-    result = real(name, *args, **kwargs)
-    if str(name) == m.JOURNAL_FILENAME and kwargs.get('dir_fd') is not None:
-        os._exit(91)
-    return result
-m.os.unlink = kill_after_journal
+{_filesystem_exit_hook_source("cleanup-marker-published", exit_code=91)}
 m.recover_deployment([{str(codex_dir)!r}], True)
 """,
         encoding="utf-8",
@@ -747,32 +760,21 @@ m.recover_deployment([{str(codex_dir)!r}], True)
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX hard-exit coverage")
 def test_recover_resumes_after_cleanup_marker_publication(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "cleanup-marker-kill")
     _states, plans = _prepare_journals([codex_dir])
-    (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+    _write_exact_text(
+        codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
     )
-    (codex_dir / "config.toml").write_text(
-        plans[0].updated_config_content,
-        encoding="utf-8",
-    )
+    _write_exact_text(codex_dir / "config.toml", plans[0].updated_config_content)
     child = tmp_path / "kill_cleanup_marker.py"
     child.write_text(
         f"""
 import importlib.util, os, sys
-from pathlib import Path
 spec = importlib.util.spec_from_file_location('child_keysmith', {str(MODULE_PATH)!r})
 m = importlib.util.module_from_spec(spec); sys.modules[spec.name] = m; spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-def kill_after_marker(source, destination):
-    result = real(source, destination)
-    if Path(source).name == m.INTENT_FILENAME and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX):
-        os._exit(92)
-    return result
-m._atomic_rename_no_replace = kill_after_marker
+{_filesystem_exit_hook_source("cleanup-marker-published", exit_code=92)}
 m.recover_deployment([{str(codex_dir)!r}], True)
 """,
         encoding="utf-8",
@@ -837,10 +839,7 @@ def test_recover_reenters_after_remove_claim_interruption(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "recover-reentrant-remove")
     _states, _plans = _prepare_journals([codex_dir])
     prompt = codex_dir / codex_instruct.DEFAULT_MD_FILENAME
-    prompt.write_text(
-        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
-    )
+    _write_exact_text(prompt, codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD)
     child = tmp_path / "kill_recover_remove.py"
     child.write_text(
         f"""
@@ -878,12 +877,9 @@ def test_recover_reenters_after_replace_claim_interruption(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "recover-reentrant-replace")
     _states, plans = _prepare_journals([codex_dir])
     prompt = codex_dir / codex_instruct.DEFAULT_MD_FILENAME
-    prompt.write_text(
-        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
-    )
+    _write_exact_text(prompt, codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD)
     config = codex_dir / "config.toml"
-    config.write_text(plans[0].updated_config_content, encoding="utf-8")
+    _write_exact_text(config, plans[0].updated_config_content)
     child = tmp_path / "kill_recover_replace.py"
     child.write_text(
         f"""
@@ -966,14 +962,11 @@ def test_recover_uses_early_manifest_companion_before_phase_update(tmp_path):
             "manifest_sha256": {str(codex_dir.resolve()): digest},
         },
     )
-    (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+    _write_exact_text(
+        codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
     )
-    (codex_dir / "config.toml").write_text(
-        plans[0].updated_config_content,
-        encoding="utf-8",
-    )
+    _write_exact_text(codex_dir / "config.toml", plans[0].updated_config_content)
 
     result = _run("--codex-dir", codex_dir, "--recover", "--yes")
 
@@ -1045,14 +1038,11 @@ def test_recover_reconciles_interrupted_manifest_companion_publish(
         )
     else:
         pending.write_text('{"transaction_id":', encoding="utf-8")
-    (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+    _write_exact_text(
+        codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
     )
-    (codex_dir / "config.toml").write_text(
-        plans[0].updated_config_content,
-        encoding="utf-8",
-    )
+    _write_exact_text(codex_dir / "config.toml", plans[0].updated_config_content)
 
     result = _run("--codex-dir", codex_dir, "--recover", "--yes")
 
@@ -1232,12 +1222,12 @@ def test_recover_final_sweep_detects_change_after_recovered_phase(
 ):
     codex_dir = _make_codex_dir(tmp_path, "recover-final-race")
     _states, plans = _prepare_journals([codex_dir])
-    (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+    _write_exact_text(
+        codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        encoding="utf-8",
     )
     config = codex_dir / "config.toml"
-    config.write_text(plans[0].updated_config_content, encoding="utf-8")
+    _write_exact_text(config, plans[0].updated_config_content)
     original = codex_instruct._update_deployment_journals
 
     def update_then_race(states, phase, manifest_sha256=None):
@@ -1429,41 +1419,48 @@ def test_reserved_legacy_name_and_unicode_path_translation(tmp_path):
     assert str(spaced_prompt) in spaced.stdout
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL coverage")
 def test_sigkill_deployment_is_recoverable_from_durable_journal(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "sigkill")
     hooks_bytes = b"checkpointed active hooks\n"
     (codex_dir / "hooks.json").write_bytes(hooks_bytes)
     original_config = (codex_dir / "config.toml").read_bytes()
-    checkpoint_read, checkpoint_write = os.pipe()
     process = None
     child = tmp_path / "sigkill-checkpoint.py"
     child.write_text(
         f"""
 import importlib.util
-import os
-import signal
 import sys
 import types
 from pathlib import Path
 
 module_path = Path({str(MODULE_PATH)!r})
 codex_dir = Path({str(codex_dir)!r})
-checkpoint_fd = {checkpoint_write}
 spec = importlib.util.spec_from_file_location("sigkill_child", module_path)
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 m.find_codex_dirs = lambda: [str(codex_dir)]
 real_update = m._update_deployment_journals
+current_phase = None
 
-def update_then_pause(states, phase, manifest_sha256=None):
-    real_update(states, phase, manifest_sha256)
-    if phase == "legacy-intent":
-        os.write(checkpoint_fd, b"1")
-        signal.pause()
+def track_phase(states, phase, manifest_sha256=None):
+    global current_phase
+    current_phase = phase
+    try:
+        return real_update(states, phase, manifest_sha256)
+    finally:
+        current_phase = None
 
-m._update_deployment_journals = update_then_pause
+def pause_at_checkpoint(name):
+    if (
+        name == "deployment-journal-phase-published"
+        and current_phase == "legacy-intent"
+    ):
+        print("KEYSMITH_CHECKPOINT", flush=True)
+        sys.stdin.buffer.read(1)
+
+m._update_deployment_journals = track_phase
+m._FILESYSTEM_CHECKPOINT_HOOK = pause_at_checkpoint
 m.deploy(types.SimpleNamespace(
     file=None,
     name="gpt-unrestricted",
@@ -1478,44 +1475,49 @@ raise AssertionError("SIGKILL checkpoint was not reached")
     try:
         process = subprocess.Popen(
             [sys.executable, str(child)],
-            pass_fds=(checkpoint_write,),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        os.close(checkpoint_write)
-        checkpoint_write = None
-        selector = selectors.DefaultSelector()
+        assert process.stdout is not None
+        checkpoint_queue = queue.Queue()
+
+        def read_checkpoint():
+            for line in process.stdout:
+                if line.strip() == "KEYSMITH_CHECKPOINT":
+                    checkpoint_queue.put(True)
+                    return
+            checkpoint_queue.put(False)
+
+        reader = threading.Thread(target=read_checkpoint, daemon=True)
+        reader.start()
         try:
-            selector.register(checkpoint_read, selectors.EVENT_READ)
-            if not selector.select(timeout=10):
-                pytest.fail("SIGKILL deployment checkpoint timed out")
-            checkpoint = os.read(checkpoint_read, 1)
-        finally:
-            selector.close()
-        assert checkpoint == b"1"
+            checkpoint_reached = checkpoint_queue.get(timeout=10)
+        except queue.Empty:
+            pytest.fail("deployment checkpoint timed out")
+        if not checkpoint_reached:
+            stderr = process.stderr.read() if process.stderr is not None else ""
+            pytest.fail(f"deployment exited before checkpoint: {stderr}")
         assert list(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
         assert not (codex_dir / "hooks.json").exists()
-        os.kill(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate(timeout=5)
+        process.kill()
+        process.wait(timeout=5)
         returncode = process.returncode
         process = None
-        assert returncode == -signal.SIGKILL, stdout + stderr
+        if os.name == "nt":
+            assert returncode != 0
+        else:
+            assert returncode == -signal.SIGKILL
     finally:
-        for descriptor in (checkpoint_read, checkpoint_write):
-            if descriptor is not None:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
         if process is not None:
             if process.poll() is None:
                 process.kill()
             try:
-                process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.communicate(timeout=5)
+                process.wait(timeout=5)
 
     status = _run("--codex-dir", codex_dir, "--status")
     assert status.returncode == 1

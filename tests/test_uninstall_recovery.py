@@ -35,17 +35,15 @@ def _run(*args):
 def _make_rich_deployment(tmp_path, name):
     codex_dir = tmp_path / name
     codex_dir.mkdir()
-    (codex_dir / "config.toml").write_text(
-        'model_instructions_file = "./gpt5.5-unrestricted.md"\n'
-        'model = "gpt-5.6"\n',
-        encoding="utf-8",
+    (codex_dir / "config.toml").write_bytes(
+        (
+            'model_instructions_file = "./gpt5.5-unrestricted.md"\n'
+            'model = "gpt-5.6"\n'
+        ).encode("utf-8"),
     )
     (codex_dir / "hooks.json").write_bytes(b"\x00active hooks\xff")
     (codex_dir / "hooks.json.disabled").write_bytes(b"previous disabled\n")
-    (codex_dir / codex_instruct.LEGACY_MD_FILENAME).write_text(
-        "legacy prompt\n",
-        encoding="utf-8",
-    )
+    (codex_dir / codex_instruct.LEGACY_MD_FILENAME).write_bytes(b"legacy prompt\n")
     deployed = _run("--codex-dir", codex_dir, "--yes")
     assert deployed.returncode == 0, deployed.stdout + deployed.stderr
     return codex_dir
@@ -83,6 +81,24 @@ def _write_child(tmp_path, name, source):
         text=True,
         capture_output=True,
     )
+
+
+def _filesystem_exit_hook_source(checkpoint, *, hit=1):
+    return f"""
+target_checkpoint = {checkpoint!r}
+target_hit = {hit}
+checkpoint_seen = 0
+
+def interrupt_at_filesystem_checkpoint(name):
+    global checkpoint_seen
+    if name != target_checkpoint:
+        return
+    checkpoint_seen += 1
+    if checkpoint_seen == target_hit:
+        os._exit({HARD_EXIT})
+
+m._FILESYSTEM_CHECKPOINT_HOOK = interrupt_at_filesystem_checkpoint
+"""
 
 
 def _interrupt_uninstall(tmp_path, codex_dirs, checkpoint, *, hit=1):
@@ -190,41 +206,27 @@ sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 
 checkpoint = {checkpoint!r}
-if checkpoint in {{"first-intent", "second-intent"}}:
-    real = m._write_exclusive_private_json
-    published = 0
-    target = 1 if checkpoint == "first-intent" else 2
-    def wrapped(path, data):
-        global published
-        result = real(path, data)
-        if Path(path).name == m.INTENT_FILENAME:
-            published += 1
-            if published == target:
-                os._exit({HARD_EXIT})
-        return result
-    m._write_exclusive_private_json = wrapped
-elif checkpoint == "first-journal-pending":
-    real = m.os.replace
-    def wrapped(source, destination):
-        if (
-            Path(source).name == m.JOURNAL_PENDING_FILENAME
-            and Path(destination).name == m.JOURNAL_FILENAME
-        ):
+if checkpoint in {{
+    "first-intent",
+    "second-intent",
+    "first-journal-pending",
+    "first-journal",
+}}:
+    checkpoint_name, target = {{
+        "first-intent": ("journal-intent-published", 1),
+        "second-intent": ("journal-intent-published", 2),
+        "first-journal-pending": ("journal-pending-published", 1),
+        "first-journal": ("journal-file-published", 1),
+    }}[checkpoint]
+    seen = 0
+    def interrupt_at_checkpoint(name):
+        global seen
+        if name != checkpoint_name:
+            return
+        seen += 1
+        if seen == target:
             os._exit({HARD_EXIT})
-        return real(source, destination)
-    m.os.replace = wrapped
-elif checkpoint == "first-journal":
-    real = m._atomic_write_private_json
-    published = 0
-    def wrapped(path, data):
-        global published
-        result = real(path, data)
-        if Path(path).name == m.JOURNAL_FILENAME:
-            published += 1
-            if published == 1:
-                os._exit({HARD_EXIT})
-        return result
-    m._atomic_write_private_json = wrapped
+    m._FILESYSTEM_CHECKPOINT_HOOK = interrupt_at_checkpoint
 elif checkpoint == "first-snapshot":
     real = m._copy_snapshot
     copied = 0
@@ -447,19 +449,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -508,16 +498,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-second = Path({str(second)!r}).resolve()
-
-def wrapped(path, *args, **kwargs):
-    result = real(path, *args, **kwargs)
-    if result is not None and Path(path).parent.resolve() == second:
-        os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
+{_filesystem_exit_hook_source("owned-directory-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -697,20 +678,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-seen = 0
-
-def wrapped(path, *args, **kwargs):
-    global seen
-    name = m._cleanup_claim_base(Path(path).name) or Path(path).name
-    result = real(path, *args, **kwargs)
-    if name.startswith(m.JOURNAL_PREFIX):
-        seen += 1
-        if seen == 1:
-            os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
+{_filesystem_exit_hook_source("owned-directory-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(tmp_path, "interrupt-journal-cleanup.py", source)
@@ -741,19 +709,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(codex_dir)!r}], True)
 """
     cleanup_interrupted = _write_child(tmp_path, "interrupt-cleanup-marker.py", source)
@@ -789,19 +745,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -847,19 +791,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -931,19 +863,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -963,13 +883,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._remove_retained_cleanup_markers
-
-def wrapped(markers):
-    real(markers)
-    os._exit({HARD_EXIT})
-
-m._remove_retained_cleanup_markers = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     deleted = _write_child(
@@ -1005,19 +919,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1054,19 +956,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1122,19 +1012,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1200,19 +1078,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1253,19 +1119,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1351,19 +1205,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1400,19 +1242,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1453,19 +1283,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._atomic_rename_no_replace
-
-def wrapped(source, destination):
-    result = real(source, destination)
-    if (
-        result
-        and Path(source).name == m.INTENT_FILENAME
-        and Path(destination).name.startswith(m.CLEANUP_MARKER_PREFIX)
-    ):
-        os._exit({HARD_EXIT})
-    return result
-
-m._atomic_rename_no_replace = wrapped
+{_filesystem_exit_hook_source("cleanup-marker-published")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -1566,20 +1384,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-real = m._safe_remove_owned_directory
-removed = 0
-
-def wrapped(path, *args, **kwargs):
-    global removed
-    base = m._cleanup_claim_base(Path(path).name) or Path(path).name
-    result = real(path, *args, **kwargs)
-    if base.startswith(m.JOURNAL_PREFIX):
-        removed += 1
-        if removed == 1:
-            os._exit({HARD_EXIT})
-    return result
-
-m._safe_remove_owned_directory = wrapped
+{_filesystem_exit_hook_source("owned-directory-removed")}
 m.uninstall([{str(first)!r}, {str(second)!r}], True)
 """
     interrupted = _write_child(tmp_path, "interrupt-committed-cleanup.py", source)
