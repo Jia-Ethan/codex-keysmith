@@ -46,6 +46,8 @@ def test_platform_filesystem_contract_is_centralized():
     for method in (
         "create_private_directory",
         "create_private_file",
+        "resolve_directory",
+        "verify_recovery_directory_security",
         "open_verified_owned_directory",
         "remove_verified_member",
         "remove_verified_directory",
@@ -129,6 +131,57 @@ def test_uninstall_snapshot_failure_preserves_primary_exception(
     assert "secondary uninstall cleanup failure" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("operation", ["deploy", "uninstall"])
+def test_journal_directory_flush_failure_removes_empty_node(
+    tmp_path,
+    monkeypatch,
+    operation,
+):
+    codex_dir = _make_codex_dir(tmp_path, f"{operation} flush failure")
+    if operation == "deploy":
+        plan = codex_instruct.inspect_directory(codex_dir)
+        state = codex_instruct.DeploymentState(codex_dir, deployment_id="f" * 32)
+
+        def create():
+            codex_instruct._create_deployment_journals(
+                [state],
+                [plan],
+                codex_instruct.DEFAULT_MD_FILENAME,
+                codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
+                False,
+            )
+
+    else:
+        deployed = _run("--codex-dir", codex_dir, "--yes")
+        assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+        plan = codex_instruct.inspect_uninstall_directory(codex_dir)
+        state = codex_instruct.UninstallState(plan=plan, deployment_id="f" * 32)
+
+        def create():
+            codex_instruct._create_uninstall_journals([state], "20260721_120000")
+
+    real_flush = codex_instruct._FILESYSTEM.flush_directory
+    failed = False
+
+    def fail_first_parent_flush(path):
+        nonlocal failed
+        if Path(path) == codex_dir and not failed:
+            failed = True
+            raise OSError("primary create persistence failure")
+        real_flush(path)
+
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "flush_directory",
+        fail_first_parent_flush,
+    )
+
+    with pytest.raises(OSError, match="primary create persistence failure"):
+        create()
+
+    assert not list(codex_dir.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
+
+
 def test_issue_1_initializing_intent_and_journal_recover_to_ready(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "Issue 1 中文")
     before = {path.name: path.read_bytes() for path in codex_dir.iterdir() if path.is_file()}
@@ -172,6 +225,26 @@ def test_issue_1_initializing_intent_and_journal_recover_to_ready(tmp_path):
     ready = _run("--codex-dir", codex_dir, "--status")
     assert ready.returncode == 0, ready.stdout + ready.stderr
     assert "structural health: healthy" in ready.stdout.lower()
+    assert "deployability: ready" in ready.stdout.lower()
+
+
+def test_empty_private_initializing_journal_recovers_to_ready(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "empty initializing journal")
+    journal_dir = codex_dir / f"{codex_instruct.JOURNAL_PREFIX}{'a' * 32}"
+    codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
+
+    blocked = _run("--codex-dir", codex_dir, "--status")
+    assert blocked.returncode == 1
+    preview = _run("--codex-dir", codex_dir, "--recover")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert journal_dir.exists()
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert not journal_dir.exists()
+    ready = _run("--codex-dir", codex_dir, "--status")
+    assert ready.returncode == 0, ready.stdout + ready.stderr
     assert "deployability: ready" in ready.stdout.lower()
 
 
@@ -290,29 +363,90 @@ def test_windows_lock_key_uses_file_id_across_distinct_alias_paths(monkeypatch):
         102: Path("X:/Codex"),
     }
     backend.kernel32 = types.SimpleNamespace(CloseHandle=lambda _handle: True)
-    monkeypatch.setattr(backend, "_open_handle", lambda *_args, **_kwargs: next(handles))
+
+    def open_components(_path):
+        handle = next(handles)
+        return canonical[handle], [handle]
+
     monkeypatch.setattr(
         backend,
-        "_validate_handle_type",
-        lambda *_args, **_kwargs: None,
+        "_open_directory_components",
+        open_components,
     )
-    monkeypatch.setattr(backend, "_validate_ntfs", lambda *_args: None)
     monkeypatch.setattr(
         backend,
         "_handle_identity",
         lambda _handle: codex_instruct.FileIdentity(17, 23),
     )
-    monkeypatch.setattr(
-        backend,
-        "_canonical_path",
-        lambda handle, _fallback: canonical[handle],
-    )
-
     first_key, first_path = backend.directory_lock_key(Path("C:/alias"))
     second_key, second_path = backend.directory_lock_key(Path("X:/alias"))
 
     assert first_path != second_path
     assert first_key == second_key == (17, 23)
+
+
+def test_windows_directory_resolution_pins_all_path_components(monkeypatch):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    opened = []
+    closed = []
+    share_modes = []
+    backend.kernel32 = types.SimpleNamespace(
+        CloseHandle=lambda handle: closed.append(handle) or True
+    )
+
+    def open_handle(path, _access, **kwargs):
+        handle = len(opened) + 1
+        opened.append((handle, Path(path)))
+        share_modes.append(kwargs.get("share_mode"))
+        return handle
+
+    monkeypatch.setattr(backend, "_open_handle", open_handle)
+    def validate_handle(*_args, **_kwargs):
+        assert closed == []
+
+    monkeypatch.setattr(backend, "_validate_handle_type", validate_handle)
+    monkeypatch.setattr(backend, "_validate_ntfs", lambda *_args: None)
+    monkeypatch.setattr(
+        backend,
+        "_canonical_path",
+        lambda _handle, fallback: fallback,
+    )
+
+    resolved = backend.resolve_directory(Path("nested/path"))
+
+    assert resolved.is_absolute()
+    assert len(opened) >= 3
+    assert closed == [handle for handle, _path in reversed(opened)]
+    assert set(share_modes) == {
+        backend._FILE_SHARE_READ | backend._FILE_SHARE_WRITE
+    }
+
+
+def test_windows_lock_pin_revalidates_reparse_components_after_key_handoff(
+    monkeypatch,
+):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    backend.kernel32 = types.SimpleNamespace(CloseHandle=lambda _handle: True)
+    calls = 0
+
+    def open_components(_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return Path("C:/stable/Codex"), [101]
+        raise codex_instruct.HooksConflict("reparse point is not allowed")
+
+    monkeypatch.setattr(backend, "_open_directory_components", open_components)
+    monkeypatch.setattr(
+        backend,
+        "_handle_identity",
+        lambda _handle: codex_instruct.FileIdentity(17, 23),
+    )
+
+    key, canonical = backend.directory_lock_key(Path("C:/alias/Codex"))
+
+    with pytest.raises(codex_instruct.HooksConflict, match="reparse"):
+        backend.pin_directory_for_lock(canonical, key)
 
 
 def test_failure_cleanup_contract_preserves_primary_exception(capsys):
@@ -359,6 +493,35 @@ def test_windows_mutation_backend_declares_durable_metadata_contracts():
         backend.remove_verified_file,
     ):
         assert "flush_directory" in inspect.getsource(method)
+    assert "_fsync_directory(parent)" in inspect.getsource(
+        codex_instruct._make_registered_transaction_dir
+    )
+    for creator in (
+        codex_instruct._create_deployment_journals,
+        codex_instruct._create_uninstall_journals,
+    ):
+        assert "_fsync_directory(state.codex_dir)" in inspect.getsource(creator)
+    for writer in (
+        codex_instruct._write_exclusive_private_json,
+        codex_instruct._atomic_write_private_json,
+    ):
+        assert "_fsync_directory" in inspect.getsource(writer)
+    atomic_text_source = inspect.getsource(codex_instruct.atomic_write_text)
+    assert "os.fsync" in atomic_text_source
+    assert "_atomic_rename_no_replace" in atomic_text_source
+    assert "_transactional_replace_existing" in atomic_text_source
+
+
+def test_recovery_acl_preflight_runs_before_journal_content_is_read():
+    for loader in (
+        codex_instruct._load_deployment_journal,
+        codex_instruct._load_uninstall_journal,
+        codex_instruct._load_initializing_uninstall_pending,
+    ):
+        source = inspect.getsource(loader)
+        assert source.index("read_verified_recovery_directory") < source.index(
+            "_recovery_member_text"
+        )
 
 
 @pytest.mark.parametrize(
@@ -551,18 +714,33 @@ def test_windows_private_acl_rejects_extra_everyone_ace(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows recovery ACL contract")
+@pytest.mark.parametrize("operation", ["deploy", "uninstall"])
 @pytest.mark.parametrize("target_kind", ["directory", "member"])
-def test_windows_recovery_revalidates_existing_journal_acl(tmp_path, target_kind):
-    codex_dir = _make_codex_dir(tmp_path, f"acl recovery {target_kind}")
-    plan = codex_instruct.inspect_directory(codex_dir)
-    state = codex_instruct.DeploymentState(codex_dir, deployment_id="e" * 32)
-    codex_instruct._create_deployment_journals(
-        [state],
-        [plan],
-        codex_instruct.DEFAULT_MD_FILENAME,
-        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
-        False,
+def test_windows_recovery_revalidates_existing_journal_acl(
+    tmp_path,
+    target_kind,
+    operation,
+):
+    codex_dir = _make_codex_dir(
+        tmp_path,
+        f"{operation} acl recovery {target_kind}",
     )
+    if operation == "deploy":
+        plan = codex_instruct.inspect_directory(codex_dir)
+        state = codex_instruct.DeploymentState(codex_dir, deployment_id="e" * 32)
+        codex_instruct._create_deployment_journals(
+            [state],
+            [plan],
+            codex_instruct.DEFAULT_MD_FILENAME,
+            codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
+            False,
+        )
+    else:
+        deployed = _run("--codex-dir", codex_dir, "--yes")
+        assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+        plan = codex_instruct.inspect_uninstall_directory(codex_dir)
+        state = codex_instruct.UninstallState(plan=plan, deployment_id="e" * 32)
+        codex_instruct._create_uninstall_journals([state], "20260721_120000")
     assert state.journal_dir is not None
     target = (
         state.journal_dir
@@ -583,6 +761,37 @@ def test_windows_recovery_revalidates_existing_journal_acl(tmp_path, target_kind
     assert state.journal_dir.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows intent-only ACL contract")
+def test_windows_intent_only_recovery_revalidates_acl(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "intent only acl recovery")
+    plan = codex_instruct.inspect_directory(codex_dir)
+    state = codex_instruct.DeploymentState(codex_dir, deployment_id="9" * 32)
+    codex_instruct._create_deployment_journals(
+        [state],
+        [plan],
+        codex_instruct.DEFAULT_MD_FILENAME,
+        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
+        False,
+    )
+    assert state.journal_dir is not None
+    for member in state.journal_dir.iterdir():
+        if member.name != codex_instruct.INTENT_FILENAME:
+            member.unlink()
+    intent = state.journal_dir / codex_instruct.INTENT_FILENAME
+    changed = subprocess.run(
+        ["icacls", str(intent), "/grant", "*S-1-1-0:(R)"],
+        text=True,
+        capture_output=True,
+    )
+    assert changed.returncode == 0, changed.stdout + changed.stderr
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 1
+    assert "acl" in (recovered.stdout + recovered.stderr).lower()
+    assert intent.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows durable metadata contract")
 def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
     backend = codex_instruct._FILESYSTEM
@@ -596,6 +805,7 @@ def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "flush_directory", record_flush)
     parent = tmp_path / "durable parent"
     backend.create_private_directory(parent)
+    backend.flush_directory(tmp_path)
 
     source = parent / "source.json"
     descriptor = backend.create_private_file(source)
@@ -603,6 +813,7 @@ def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
         stream.write(b"source\n")
         stream.flush()
         os.fsync(stream.fileno())
+    backend.flush_directory(parent)
     destination = parent / "destination.json"
     assert backend.atomic_rename_no_replace(source, destination)
 
@@ -612,6 +823,7 @@ def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
         stream.write(b"replacement\n")
         stream.flush()
         os.fsync(stream.fileno())
+    backend.flush_directory(parent)
     backend.replace_atomic(replacement, destination)
     identity = codex_instruct._require_regular_file(destination, "destination")
     fingerprint = codex_instruct._fingerprint_regular_file(destination)
@@ -619,6 +831,7 @@ def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
 
     owned = parent / "owned"
     backend.create_private_directory(owned)
+    backend.flush_directory(parent)
     access = backend.open_verified_owned_directory(
         owned,
         codex_instruct._directory_identity(owned),
@@ -629,6 +842,35 @@ def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
 
     assert tmp_path in flushed
     assert flushed.count(parent) >= 6
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows create cleanup contract")
+@pytest.mark.parametrize("node_kind", ["directory", "file"])
+def test_windows_create_flush_failure_removes_unowned_node(
+    tmp_path,
+    monkeypatch,
+    node_kind,
+):
+    target = tmp_path / f"failed {node_kind}"
+    real_flush = codex_instruct._FILESYSTEM.flush_directory
+    failed = False
+
+    def fail_once(path):
+        nonlocal failed
+        if Path(path) == tmp_path and not failed:
+            failed = True
+            raise OSError("create parent flush failure")
+        real_flush(path)
+
+    monkeypatch.setattr(codex_instruct._FILESYSTEM, "flush_directory", fail_once)
+
+    with pytest.raises(OSError, match="create parent flush failure"):
+        if node_kind == "directory":
+            codex_instruct._FILESYSTEM.create_private_directory(target)
+        else:
+            codex_instruct._FILESYSTEM.create_private_file(target)
+
+    assert not target.exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows verified delete contract")
