@@ -681,3 +681,21 @@ def test_windows_owned_directory_cleanup_rejects_reparse_members(tmp_path):
             require_exact_members=True,
         )
     assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+@pytest.mark.parametrize(
+    ("function", "expected_calls"),
+    [
+        (codex_instruct._recover_uninstall, 2),
+        (codex_instruct._load_initializing_uninstall_pending, 1),
+    ],
+)
+def test_uninstall_intent_reads_are_bound_to_verified_directory_evidence(
+    function,
+    expected_calls,
+):
+    source = inspect.getsource(function)
+    calls = source.split("_load_cleanup_intent(")[1:]
+
+    assert len(calls) == expected_calls
+    assert all("," in call.split(")", 1)[0] for call in calls)
