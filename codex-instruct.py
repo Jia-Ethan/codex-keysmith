@@ -685,7 +685,17 @@ def resolve_codex_dir(
     reject_residue: bool = True,
 ) -> Path:
     """Resolve and validate a user-supplied Codex directory."""
-    codex_root = _FILESYSTEM.resolve_directory(Path(value))
+    requested = Path(value).expanduser()
+    try:
+        codex_root = _FILESYSTEM.resolve_directory(requested)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise FileNotFoundError(
+            _localized(
+                f"指定目录不存在或不是目录: {requested}",
+                "Specified directory does not exist or is not a directory: "
+                f"{requested}",
+            )
+        ) from exc
     if not codex_root.is_dir():
         raise FileNotFoundError(
             _localized(
@@ -991,6 +1001,9 @@ class _PosixFilesystemBackend:
 
     def apply_private_file_security(self, descriptor: int) -> None:
         os.fchmod(descriptor, 0o600)
+
+    def apply_private_path_security(self, path: Path) -> None:
+        del path
 
     def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
         os.fchmod(descriptor, stat.S_IMODE(source_stat.st_mode))
@@ -1348,6 +1361,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _READ_CONTROL = 0x00020000
     _WRITE_DAC = 0x00040000
     _FILE_LIST_DIRECTORY = 0x0001
+    _FILE_TRAVERSE = 0x0020
     _FILE_READ_ATTRIBUTES = 0x0080
     _FILE_WRITE_ATTRIBUTES = 0x0100
     _SYNCHRONIZE = 0x00100000
@@ -1747,7 +1761,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             for index, component in enumerate(components):
                 handle = self._open_handle(
                     component,
-                    self._FILE_READ_ATTRIBUTES,
+                    self._FILE_TRAVERSE | self._FILE_READ_ATTRIBUTES,
                     share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE,
                 )
                 handles.append(handle)
@@ -1966,6 +1980,29 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             self._security_descriptor,
         ):
             self._raise_last_error("cannot apply private ACL")
+
+    def apply_private_path_security(self, path: Path) -> None:
+        handle = self._open_handle(
+            path,
+            self._GENERIC_READ
+            | self._GENERIC_WRITE
+            | self._READ_CONTROL
+            | self._WRITE_DAC
+            | self._FILE_READ_ATTRIBUTES,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=False)
+            self._validate_ntfs(handle, path)
+            if not self.advapi32.SetKernelObjectSecurity(
+                handle,
+                self._DACL_SECURITY_INFORMATION,
+                self._security_descriptor,
+            ):
+                self._raise_last_error("cannot apply private ACL", path)
+            if not self.kernel32.FlushFileBuffers(handle):
+                self._raise_last_error("cannot persist private ACL", path)
+        finally:
+            self.kernel32.CloseHandle(handle)
 
     def clone_file_security(self, descriptor: int, source_stat: os.stat_result) -> None:
         del source_stat
@@ -3975,7 +4012,10 @@ def _validate_hooks_for_isolation(codex_dir: Path) -> Optional[dict]:
 
 def _atomic_rename_no_replace(source: Path, destination: Path) -> bool:
     """Atomically rename source while preserving an existing destination."""
-    return _FILESYSTEM.atomic_rename_no_replace(source, destination)
+    renamed = _FILESYSTEM.atomic_rename_no_replace(source, destination)
+    if renamed and str(destination.parent) in _OWNED_DIRECTORY_RECORDS:
+        _FILESYSTEM.apply_private_path_security(destination)
+    return renamed
 
 
 def _verify_atomic_rename_support(codex_dir: Path) -> None:

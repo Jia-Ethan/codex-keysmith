@@ -34,6 +34,16 @@ def _write_exact_text(path, content):
     path.write_bytes(content.encode("utf-8"))
 
 
+def _write_private_bytes(path, content):
+    descriptor = codex_instruct._open_exclusive_private_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+        codex_instruct._FILESYSTEM.apply_private_file_security(stream.fileno())
+    codex_instruct._fsync_directory(path.parent)
+
+
 def _filesystem_exit_hook_source(checkpoint, *, hit=1, exit_code=HARD_EXIT):
     return f"""
 target_checkpoint = {checkpoint!r}
@@ -160,7 +170,7 @@ def test_deploy_recovery_rejects_tampered_base_with_valid_pending(tmp_path):
     journal = journal_dir / codex_instruct.JOURNAL_FILENAME
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
     valid_bytes = journal.read_bytes()
-    pending.write_bytes(valid_bytes)
+    _write_private_bytes(pending, valid_bytes)
     data = json.loads(valid_bytes)
     data["directories"] = []
     journal.write_text(json.dumps(data), encoding="utf-8")
@@ -801,9 +811,9 @@ def test_safe_cleanup_preserves_directory_created_after_atomic_claim(
     monkeypatch,
 ):
     owned = tmp_path / "owned"
-    owned.mkdir()
+    codex_instruct._FILESYSTEM.create_private_directory(owned)
     member = owned / "snapshot"
-    member.write_text("owned\n", encoding="utf-8")
+    _write_private_bytes(member, b"owned\n")
     identity = codex_instruct._directory_identity(owned)
     fingerprint = codex_instruct._fingerprint_regular_file(member)
     original_rename = codex_instruct._atomic_rename_no_replace
@@ -919,7 +929,7 @@ def test_recover_merges_residue_record_from_any_participant(tmp_path):
     states, _plans = _prepare_journals([first, second])
     transaction_id = states[0].deployment_id
     residue = first / f".keysmith-write-prepared-{transaction_id}-partial"
-    residue.mkdir()
+    codex_instruct._FILESYSTEM.create_private_directory(residue)
     record = {
         "name": residue.name,
         "identity": codex_instruct._portable_identity(
@@ -992,9 +1002,10 @@ def test_recover_rejects_invalid_manifest_companion(tmp_path, mode):
     codex_instruct._atomic_write_private_json(journal_path, data)
     companion = states[0].journal_dir / codex_instruct.MANIFEST_INTENT_FILENAME
     if mode == "invalid-json":
-        companion.write_text('{"transaction_id":', encoding="utf-8")
+        _write_private_bytes(companion, b'{"transaction_id":')
     else:
-        companion.write_text(
+        _write_private_bytes(
+            companion,
             json.dumps(
                 {
                     "transaction_id": states[0].deployment_id,
@@ -1002,8 +1013,7 @@ def test_recover_rejects_invalid_manifest_companion(tmp_path, mode):
                         str(codex_dir.resolve()): hashlib.sha256(b"companion").hexdigest()
                     },
                 }
-            ),
-            encoding="utf-8",
+            ).encode("utf-8"),
         )
 
     result = _run("--codex-dir", codex_dir, "--recover", "--yes")
@@ -1037,7 +1047,7 @@ def test_recover_reconciles_interrupted_manifest_companion_publish(
             },
         )
     else:
-        pending.write_text('{"transaction_id":', encoding="utf-8")
+        _write_private_bytes(pending, b'{"transaction_id":')
     _write_exact_text(
         codex_dir / codex_instruct.DEFAULT_MD_FILENAME,
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
@@ -1063,7 +1073,7 @@ def test_recover_reconciles_interrupted_journal_publish(tmp_path, pending_valid)
         data["phase"] = "files-intent"
         codex_instruct._write_exclusive_private_json(pending, data)
     else:
-        pending.write_text('{"phase":', encoding="utf-8")
+        _write_private_bytes(pending, b'{"phase":')
 
     result = _run("--codex-dir", codex_dir, "--recover", "--yes")
 

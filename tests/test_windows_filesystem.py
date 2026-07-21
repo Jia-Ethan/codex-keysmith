@@ -53,6 +53,7 @@ def test_platform_filesystem_contract_is_centralized():
         "remove_verified_directory",
         "set_file_times",
         "apply_private_file_security",
+        "apply_private_path_security",
         "atomic_rename_no_replace",
         "replace_atomic",
         "flush_directory",
@@ -389,14 +390,16 @@ def test_windows_directory_resolution_pins_all_path_components(monkeypatch):
     backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
     opened = []
     closed = []
+    accesses = []
     share_modes = []
     backend.kernel32 = types.SimpleNamespace(
         CloseHandle=lambda handle: closed.append(handle) or True
     )
 
-    def open_handle(path, _access, **kwargs):
+    def open_handle(path, access, **kwargs):
         handle = len(opened) + 1
         opened.append((handle, Path(path)))
+        accesses.append(access)
         share_modes.append(kwargs.get("share_mode"))
         return handle
 
@@ -417,6 +420,12 @@ def test_windows_directory_resolution_pins_all_path_components(monkeypatch):
     assert resolved.is_absolute()
     assert len(opened) >= 3
     assert closed == [handle for handle, _path in reversed(opened)]
+    assert all(
+        access
+        & (backend._FILE_TRAVERSE | backend._FILE_READ_ATTRIBUTES)
+        == (backend._FILE_TRAVERSE | backend._FILE_READ_ATTRIBUTES)
+        for access in accesses
+    )
     assert set(share_modes) == {
         backend._FILE_SHARE_READ | backend._FILE_SHARE_WRITE
     }
@@ -447,6 +456,36 @@ def test_windows_lock_pin_revalidates_reparse_components_after_key_handoff(
 
     with pytest.raises(codex_instruct.HooksConflict, match="reparse"):
         backend.pin_directory_for_lock(canonical, key)
+
+
+def test_file_claim_into_owned_transaction_applies_private_security(
+    tmp_path,
+    monkeypatch,
+):
+    transaction_dir = tmp_path / "owned transaction"
+    destination = transaction_dir / "claimed"
+    secured = []
+    monkeypatch.setitem(
+        codex_instruct._OWNED_DIRECTORY_RECORDS,
+        str(transaction_dir),
+        (codex_instruct.FileIdentity(1, 2), {}),
+    )
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "atomic_rename_no_replace",
+        lambda _source, _destination: True,
+    )
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "apply_private_path_security",
+        lambda path: secured.append(path),
+    )
+
+    assert codex_instruct._atomic_rename_no_replace(
+        tmp_path / "source",
+        destination,
+    )
+    assert secured == [destination]
 
 
 def test_failure_cleanup_contract_preserves_primary_exception(capsys):
@@ -631,20 +670,24 @@ with module._DirectoryLockSet([target]):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows lock pin contract")
-def test_windows_directory_lock_pins_the_verified_identity(tmp_path):
-    codex_dir = _make_codex_dir(tmp_path, "pinned identity")
-    moved = codex_dir.with_name("pinned identity moved")
+@pytest.mark.parametrize("rename_target", ["directory", "parent"])
+def test_windows_directory_lock_pins_the_verified_identity(tmp_path, rename_target):
+    parent = tmp_path / "pinned identity parent"
+    parent.mkdir()
+    codex_dir = _make_codex_dir(parent, "pinned identity")
+    target = codex_dir if rename_target == "directory" else parent
+    moved = target.with_name(f"{target.name} moved")
 
     with codex_instruct._DirectoryLockSet([str(codex_dir)]):
         try:
-            codex_dir.rename(moved)
+            target.rename(moved)
         except OSError as exc:
             assert exc.winerror == 32
         else:
-            moved.rename(codex_dir)
+            moved.rename(target)
             pytest.fail("locked directory identity was not pinned")
 
-    codex_dir.rename(moved)
+    target.rename(moved)
     assert moved.is_dir()
 
 

@@ -32,6 +32,16 @@ def _run(*args):
     )
 
 
+def _write_private_bytes(path, content):
+    descriptor = codex_instruct._open_exclusive_private_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+        codex_instruct._FILESYSTEM.apply_private_file_security(stream.fileno())
+    codex_instruct._fsync_directory(path.parent)
+
+
 def _make_rich_deployment(tmp_path, name):
     codex_dir = tmp_path / name
     codex_dir.mkdir()
@@ -500,11 +510,12 @@ def test_uninstall_recovery_cleans_partial_initializing_snapshots_and_pending(
     snapshot_journal = _single_journal(snapshot_owner)
     pending = snapshot_journal / codex_instruct.JOURNAL_PENDING_FILENAME
     if pending_valid:
-        pending.write_bytes(
+        _write_private_bytes(
+            pending,
             (snapshot_journal / codex_instruct.JOURNAL_FILENAME).read_bytes()
         )
     else:
-        pending.write_text('{"phase":', encoding="utf-8")
+        _write_private_bytes(pending, b'{"phase":')
 
     recovered = _run("--codex-dir", second, "--recover", "--yes")
 
@@ -1263,7 +1274,7 @@ m.recover_deployment([{str(pending_owner)!r}], True)
         (first, second)
     )
     pending = remaining_journal / codex_instruct.JOURNAL_PENDING_FILENAME
-    pending.write_text("{", encoding="utf-8")
+    pending.write_bytes(b"{")
     first_evidence = _snapshot_tree(first)
     second_evidence = _snapshot_tree(second)
 
@@ -1314,7 +1325,7 @@ def test_uninstall_recovery_rejects_tampered_base_with_valid_pending(tmp_path):
     journal = journal_dir / codex_instruct.JOURNAL_FILENAME
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
     valid_bytes = journal.read_bytes()
-    pending.write_bytes(valid_bytes)
+    _write_private_bytes(pending, valid_bytes)
     data = json.loads(valid_bytes)
     data["directories"] = []
     journal.write_text(json.dumps(data), encoding="utf-8")
@@ -1561,7 +1572,7 @@ m.uninstall([{str(first)!r}, {str(second)!r}], True)
     assert journal_dir.exists()
 
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME
-    pending.write_bytes(journal_path.read_bytes())
+    _write_private_bytes(pending, journal_path.read_bytes())
     recovered = _run("--codex-dir", remaining, "--recover", "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     for codex_dir in (first, second):
@@ -1637,9 +1648,9 @@ def test_uninstall_journal_loader_rejects_structural_evidence_tampering(
             encoding="utf-8",
         )
     else:
-        (journal_dir / codex_instruct.MANIFEST_INTENT_FILENAME).write_text(
-            "{}\n",
-            encoding="utf-8",
+        codex_instruct._write_exclusive_private_json(
+            journal_dir / codex_instruct.MANIFEST_INTENT_FILENAME,
+            {},
         )
 
     if damage not in {"intent-json", "manifest-companion"}:
@@ -1734,12 +1745,15 @@ def test_uninstall_resource_invariants_reject_ambiguous_recovery_state(
 @pytest.mark.parametrize("damage", ["invalid-json", "invalid-operation"])
 def test_journal_operation_rejects_unusable_dispatch_metadata(tmp_path, damage):
     journal_dir = tmp_path / f"operation-{damage}"
-    journal_dir.mkdir()
+    codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
     journal = journal_dir / codex_instruct.JOURNAL_FILENAME
     if damage == "invalid-json":
-        journal.write_text("{", encoding="utf-8")
+        _write_private_bytes(journal, b"{")
     else:
-        journal.write_text(json.dumps({"operation": "unknown"}), encoding="utf-8")
+        codex_instruct._write_exclusive_private_json(
+            journal,
+            {"operation": "unknown"},
+        )
 
     with pytest.raises(ValueError):
         codex_instruct._journal_operation(journal_dir)
