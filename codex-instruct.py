@@ -968,7 +968,8 @@ class _PosixFilesystemBackend:
         os.mkdir(path, 0o700)
         os.chmod(path, 0o700)
 
-    def create_private_file(self, path: Path) -> int:
+    def create_private_file(self, path: Path, deny_delete: bool = False) -> int:
+        del deny_delete
         flags = (
             os.O_RDWR
             | os.O_CREAT
@@ -1133,6 +1134,49 @@ class _PosixFilesystemBackend:
         os.unlink(name, dir_fd=access.descriptor)
         access.names.discard(name)
 
+    def remove_verified_file(
+        self,
+        path: Path,
+        expected_identity: FileIdentity,
+        expected: Any,
+    ) -> None:
+        parent_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        parent_flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        parent_descriptor = os.open(path.parent, parent_flags)
+        descriptor = None
+        try:
+            item_stat = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(item_stat.st_mode)
+                or _identity_from_stat(item_stat) != expected_identity
+            ):
+                raise HooksConflict(f"待删除文件 identity 已变化，保留证据: {path}")
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+            opened_stat = os.fstat(descriptor)
+            if _identity_from_stat(opened_stat) != expected_identity:
+                raise HooksConflict(f"待删除文件在打开期间变化，保留证据: {path}")
+            actual = _fingerprint_descriptor(descriptor, opened_stat, path)
+            self._validate_expected_fingerprint(path, actual, expected)
+            current_stat = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if _identity_from_stat(current_stat) != expected_identity:
+                raise HooksConflict(f"待删除文件在删除前变化，保留证据: {path}")
+            os.unlink(path.name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(parent_descriptor)
+
     def flush_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
         if access.descriptor is None:
             raise HooksConflict("owned directory descriptor is unavailable")
@@ -1207,6 +1251,26 @@ class _PosixFilesystemBackend:
         identity = _directory_identity(canonical)
         return (identity.device, identity.inode, str(canonical)), canonical
 
+    def pin_directory_for_lock(self, path: Path, key: Tuple[Any, ...]) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            expected = FileIdentity(int(key[0]), int(key[1]))
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or _identity_from_stat(opened) != expected
+            ):
+                raise HooksConflict(f"锁定目录在加锁期间被替换: {path}")
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def release_pinned_directory(self, token: int) -> None:
+        os.close(token)
+
     def acquire_directory_lock(self, key: Tuple[Any, ...]) -> Tuple[int, Path]:
         import fcntl
 
@@ -1272,7 +1336,9 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x00000002
     _FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000010
     _DACL_SECURITY_INFORMATION = 0x00000004
-    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+    _ACCESS_ALLOWED_ACE_TYPE = 0
+    _FILE_ALL_ACCESS = 0x001F01FF
+    _SE_DACL_PROTECTED = 0x1000
     _TOKEN_QUERY = 0x0008
     _TOKEN_USER = 1
     _SDDL_REVISION_1 = 1
@@ -1334,6 +1400,22 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             ("nLength", wintypes.DWORD),
             ("lpSecurityDescriptor", wintypes.LPVOID),
             ("bInheritHandle", wintypes.BOOL),
+        ]
+
+    class _ACL_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AclRevision", ctypes.c_ubyte),
+            ("Sbz1", ctypes.c_ubyte),
+            ("AclSize", wintypes.WORD),
+            ("AceCount", wintypes.WORD),
+            ("Sbz2", wintypes.WORD),
+        ]
+
+    class _ACE_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AceType", ctypes.c_ubyte),
+            ("AceFlags", ctypes.c_ubyte),
+            ("AceSize", wintypes.WORD),
         ]
 
     def __init__(self) -> None:
@@ -1474,16 +1556,25 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             ctypes.POINTER(wintypes.DWORD),
         ]
         self.advapi32.GetKernelObjectSecurity.restype = wintypes.BOOL
-        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        self.advapi32.GetSecurityDescriptorControl.argtypes = [
             wintypes.LPVOID,
-            wintypes.DWORD,
-            wintypes.DWORD,
-            ctypes.POINTER(wintypes.LPWSTR),
+            ctypes.POINTER(wintypes.WORD),
             ctypes.POINTER(wintypes.DWORD),
         ]
-        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = (
-            wintypes.BOOL
-        )
+        self.advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        self.advapi32.GetSecurityDescriptorDacl.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        self.advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+        self.advapi32.GetAce.argtypes = [
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+        ]
+        self.advapi32.GetAce.restype = wintypes.BOOL
 
     @staticmethod
     def _path(path: Path) -> str:
@@ -1507,6 +1598,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         access: int,
         creation: int = _OPEN_EXISTING,
         security: bool = False,
+        share_mode: Optional[int] = None,
     ) -> int:
         attributes = self._FILE_FLAG_OPEN_REPARSE_POINT
         if path.is_dir() or creation == self._OPEN_EXISTING:
@@ -1517,13 +1609,25 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         handle = self.kernel32.CreateFileW(
             self._path(path),
             access,
-            self._FILE_SHARE_READ | self._FILE_SHARE_WRITE | self._FILE_SHARE_DELETE,
+            (
+                self._FILE_SHARE_READ
+                | self._FILE_SHARE_WRITE
+                | self._FILE_SHARE_DELETE
+                if share_mode is None
+                else share_mode
+            ),
             security_attributes,
             creation,
             attributes | self._FILE_ATTRIBUTE_NORMAL,
             None,
         )
         if handle == self._INVALID_HANDLE_VALUE:
+            error = ctypes.get_last_error()
+            if creation == self._CREATE_NEW and error in {
+                self._ERROR_FILE_EXISTS,
+                self._ERROR_ALREADY_EXISTS,
+            }:
+                raise FileExistsError(error, ctypes.FormatError(error).strip(), str(path))
             self._raise_last_error("cannot open filesystem handle", path)
         return int(handle)
 
@@ -1689,7 +1793,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             self._raise_last_error("cannot create private directory", path)
         self.verify_private_security(path, is_directory=True)
 
-    def create_private_file(self, path: Path) -> int:
+    def create_private_file(self, path: Path, deny_delete: bool = False) -> int:
         handle = self._open_handle(
             path,
             self._GENERIC_READ
@@ -1701,6 +1805,11 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._FILE_WRITE_ATTRIBUTES,
             creation=self._CREATE_NEW,
             security=True,
+            share_mode=(
+                self._FILE_SHARE_READ | self._FILE_SHARE_WRITE
+                if deny_delete
+                else None
+            ),
         )
         self._validate_handle_type(handle, path, is_directory=False)
         self._validate_ntfs(handle, path)
@@ -1749,29 +1858,74 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
                 ctypes.byref(needed),
             ):
                 self._raise_last_error("cannot read private ACL", path)
-            sddl_pointer = wintypes.LPWSTR()
-            sddl_length = wintypes.DWORD()
-            if not self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            control = wintypes.WORD()
+            revision = wintypes.DWORD()
+            if not self.advapi32.GetSecurityDescriptorControl(
                 descriptor,
-                self._SDDL_REVISION_1,
-                self._DACL_SECURITY_INFORMATION,
-                ctypes.byref(sddl_pointer),
-                ctypes.byref(sddl_length),
+                ctypes.byref(control),
+                ctypes.byref(revision),
             ):
-                self._raise_last_error("cannot describe private ACL", path)
-            try:
-                sddl = sddl_pointer.value or ""
-            finally:
-                self.kernel32.LocalFree(sddl_pointer)
-            if not sddl.startswith("D:P"):
+                self._raise_last_error("cannot inspect private ACL control", path)
+            if not control.value & self._SE_DACL_PROTECTED:
                 raise HooksConflict(f"private ACL is not protected: {path}")
-            current_user_present = self._current_sid in sddl or (
-                self._current_sid.endswith("-500") and ";;;LA)" in sddl
-            )
-            if not current_user_present:
-                raise HooksConflict(f"private ACL does not grant the current user: {path}")
-            if "SY" not in sddl and "S-1-5-18" not in sddl:
-                raise HooksConflict(f"private ACL does not grant SYSTEM: {path}")
+            dacl_present = wintypes.BOOL()
+            dacl_defaulted = wintypes.BOOL()
+            dacl = wintypes.LPVOID()
+            if not self.advapi32.GetSecurityDescriptorDacl(
+                descriptor,
+                ctypes.byref(dacl_present),
+                ctypes.byref(dacl),
+                ctypes.byref(dacl_defaulted),
+            ):
+                self._raise_last_error("cannot inspect private DACL", path)
+            if not dacl_present.value or not dacl.value:
+                raise HooksConflict(f"private ACL has no DACL: {path}")
+            acl_header = ctypes.cast(
+                dacl,
+                ctypes.POINTER(self._ACL_HEADER),
+            ).contents
+            principals: Dict[str, int] = {}
+            for index in range(int(acl_header.AceCount)):
+                ace_pointer = wintypes.LPVOID()
+                if not self.advapi32.GetAce(dacl, index, ctypes.byref(ace_pointer)):
+                    self._raise_last_error("cannot inspect private ACL entry", path)
+                ace_address = int(ace_pointer.value)
+                header = ctypes.cast(
+                    ace_address,
+                    ctypes.POINTER(self._ACE_HEADER),
+                ).contents
+                if (
+                    header.AceType != self._ACCESS_ALLOWED_ACE_TYPE
+                    or header.AceFlags != 0
+                ):
+                    raise HooksConflict(f"private ACL has a non-canonical ACE: {path}")
+                mask = ctypes.cast(
+                    ace_address + ctypes.sizeof(self._ACE_HEADER),
+                    ctypes.POINTER(wintypes.DWORD),
+                ).contents.value
+                sid_pointer = wintypes.LPVOID(
+                    ace_address
+                    + ctypes.sizeof(self._ACE_HEADER)
+                    + ctypes.sizeof(wintypes.DWORD)
+                )
+                sid_string = wintypes.LPWSTR()
+                if not self.advapi32.ConvertSidToStringSidW(
+                    sid_pointer,
+                    ctypes.byref(sid_string),
+                ):
+                    self._raise_last_error("cannot describe private ACL principal", path)
+                try:
+                    sid = sid_string.value
+                finally:
+                    self.kernel32.LocalFree(sid_string)
+                if sid in principals:
+                    raise HooksConflict(f"private ACL repeats a principal: {path}")
+                principals[sid] = int(mask)
+            expected = {self._current_sid, "S-1-5-18"}
+            if set(principals) != expected or any(
+                mask != self._FILE_ALL_ACCESS for mask in principals.values()
+            ):
+                raise HooksConflict(f"private ACL grants unexpected access: {path}")
         finally:
             self.kernel32.CloseHandle(handle)
 
@@ -1836,6 +1990,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._FILE_LIST_DIRECTORY
             | self._FILE_READ_ATTRIBUTES
             | self._SYNCHRONIZE,
+            share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE,
         )
         try:
             self._validate_handle_type(handle, path, is_directory=True)
@@ -1966,6 +2121,40 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         access.entries = entries
         access.names = set(entries)
 
+    def remove_verified_file(
+        self,
+        path: Path,
+        expected_identity: FileIdentity,
+        expected: Any,
+    ) -> None:
+        handle = self._open_handle(
+            path,
+            self._GENERIC_READ | self._FILE_READ_ATTRIBUTES | self._DELETE,
+            share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE,
+        )
+        descriptor = None
+        try:
+            self._validate_handle_type(handle, path, is_directory=False)
+            if self._handle_identity(handle) != expected_identity:
+                raise HooksConflict(f"待删除文件 identity 已变化，保留证据: {path}")
+            descriptor = self.msvcrt.open_osfhandle(
+                handle,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+            handle = 0
+            opened = os.fstat(descriptor)
+            actual = _fingerprint_descriptor(descriptor, opened, path)
+            self._validate_expected_fingerprint(path, actual, expected)
+            raw_handle = self.msvcrt.get_osfhandle(descriptor)
+            self._mark_delete(raw_handle, path)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            elif handle:
+                self.kernel32.CloseHandle(handle)
+        if _path_entry_exists(path):
+            raise HooksConflict(f"待删除文件删除后仍存在，保留证据: {path}")
+
     def flush_owned_directory(self, access: _OwnedDirectoryAccess) -> None:
         if access.handle is None:
             raise HooksConflict("owned directory handle is unavailable")
@@ -2052,6 +2241,34 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         finally:
             self.kernel32.CloseHandle(handle)
 
+    def pin_directory_for_lock(self, path: Path, key: Tuple[Any, ...]) -> int:
+        handle = self._open_handle(
+            path,
+            self._FILE_LIST_DIRECTORY
+            | self._FILE_READ_ATTRIBUTES
+            | self._SYNCHRONIZE,
+            share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE,
+        )
+        try:
+            self._validate_handle_type(handle, path, is_directory=True)
+            self._validate_ntfs(handle, path)
+            identity = self._handle_identity(handle)
+            canonical = self._canonical_path(handle, path)
+            current_key = (
+                identity.device,
+                identity.inode,
+                os.path.normcase(str(canonical)),
+            )
+            if current_key != key:
+                raise HooksConflict(f"锁定目录在加锁期间被替换: {path}")
+            return handle
+        except BaseException:
+            self.kernel32.CloseHandle(handle)
+            raise
+
+    def release_pinned_directory(self, token: int) -> None:
+        self.kernel32.CloseHandle(token)
+
     def acquire_directory_lock(self, key: Tuple[Any, ...]) -> int:
         digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
         name = f"Global\\JiaEthan.CodexKeysmith.{digest}"
@@ -2101,14 +2318,21 @@ def _normalize_operation_directories(paths: List[str]) -> List[_OperationDirecto
 class _DirectoryLockSet:
     def __init__(self, paths: List[str]) -> None:
         self.directories = _normalize_operation_directories(paths)
-        self.tokens: List[Any] = []
+        self.tokens: List[Tuple[Any, Any]] = []
 
     def __enter__(self) -> "_DirectoryLockSet":
         try:
             for directory in self.directories:
-                self.tokens.append(
-                    _FILESYSTEM.acquire_directory_lock(directory.lock_key)
-                )
+                lock_token = _FILESYSTEM.acquire_directory_lock(directory.lock_key)
+                try:
+                    pin_token = _FILESYSTEM.pin_directory_for_lock(
+                        directory.path,
+                        directory.lock_key,
+                    )
+                except BaseException:
+                    _FILESYSTEM.release_directory_lock(lock_token)
+                    raise
+                self.tokens.append((lock_token, pin_token))
         except BaseException:
             self._release()
             raise
@@ -2116,8 +2340,11 @@ class _DirectoryLockSet:
 
     def _release(self) -> None:
         while self.tokens:
-            token = self.tokens.pop()
-            _FILESYSTEM.release_directory_lock(token)
+            lock_token, pin_token = self.tokens.pop()
+            try:
+                _FILESYSTEM.release_pinned_directory(pin_token)
+            finally:
+                _FILESYSTEM.release_directory_lock(lock_token)
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         del exc_type, exc, traceback
@@ -2351,6 +2578,7 @@ def _safe_remove_owned_directory(
                     name,
                     expected_members[name],
                 )
+                _filesystem_checkpoint("owned-directory-member-removed")
             _FILESYSTEM.flush_owned_directory(access)
             if JOURNAL_FILENAME in names:
                 _FILESYSTEM.remove_verified_member(
@@ -2358,6 +2586,7 @@ def _safe_remove_owned_directory(
                     JOURNAL_FILENAME,
                     expected_members[JOURNAL_FILENAME],
                 )
+                _filesystem_checkpoint("owned-directory-member-removed")
                 _FILESYSTEM.flush_owned_directory(access)
             if MANIFEST_INTENT_FILENAME in names:
                 _FILESYSTEM.remove_verified_member(
@@ -2365,6 +2594,7 @@ def _safe_remove_owned_directory(
                     MANIFEST_INTENT_FILENAME,
                     expected_members[MANIFEST_INTENT_FILENAME],
                 )
+                _filesystem_checkpoint("owned-directory-member-removed")
                 _FILESYSTEM.flush_owned_directory(access)
             expected_intent = expected_members[INTENT_FILENAME]
             portable_intent = (
@@ -2378,6 +2608,7 @@ def _safe_remove_owned_directory(
                 )
             if not _atomic_rename_no_replace(path / INTENT_FILENAME, marker):
                 raise HooksConflict(f"无法发布事务 journal cleanup marker: {marker}")
+            _filesystem_checkpoint("cleanup-marker-published")
             _FILESYSTEM.flush_owned_directory(access)
             cleanup_marker = (marker, expected_members[INTENT_FILENAME])
         else:
@@ -2387,8 +2618,12 @@ def _safe_remove_owned_directory(
                     name,
                     expected_members[name],
                 )
+                _filesystem_checkpoint("owned-directory-member-removed")
             _FILESYSTEM.flush_owned_directory(access)
         _FILESYSTEM.remove_verified_directory(access)
+        _filesystem_checkpoint("owned-directory-removed")
+        if journal_cleanup:
+            _filesystem_checkpoint("journal-directory-removed")
     finally:
         _FILESYSTEM.close_owned_directory(access)
     _fsync_directory(path.parent)
@@ -2403,7 +2638,12 @@ def _safe_remove_owned_directory(
                 marker,
                 "retained transaction cleanup marker",
             )
-        marker.unlink()
+        marker_identity = _require_regular_file(
+            marker,
+            "transaction cleanup marker",
+        )
+        _FILESYSTEM.remove_verified_file(marker, marker_identity, expected)
+        _filesystem_checkpoint("cleanup-marker-removed")
         _fsync_directory(path.parent)
     return None
 
@@ -2800,7 +3040,9 @@ def _atomic_write_private_json(path: Path, data: Dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
             _FILESYSTEM.apply_private_file_security(stream.fileno())
+        _filesystem_checkpoint("journal-pending-published")
         _FILESYSTEM.replace_atomic(temporary, path)
+        _filesystem_checkpoint("journal-file-published")
         _fsync_directory(path.parent)
     finally:
         if _path_entry_exists(temporary):
@@ -3029,6 +3271,7 @@ def _create_deployment_journals(
                 journal_dir / INTENT_FILENAME,
                 _immutable_journal_intent(journal_data),
             )
+            _filesystem_checkpoint("journal-intent-published")
             _atomic_write_private_json(journal_dir / JOURNAL_FILENAME, persisted)
             _fsync_directory(state.codex_dir)
 
@@ -3125,6 +3368,7 @@ def _update_deployment_journals(
         persisted = dict(data)
         persisted["owner_directory"] = str(state.codex_dir.resolve())
         _atomic_write_private_json(state.journal_dir / JOURNAL_FILENAME, persisted)
+        _filesystem_checkpoint("deployment-journal-phase-published")
 
 
 def _journal_expected_members(
@@ -5227,7 +5471,9 @@ def _finish_cleanup_intent_artifact(
             _portable_fingerprint(fingerprint),
             _require_regular_file(path, "retained cleanup marker"),
         )
-    path.unlink()
+    marker_identity = _require_regular_file(path, "cleanup marker")
+    _FILESYSTEM.remove_verified_file(path, marker_identity, fingerprint)
+    _filesystem_checkpoint("cleanup-marker-removed")
     _fsync_directory(owner)
     return None
 
@@ -5483,9 +5729,10 @@ def _remove_retained_cleanup_markers(
         require_claimed_identity(marker, identity)
         if not _portable_matches(marker, expected):
             raise HooksConflict(f"retained cleanup marker content changed: {marker}")
-    for marker, _expected, identity in markers:
+    for marker, expected, identity in markers:
         require_claimed_identity(marker, identity)
-        marker.unlink()
+        _FILESYSTEM.remove_verified_file(marker, identity, expected)
+        _filesystem_checkpoint("cleanup-marker-removed")
         _fsync_directory(marker.parent)
 
 
@@ -7633,6 +7880,7 @@ def _create_uninstall_journals(
                 state.journal_dir / INTENT_FILENAME,
                 _immutable_journal_intent(journal_data),
             )
+            _filesystem_checkpoint("journal-intent-published")
             _atomic_write_private_json(
                 state.journal_dir / JOURNAL_FILENAME,
                 persisted,
