@@ -498,7 +498,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-{_filesystem_exit_hook_source("owned-directory-removed")}
+    {_filesystem_exit_hook_source("journal-directory-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(
@@ -678,7 +678,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-{_filesystem_exit_hook_source("owned-directory-removed")}
+    {_filesystem_exit_hook_source("journal-directory-removed")}
 m.recover_deployment([{str(first)!r}], True)
 """
     cleanup_interrupted = _write_child(tmp_path, "interrupt-journal-cleanup.py", source)
@@ -1384,7 +1384,7 @@ spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
-{_filesystem_exit_hook_source("owned-directory-removed")}
+{_filesystem_exit_hook_source("journal-directory-removed")}
 m.uninstall([{str(first)!r}, {str(second)!r}], True)
 """
     interrupted = _write_child(tmp_path, "interrupt-committed-cleanup.py", source)
@@ -1399,7 +1399,7 @@ m.uninstall([{str(first)!r}, {str(second)!r}], True)
 
     preview = _run("--codex-dir", remaining, "--recover")
     assert preview.returncode == 0, preview.stdout + preview.stderr
-    assert "committed" in preview.stdout
+    assert "Cleanup residue" in preview.stdout
     assert journal_dir.exists()
 
     pending = journal_dir / codex_instruct.JOURNAL_PENDING_FILENAME

@@ -225,9 +225,9 @@ def test_issue_1_v010_initializing_fixture_recovers_to_ready(tmp_path):
     }
     intent = json.loads(json.dumps(base))
     intent.pop("phase")
-    intent["directories"][str(codex_dir.resolve())]["resources"]["manifest"][
-        "allowed_sha256"
-    ] = []
+    intent_directory = intent["directories"][str(codex_dir.resolve())]
+    intent_directory.pop("residues")
+    intent_directory["resources"]["manifest"]["allowed_sha256"] = []
     journal = dict(base)
     journal["owner_directory"] = str(codex_dir.resolve())
     codex_instruct._write_exclusive_private_json(
