@@ -293,6 +293,21 @@ def _directory_with_journal_member(codex_dirs, member):
     return matches[0]
 
 
+def _directory_with_journal_snapshot(codex_dirs):
+    matches = [
+        directory
+        for directory in codex_dirs
+        if any(
+            member.name.startswith("snapshot-")
+            for node in directory.glob(f"{codex_instruct.JOURNAL_PREFIX}*")
+            if node.is_dir()
+            for member in node.iterdir()
+        )
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def _cleanup_marker_owner_and_remaining_journal(codex_dirs):
     marker_owners = [
         directory
@@ -330,13 +345,21 @@ def test_uninstall_recovery_cleans_partial_multi_directory_journal_publication(t
     )
 
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    assert len(_journal_dirs(first)) == 1
-    second_nodes = list(second.glob(f"{codex_instruct.JOURNAL_PREFIX}*"))
-    assert len(second_nodes) == 1
-    assert second_nodes[0].is_dir()
-    assert not list(second_nodes[0].iterdir())
+    members = _journal_node_members((first, second))
+    assert sorted(members.values(), key=len) == [
+        set(),
+        {
+            codex_instruct.INTENT_FILENAME,
+            codex_instruct.JOURNAL_FILENAME,
+        },
+    ]
+    anchor = next(
+        directory
+        for directory, names in members.items()
+        if codex_instruct.JOURNAL_FILENAME in names
+    )
 
-    preview = _run("--codex-dir", first, "--recover")
+    preview = _run("--codex-dir", anchor, "--recover")
     assert preview.returncode == 0, preview.stdout + preview.stderr
     _assert_no_cjk(preview.stdout + preview.stderr)
     for codex_dir in (first, second):
@@ -346,7 +369,7 @@ def test_uninstall_recovery_cleans_partial_multi_directory_journal_publication(t
             if not key.startswith(codex_instruct.JOURNAL_PREFIX)
         }
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", anchor, "--recover", "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
     for codex_dir in (first, second):
@@ -473,11 +496,12 @@ def test_uninstall_recovery_cleans_partial_initializing_snapshots_and_pending(
         "first-snapshot",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
-    first_journal = _single_journal(first)
-    pending = first_journal / codex_instruct.JOURNAL_PENDING_FILENAME
+    snapshot_owner = _directory_with_journal_snapshot((first, second))
+    snapshot_journal = _single_journal(snapshot_owner)
+    pending = snapshot_journal / codex_instruct.JOURNAL_PENDING_FILENAME
     if pending_valid:
         pending.write_bytes(
-            (first_journal / codex_instruct.JOURNAL_FILENAME).read_bytes()
+            (snapshot_journal / codex_instruct.JOURNAL_FILENAME).read_bytes()
         )
     else:
         pending.write_text('{"phase":', encoding="utf-8")
@@ -531,15 +555,11 @@ m.recover_deployment([{str(journal_owner)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    assert list(
-        second.glob(
-            f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
-            f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
-        )
+    marker_owner, _remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
     )
-    assert _journal_dirs(first)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     _assert_no_cjk(recovered.stdout + recovered.stderr)
@@ -1063,7 +1083,10 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_evidence = _snapshot_tree(first)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    marker_evidence = _snapshot_tree(marker_owner)
 
     race_source = f"""
 import importlib.util
@@ -1075,21 +1098,21 @@ m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 real = m._recover_uninstall
-second = Path({str(second)!r})
+remaining = Path({str(remaining_journal.parent)!r})
 
 def wrapped(codex_dirs, yes):
-    journal = next(second.glob(f"{{m.JOURNAL_PREFIX}}*")) / m.JOURNAL_FILENAME
+    journal = next(remaining.glob(f"{{m.JOURNAL_PREFIX}}*")) / m.JOURNAL_FILENAME
     journal.write_text("{{", encoding="utf-8")
     return real(codex_dirs, yes)
 
 m._recover_uninstall = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = _write_child(tmp_path, "race-after-cleanup-preflight.py", race_source)
 
     assert raced.returncode == 1
-    assert _snapshot_tree(first) == first_evidence
-    assert (_single_journal(second) / codex_instruct.JOURNAL_FILENAME).read_text(
+    assert _snapshot_tree(marker_owner) == marker_evidence
+    assert (remaining_journal / codex_instruct.JOURNAL_FILENAME).read_text(
         encoding="utf-8"
     ) == "{"
 
@@ -1119,7 +1142,9 @@ m.recover_deployment([{str(first)!r}], True)
         marker_source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    second_journal = _single_journal(second)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
 
     race_source = f"""
 import importlib.util
@@ -1132,28 +1157,28 @@ sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 real = m._recover_cleanup_artifacts
 calls = 0
-first = Path({str(first)!r})
+marker_owner = Path({str(marker_owner)!r})
 
 def wrapped(*args, **kwargs):
     global calls
     result = real(*args, **kwargs)
     calls += 1
     if calls == 2:
-        marker = next(first.glob(
+        marker = next(marker_owner.glob(
             f"{{m.CLEANUP_MARKER_PREFIX}}*{{m.CLEANUP_MARKER_SUFFIX}}"
         ))
         marker.write_text("{{", encoding="utf-8")
     return result
 
 m._recover_cleanup_artifacts = wrapped
-m.recover_deployment([{str(first)!r}], True)
+m.recover_deployment([{str(marker_owner)!r}], True)
 """
     raced = _write_child(tmp_path, "race-after-inner-cleanup-preflight.py", race_source)
 
     assert raced.returncode == 1
-    assert second_journal.exists()
+    assert remaining_journal.exists()
     assert list(
-        first.glob(
+        marker_owner.glob(
             f"{codex_instruct.CLEANUP_MARKER_PREFIX}*"
             f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
         )
@@ -1185,15 +1210,19 @@ m.recover_deployment([{str(first)!r}], True)
         source,
     )
     assert cleanup_interrupted.returncode == HARD_EXIT
-    first_evidence = _snapshot_tree(first)
-    moved = second.with_name(second.name + "-moved")
-    second.rename(moved)
+    marker_owner, remaining_journal = _cleanup_marker_owner_and_remaining_journal(
+        (first, second)
+    )
+    anchor_evidence = _snapshot_tree(marker_owner)
+    participant = remaining_journal.parent
+    moved = participant.with_name(participant.name + "-moved")
+    participant.rename(moved)
     moved_evidence = _snapshot_tree(moved)
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", marker_owner, "--recover", "--yes")
 
     assert recovered.returncode == 1
-    assert _snapshot_tree(first) == first_evidence
+    assert _snapshot_tree(marker_owner) == anchor_evidence
     assert _snapshot_tree(moved) == moved_evidence
 
 
