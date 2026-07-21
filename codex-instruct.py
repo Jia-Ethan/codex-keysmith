@@ -1996,8 +1996,13 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             self._validate_handle_type(handle, path, is_directory=True)
             self._validate_ntfs(handle, path)
             identity = self._handle_identity(handle)
-            if identity != expected_identity or _directory_identity(path) != expected_identity:
-                raise HooksConflict(f"受管事务目录 identity 已变化，保留证据: {path}")
+            path_identity = _directory_identity(path)
+            if identity != expected_identity or path_identity != expected_identity:
+                raise HooksConflict(
+                    "受管事务目录 identity 已变化，保留证据: "
+                    f"{path}; expected={expected_identity}, handle={identity}, "
+                    f"path={path_identity}"
+                )
             entries = self._enumerate(handle, path)
             names = set(entries)
             self._validate_member_names(path, names, expected_members, require_exact_members)
