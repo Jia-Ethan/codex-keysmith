@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,15 @@ def _run(*args):
         text=True,
         capture_output=True,
     )
+
+
+def _make_windows_junction(link, target):
+    created = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        text=True,
+        capture_output=True,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
 
 
 def test_platform_filesystem_contract_is_centralized():
@@ -272,6 +282,85 @@ def test_windows_native_identity_matches_python_portable_device_encoding():
     )
 
 
+def test_windows_lock_key_uses_file_id_across_distinct_alias_paths(monkeypatch):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    handles = iter((101, 102))
+    canonical = {
+        101: Path("C:/Users/example/Codex"),
+        102: Path("X:/Codex"),
+    }
+    backend.kernel32 = types.SimpleNamespace(CloseHandle=lambda _handle: True)
+    monkeypatch.setattr(backend, "_open_handle", lambda *_args, **_kwargs: next(handles))
+    monkeypatch.setattr(
+        backend,
+        "_validate_handle_type",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(backend, "_validate_ntfs", lambda *_args: None)
+    monkeypatch.setattr(
+        backend,
+        "_handle_identity",
+        lambda _handle: codex_instruct.FileIdentity(17, 23),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_canonical_path",
+        lambda handle, _fallback: canonical[handle],
+    )
+
+    first_key, first_path = backend.directory_lock_key(Path("C:/alias"))
+    second_key, second_path = backend.directory_lock_key(Path("X:/alias"))
+
+    assert first_path != second_path
+    assert first_key == second_key == (17, 23)
+
+
+def test_failure_cleanup_contract_preserves_primary_exception(capsys):
+    primary = RuntimeError("primary operation failure")
+
+    def cleanup():
+        raise PermissionError("secondary cleanup failure")
+
+    codex_instruct._run_cleanup_preserving_primary(
+        primary,
+        [("test cleanup", cleanup)],
+    )
+
+    output = capsys.readouterr().err
+    assert "primary operation failure" in output
+    assert "secondary cleanup failure" in output
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        codex_instruct._rollback_owned_file,
+        codex_instruct.isolate_hooks,
+        codex_instruct.rollback_hooks_isolation,
+        codex_instruct.archive_legacy_file,
+        codex_instruct._remove_owned_file,
+    ],
+)
+def test_failure_cleanup_paths_use_primary_preserving_guard(function):
+    assert "_run_cleanup_preserving_primary" in inspect.getsource(function)
+
+
+def test_windows_mutation_backend_declares_durable_metadata_contracts():
+    backend = codex_instruct._WindowsFilesystemBackend
+    rename_source = inspect.getsource(backend.atomic_rename_no_replace)
+    assert "_MOVEFILE_WRITE_THROUGH" in rename_source
+    for method in (
+        backend.create_private_directory,
+        backend.create_private_file,
+        backend.atomic_rename_no_replace,
+        backend.replace_atomic,
+        backend.remove_verified_member,
+        backend.remove_verified_directory,
+        backend.remove_verified_file,
+    ):
+        assert "flush_directory" in inspect.getsource(method)
+
+
 @pytest.mark.parametrize(
     "name",
     ["CON", "prn.md", "AUX", "nul.txt", "COM1", "lpt9.md"],
@@ -408,6 +497,26 @@ def test_windows_case_aliases_are_identity_deduplicated(tmp_path):
     assert len(normalized) == 1
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse path contract")
+@pytest.mark.parametrize("alias_kind", ["root", "parent"])
+def test_windows_codex_directory_rejects_reparse_path_components(tmp_path, alias_kind):
+    real_parent = tmp_path / "real parent"
+    real_parent.mkdir()
+    codex_dir = _make_codex_dir(real_parent, "real codex")
+    if alias_kind == "root":
+        alias = tmp_path / "codex junction"
+        _make_windows_junction(alias, codex_dir)
+    else:
+        alias_parent = tmp_path / "parent junction"
+        _make_windows_junction(alias_parent, real_parent)
+        alias = alias_parent / codex_dir.name
+
+    result = _run("--codex-dir", alias, "--status")
+
+    assert result.returncode == 1
+    assert "reparse" in (result.stdout + result.stderr).lower()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows native ACL contract")
 def test_windows_private_file_and_directory_acl(tmp_path):
     directory = tmp_path / "private 中文"
@@ -439,6 +548,87 @@ def test_windows_private_acl_rejects_extra_everyone_ace(tmp_path):
             target,
             is_directory=False,
         )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows recovery ACL contract")
+@pytest.mark.parametrize("target_kind", ["directory", "member"])
+def test_windows_recovery_revalidates_existing_journal_acl(tmp_path, target_kind):
+    codex_dir = _make_codex_dir(tmp_path, f"acl recovery {target_kind}")
+    plan = codex_instruct.inspect_directory(codex_dir)
+    state = codex_instruct.DeploymentState(codex_dir, deployment_id="e" * 32)
+    codex_instruct._create_deployment_journals(
+        [state],
+        [plan],
+        codex_instruct.DEFAULT_MD_FILENAME,
+        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD,
+        False,
+    )
+    assert state.journal_dir is not None
+    target = (
+        state.journal_dir
+        if target_kind == "directory"
+        else state.journal_dir / codex_instruct.JOURNAL_FILENAME
+    )
+    changed = subprocess.run(
+        ["icacls", str(target), "/grant", "*S-1-1-0:(R)"],
+        text=True,
+        capture_output=True,
+    )
+    assert changed.returncode == 0, changed.stdout + changed.stderr
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 1
+    assert "acl" in (recovered.stdout + recovered.stderr).lower()
+    assert state.journal_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows durable metadata contract")
+def test_windows_mutations_flush_parent_directories(tmp_path, monkeypatch):
+    backend = codex_instruct._FILESYSTEM
+    flushed = []
+    real_flush = backend.flush_directory
+
+    def record_flush(path):
+        flushed.append(Path(path))
+        real_flush(path)
+
+    monkeypatch.setattr(backend, "flush_directory", record_flush)
+    parent = tmp_path / "durable parent"
+    backend.create_private_directory(parent)
+
+    source = parent / "source.json"
+    descriptor = backend.create_private_file(source)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(b"source\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    destination = parent / "destination.json"
+    assert backend.atomic_rename_no_replace(source, destination)
+
+    replacement = parent / "replacement.json"
+    descriptor = backend.create_private_file(replacement)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(b"replacement\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    backend.replace_atomic(replacement, destination)
+    identity = codex_instruct._require_regular_file(destination, "destination")
+    fingerprint = codex_instruct._fingerprint_regular_file(destination)
+    backend.remove_verified_file(destination, identity, fingerprint)
+
+    owned = parent / "owned"
+    backend.create_private_directory(owned)
+    access = backend.open_verified_owned_directory(
+        owned,
+        codex_instruct._directory_identity(owned),
+        {},
+        True,
+    )
+    backend.remove_verified_directory(access)
+
+    assert tmp_path in flushed
+    assert flushed.count(parent) >= 6
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows verified delete contract")
