@@ -483,6 +483,31 @@ def test_safe_cleanup_rejects_replaced_directory_and_missing_snapshot(tmp_path):
     assert member.read_text(encoding="utf-8") == "concurrent\n"
 
 
+def test_atomic_write_cleanup_conflict_preserves_primary_and_residue(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    destination = tmp_path / "config.toml"
+
+    def fail_publish(_source, _destination):
+        raise RuntimeError("primary publish failure")
+
+    def fail_cleanup(_transaction_dir):
+        raise RuntimeError("secondary cleanup failure")
+
+    monkeypatch.setattr(codex_instruct._FILESYSTEM, "replace_atomic", fail_publish)
+    monkeypatch.setattr(codex_instruct, "_remove_transaction_dir", fail_cleanup)
+
+    with pytest.raises(RuntimeError, match="primary publish failure"):
+        codex_instruct.atomic_write_text(destination, 'model = "gpt-5.6"\n')
+
+    residue = list(tmp_path.glob(".keysmith-write-prepared-*"))
+    assert len(residue) == 1
+    assert residue[0].is_dir()
+    assert "secondary cleanup failure" in capsys.readouterr().err
+
+
 def test_deploy_cleanup_rejects_replaced_journal_without_rollback(
     tmp_path,
     monkeypatch,

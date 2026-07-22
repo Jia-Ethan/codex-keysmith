@@ -2,41 +2,39 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and release versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: PENDING -->
+
 ## [Unreleased]
+
+No changes yet.
+
+## [0.1.1] - 2026-07-22
+
+This entry records the source changes for v0.1.1. Formal release status is established only by the immutable `v0.1.1` tag, its peeled commit, the GitHub Release, and matching asset checksums. The signed `v0.1.0` tag, published assets, and checksums remain unchanged historical artifacts.
 
 ### Added
 
 - Added a centralized Windows filesystem backend using native handles, stable volume/File ID identities, protected ACLs, explicit share modes, write-through rename, parent-directory flushes, verified deletion, reparse-point rejection, and per-directory cross-process locks.
-- Restored blocking `windows-2025` CI for Python 3.10 and 3.14. The final P0 matrix passes deploy, rollback, recover, restore-hooks, repeated deployment, uninstall, cleanup-marker re-entry, and multi-directory recovery coverage.
-
-### Fixed
-
-- Recovery now safely clears v0.1.0-style `intent.json` plus `journal.json` initialization evidence, including empty initializing journals and partial multi-directory uninstall publication, returning `--status` to ready without manual deletion.
-- Rollback and cleanup paths preserve the primary exception while reporting cleanup failures as secondary evidence. Windows recovery also revalidates directory/member ACLs, identity, membership, and fingerprints before mutation.
-
-### Changed
-
-- Windows P0 passed blocking CI and one Windows 11 standard-user candidate acceptance. Windows remains unsupported with no installation entry or formal support claim until the P1 hard-interruption/path-environment matrix and P2 documentation/Release validation are complete.
-
-## [0.1.1] - 2026-07-18 (local candidate; not published)
+- Added blocking `windows-2025` CI for Python 3.10, 3.12, and 3.14, including an explicit lifecycle gate for fresh deploy, rollback, restore-hooks, uninstall, exact v0.1.0 Issue #1 recovery, empty initializing journals, and cleanup-marker re-entry before the complete Windows suite.
+- Added a protected-tag-oriented Release workflow. A tag build calls every blocking test job, requires a clean complete non-partial checkout, binds `HEAD`, `VERSION`, annotated tag and peeled SHA, builds deterministic ZIP, tar.gz, standalone script, and `SHA256SUMS` twice, verifies uploaded draft-asset digests, and publishes only after all checks pass.
 
 ### Changed
 
 - The bundled prompt is now the byte-for-byte behavior baseline already deployed in the local Codex configuration. `examples/gpt-unrestricted.md` and the embedded script content share SHA-256 `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`; deployment can take over that unmanaged prompt without changing its bytes.
-- The CLI version is `0.1.1`. This changelog entry describes a local candidate only: no `v0.1.1` tag, GitHub Release, or published asset URL is claimed. The signed `v0.1.0` tag and existing Release remain immutable historical artifacts.
-- Windows installation instructions and the non-blocking Windows CI matrix were withdrawn. Windows runtime is now explicitly unsupported until a dedicated filesystem/ACL port and blocking real-Windows deploy, restore, recover, uninstall, and hard-interruption evidence are available.
-- The supported-platform compatibility matrix now runs Python 3.9 and Python 3.14, and the combined branch-coverage gate is 81%.
 - Deployment dry-runs now disclose collision-aware absolute backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, recognized legacy prompt, and existing manifest.
+- Release builds reject shallow, partial/promisor, or missing-object checkouts. Candidate and formal builds reconcile configured remote tag state without moving or rewriting the signed `v0.1.0` tag, compare every archive input byte with the validated commit, and refuse conflicting or overwritten assets.
+- v0.1.0 is documented as known-bad for Windows fresh deployment. Affected users are directed to preserve transaction evidence and use the verified v0.1.1 `status -> recover preview -> recover --yes -> status` path rather than deleting journals manually.
+- Native Windows recovery and the blocking P0 lifecycle matrix do not constitute a general support promise. The Windows fresh-deployment policy remains a release decision until recovery-only blocking or explicit beta wording is selected; neither option may be described as formal Windows support.
 
 ### Fixed
 
-- Deployment now preserves the journal-published absent/present Markdown premise. A late concurrent Markdown file fails closed before backup or overwrite, while an exact legacy journal-owned hard-interruption claim can restore the user's original bytes without accepting unknown residue.
-- Hook isolation now revalidates both active and disabled hook paths against the published plan. Manifests enforce consistent `disabled_before` and `previous_disabled_backup` fields, and `--status` separately reports structural health, deployability, and uninstall readiness while detecting missing required hook backups without reading active hook content.
-- Uninstall now publishes a durable multi-directory journal with immutable intent, before-state snapshots, phase and terminal state, exact residue ownership, re-enterable cleanup, reverse recovery, and tamper/drift rejection. Recovery covers intent-only and first-pending publication windows, validates every cleanup participant before mutation, and preserves cleanup anchors until remaining journal recovery succeeds. `--recover` dispatches interrupted deployment and uninstall transactions.
-- Release builds now reject shallow Git checkouts. Candidate CI fetches complete history and tags, binds VERSION and source commit to the checked-out commit, reconciles every configured remote tag non-interactively with a finite timeout, and refuses local shadow tags or any rebuild of an existing version from a different commit without moving or rewriting the signed `v0.1.0` tag.
-- Candidate release builds compare every archive input byte with the validated source commit, so `assume-unchanged` or `skip-worktree` index flags cannot hide working-tree drift.
-- Deployment recovery now accepts the durable `manifest-intent` phase that the deployer publishes before manifest creation. A hard interruption immediately after manifest publication can therefore restore the exact pre-deployment prompt, config, recognized legacy file, hooks absence, and manifest absence without widening residue ownership.
-- Concurrency regressions use pipe/barrier checkpoints and explicit subprocess interruption instead of timing sleeps.
+- Recovery now safely handles the exact v0.1.0 `intent.json` plus `journal.json` Issue #1 layout, empty initializing journals, partial multi-directory uninstall publication, and cleanup-marker re-entry, returning `--status` to ready without manual deletion.
+- Rollback and cleanup preserve the primary exception while reporting cleanup failures only as secondary evidence. Incomplete journals, claims, markers, snapshots, or other ownership evidence remain available for explicit recovery.
+- Deployment preserves the journal-published absent/present Markdown premise. A late concurrent Markdown file fails closed before backup or overwrite, while an exact journal-owned hard-interruption claim can restore the user's original bytes without accepting unknown residue.
+- Hook isolation revalidates active and disabled paths against the published plan. Manifests enforce consistent hook-before and backup fields, and `--status` separately reports structural health, deployability, and uninstall readiness without reading active hook content.
+- Uninstall publishes a durable multi-directory journal with immutable intent, before-state snapshots, exact residue ownership, re-enterable cleanup, reverse recovery, and tamper/drift rejection. Recovery validates all cleanup participants and preserves anchors until remaining journal recovery succeeds.
+- Deployment recovery accepts the durable `manifest-intent` phase and restores the exact pre-deployment prompt, config, recognized legacy file, hooks absence, and manifest absence after an interruption immediately following manifest publication.
+- Concurrency regressions use deterministic pipe/barrier checkpoints and explicit subprocess interruption instead of timing sleeps.
 
 ## [0.1.0] - 2026-07-16
 
@@ -97,5 +95,6 @@ All notable changes to this project are documented here. The format follows [Kee
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0

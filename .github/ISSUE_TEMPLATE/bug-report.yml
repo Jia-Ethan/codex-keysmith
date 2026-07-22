@@ -13,7 +13,7 @@ body:
     id: keysmith-version
     attributes:
       label: codex-keysmith 版本 / Version
-      description: Paste the output of `python3 codex-instruct.py --version`. Windows runtime is unsupported and has no installation path.
+      description: Paste the output of `python3 codex-instruct.py --version`. Windows v0.1.0 fresh deployment is known-bad; preserve journals and identify whether this is v0.1.1 recovery or an isolated fresh-deployment fixture.
       placeholder: codex-instruct.py 0.1.0
     validations:
       required: true

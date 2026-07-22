@@ -19,8 +19,17 @@ REQUIRED_ARCHIVE_FILES = {
     "README.md",
     "VERSION",
     "codex-instruct.py",
+    "docs/releases/v0.1.1.md",
     "examples/gpt-unrestricted.md",
 }
+WINDOWS_POLICY_FILES = (
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/hooks-transactions.md",
+    "docs/releases/v0.1.1.md",
+)
 
 
 @pytest.fixture(scope="module")
@@ -48,7 +57,7 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
     repo = tmp_path / "repo"
     repo.mkdir(parents=True)
     source_bytes = {}
-    for relative_path in release_builder.ARCHIVE_FILES:
+    for relative_path in release_builder._archive_files(TAG):
         path = repo / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative_path == "VERSION":
@@ -95,7 +104,7 @@ def _asset_hashes(output_dir):
     }
 
 
-def test_repository_candidate_version_metadata_is_consistent():
+def test_repository_version_metadata_is_release_state_neutral():
     version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
     script = (REPO_ROOT / "codex-instruct.py").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -103,22 +112,40 @@ def test_repository_candidate_version_metadata_is_consistent():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-07-18".format(VERSION) in changelog
-    assert "v0.1.1 local candidate" in readme
-    assert "releases/tag/v0.1.1" not in readme
-    chinese_candidate = readme.split("### 本地 v0.1.1 候选版", 1)[1].split(
+    assert "## [{}] - 2026-07-22".format(VERSION) in changelog
+    assert "Source version v0.1.1" in readme
+    assert "v0.1.1 local candidate" not in readme
+    assert "This candidate has no tag" not in readme
+    chinese_candidate = readme.split("### v0.1.1 源码与候选构建", 1)[1].split(
         "\n## English\n",
         1,
     )[0]
-    english_candidate = readme.split("### Local v0.1.1 candidate", 1)[1]
+    english_candidate = readme.split("### v0.1.1 source and candidate builds", 1)[1]
     assert "codex-instruct-v0.1.0.py" in readme.split(
-        "### 本地 v0.1.1 候选版",
+        "### v0.1.1 源码与候选构建",
         1,
     )[0]
     assert "codex-instruct-v0.1.0.py" not in chinese_candidate
     assert "codex-instruct-v0.1.0.py" not in english_candidate
     assert "python3 codex-instruct.py --codex-dir" in chinese_candidate
     assert "python3 codex-instruct.py --codex-dir" in english_candidate
+
+
+def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
+    values = []
+    for relative_path in WINDOWS_POLICY_FILES:
+        content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        markers = [
+            line.strip().removeprefix("<!-- ").removesuffix(" -->")
+            for line in content.splitlines()
+            if "WINDOWS_FRESH_DEPLOYMENT_POLICY:" in line
+        ]
+        assert len(markers) == 1, relative_path
+        marker, value = markers[0].split(": ", 1)
+        assert marker == "WINDOWS_FRESH_DEPLOYMENT_POLICY"
+        assert value in {"PENDING", "RECOVERY_ONLY", "EXPLICIT_BETA"}
+        values.append(value)
+    assert len(set(values)) == 1
 
 
 def test_release_build_is_reproducible_and_contains_required_files(
@@ -131,18 +158,19 @@ def test_release_build_is_reproducible_and_contains_required_files(
     release_builder.build_release(TAG, repo, first_output)
     release_builder.build_release(TAG, repo, second_output)
 
-    assert REQUIRED_ARCHIVE_FILES <= set(release_builder.ARCHIVE_FILES)
+    archive_files = release_builder._archive_files(TAG)
+    assert REQUIRED_ARCHIVE_FILES <= set(archive_files)
     assert _asset_hashes(first_output) == _asset_hashes(second_output)
     prefix = "codex-keysmith-{}/".format(TAG)
     zip_path = first_output / "codex-keysmith-{}.zip".format(TAG)
     tar_path = first_output / "codex-keysmith-{}.tar.gz".format(TAG)
     expected_members = {
-        prefix + relative_path for relative_path in release_builder.ARCHIVE_FILES
+        prefix + relative_path for relative_path in archive_files
     }
     with zipfile.ZipFile(str(zip_path)) as archive:
         zip_members = set(archive.namelist())
         assert zip_members == expected_members
-        for relative_path in release_builder.ARCHIVE_FILES:
+        for relative_path in archive_files:
             assert prefix + relative_path in zip_members
             assert archive.read(prefix + relative_path) == source_bytes[relative_path]
         assert archive.read(prefix + "LICENSE") == (REPO_ROOT / "LICENSE").read_bytes()
@@ -151,7 +179,7 @@ def test_release_build_is_reproducible_and_contains_required_files(
     with tarfile.open(str(tar_path), "r:gz") as archive:
         tar_members = {member.name: member for member in archive.getmembers()}
         assert set(tar_members) == expected_members
-        for relative_path in release_builder.ARCHIVE_FILES:
+        for relative_path in archive_files:
             member = tar_members[prefix + relative_path]
             extracted = archive.extractfile(member)
             assert extracted is not None
@@ -419,6 +447,16 @@ def test_candidate_build_rejects_shallow_checkout_that_hides_release_tags(
         )
 
 
+def test_release_build_rejects_promisor_checkout_configuration(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    _run(["git", "config", "remote.fixture.promisor", "true"], repo)
+
+    with pytest.raises(release_builder.ReleaseError, match="partial or promisor"):
+        release_builder.build_release(TAG, repo, tmp_path / "assets")
+
+
 def test_candidate_build_from_complete_clone_rejects_existing_version_tag(
     release_builder, tmp_path
 ):
@@ -491,6 +529,48 @@ def test_candidate_build_from_non_shallow_no_tags_clone_rejects_remote_version_t
 
     assert tagged_commit != candidate
     assert not output_dir.exists() or not list(output_dir.iterdir())
+
+
+def test_formal_build_reconciles_tag_with_configured_remote(
+    release_builder, tmp_path
+):
+    source, _ = _make_release_repo(tmp_path / "source", release_builder)
+    clone = tmp_path / "clone"
+    _run(["git", "clone", "-q", source.as_uri(), str(clone)], tmp_path)
+
+    release_builder.build_release(TAG, clone, tmp_path / "assets")
+
+
+def test_formal_build_rejects_local_tag_missing_from_remote(
+    release_builder, tmp_path
+):
+    source, _ = _make_release_repo(
+        tmp_path / "source",
+        release_builder,
+        create_tag=False,
+    )
+    clone = tmp_path / "clone-missing"
+    _run(["git", "clone", "-q", source.as_uri(), str(clone)], tmp_path)
+    _run(["git", "tag", TAG], clone)
+
+    with pytest.raises(release_builder.ReleaseError, match="missing from remote"):
+        release_builder.build_release(TAG, clone, tmp_path / "assets-missing")
+
+
+def test_formal_build_rejects_local_tag_that_disagrees_with_remote(
+    release_builder, tmp_path
+):
+    source, _ = _make_release_repo(tmp_path / "source", release_builder)
+    (source / "later.txt").write_text("later commit\n", encoding="utf-8")
+    _run(["git", "add", "later.txt"], source)
+    _run(["git", "commit", "-qm", "later commit"], source)
+
+    clone = tmp_path / "clone-mismatch"
+    _run(["git", "clone", "-q", "--no-tags", source.as_uri(), str(clone)], tmp_path)
+    _run(["git", "tag", TAG], clone)
+
+    with pytest.raises(release_builder.ReleaseError, match="remote release tag"):
+        release_builder.build_release(TAG, clone, tmp_path / "assets-mismatch")
 
 
 def test_candidate_build_rejects_local_tag_that_shadows_conflicting_remote_tag(
@@ -635,6 +715,7 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert 'python-version == \'3.8\'' not in workflow
     assert "windows-2025" in workflow
     assert '"3.10"' in workflow
+    assert '"3.12"' in workflow
     assert '"3.14"' in workflow
     assert "continue-on-error" not in workflow
     assert "Windows experimental atomic no-replace probe passed" not in workflow
@@ -654,6 +735,34 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "--source-commit \"$source_commit\"" in workflow
     assert "sha256sum --check SHA256SUMS" in workflow
     assert "--fail-under=81" in workflow
+
+    release_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release.yml"
+    ).read_text(encoding="utf-8")
+    assert 'tags:\n      - "v*.*.*"' in release_workflow
+    assert "uses: ./.github/workflows/tests.yml" in release_workflow
+    assert "needs:\n      - blocking-tests" in release_workflow
+    assert "fetch-depth: 0" in release_workflow
+    assert "fetch-tags: true" in release_workflow
+    assert "persist-credentials: false" in release_workflow
+    assert 'refs/tags/${tag}^{commit}' in release_workflow
+    assert 'expected_tag="v${version}"' in release_workflow
+    assert "Formal releases require an annotated tag object" in release_workflow
+    assert "WINDOWS_FRESH_DEPLOYMENT_POLICY" in release_workflow
+    assert "RECOVERY_ONLY|EXPLICIT_BETA" in release_workflow
+    assert "release-first" in release_workflow
+    assert "release-second" in release_workflow
+    assert "diff -u" in release_workflow
+    assert "cmp \"$first/$asset\" \"$second/$asset\"" in release_workflow
+    assert "sha256sum --check SHA256SUMS" in release_workflow
+    assert "gh release create" in release_workflow
+    assert "gh release upload" in release_workflow
+    assert "--draft" in release_workflow
+    assert ".assets[] | [.name, .digest]" in release_workflow
+    assert 'git cat-file blob "${head_commit}:${notes}"' in release_workflow
+    assert 'gh release edit "$tag"' in release_workflow
+    assert "--draft=false" in release_workflow
+    assert "--clobber" not in release_workflow
 
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     pull_request_template = (

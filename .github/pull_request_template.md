@@ -12,7 +12,7 @@
 
 ## 恢复与风险 / Recovery and risk
 
-<!-- 失败/并发/异常节点如何处理？如何回滚？是否改变 Windows unsupported 或 Python 支持边界？ -->
+<!-- 失败/并发/异常节点如何处理？如何回滚？是否改变 Windows recovery-only / explicit beta 决策或 Python 支持边界？ -->
 <!-- How do failures, concurrency, and abnormal nodes behave? How is this rolled back? Does support policy change? -->
 
 ## 验证 / Verification
@@ -32,6 +32,7 @@
 - [ ] 行为变更覆盖成功、硬中断、失败、所有权冲突、final sweep 和必要回滚分支
 - [ ] README 中英文、CLI help、CHANGELOG 和事务文档与实现一致
 - [ ] Release 文档区分 full-SHA `--source-commit` 候选构建与绑定 HEAD tag 的正式构建
+- [ ] Release workflow 复用全部阻断测试，并绑定 VERSION、HEAD、annotated tag peeled SHA、remote tag 与可重现资产来源
 - [ ] 提示词变更已同步内置常量、示例、契约测试和 README，或本 PR 未修改提示词
 - [ ] 未降低测试、Ruff、coverage、Prompt Bank 或 Release 资产门槛
 - [ ] 已删除 token、cookie、用户名、私人路径、完整配置、Prompt Bank 响应和其他敏感信息

@@ -1149,7 +1149,9 @@ class _PosixFilesystemBackend:
         expected: Any,
     ) -> None:
         if isinstance(expected, FileFingerprint):
-            expected = _portable_fingerprint(expected)
+            if actual != expected:
+                raise HooksConflict(f"事务目录成员指纹不匹配，保留证据: {path}")
+            return
         if not (
             actual.size == expected["size"]
             and actual.modified_ns == expected["mtime_ns"]
@@ -1388,6 +1390,8 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x00000002
     _FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000010
     _DACL_SECURITY_INFORMATION = 0x00000004
+    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+    _SE_FILE_OBJECT = 1
     _ACCESS_ALLOWED_ACE_TYPE = 0
     _FILE_ALL_ACCESS = 0x001F01FF
     _SE_DACL_PROTECTED = 0x1000
@@ -1602,6 +1606,16 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             wintypes.LPVOID,
         ]
         self.advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+        self.advapi32.SetSecurityInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+        ]
+        self.advapi32.SetSecurityInfo.restype = wintypes.DWORD
         self.advapi32.GetKernelObjectSecurity.argtypes = [
             wintypes.HANDLE,
             wintypes.DWORD,
@@ -2019,12 +2033,35 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             actual = _fingerprint_descriptor(descriptor, opened, path)
             self._validate_expected_fingerprint(path, actual, expected)
             raw_handle = self.msvcrt.get_osfhandle(descriptor)
-            if not self.advapi32.SetKernelObjectSecurity(
-                raw_handle,
-                self._DACL_SECURITY_INFORMATION,
-                self._security_descriptor,
+            dacl_present = wintypes.BOOL()
+            dacl_defaulted = wintypes.BOOL()
+            dacl = wintypes.LPVOID()
+            if not self.advapi32.GetSecurityDescriptorDacl(
+                wintypes.LPVOID(self._security_descriptor),
+                ctypes.byref(dacl_present),
+                ctypes.byref(dacl),
+                ctypes.byref(dacl_defaulted),
             ):
-                self._raise_last_error("cannot apply private ACL", path)
+                self._raise_last_error("cannot read private DACL", path)
+            if not dacl_present.value or not dacl.value:
+                raise HooksConflict(f"private ACL has no DACL: {path}")
+            security_error = self.advapi32.SetSecurityInfo(
+                raw_handle,
+                self._SE_FILE_OBJECT,
+                self._DACL_SECURITY_INFORMATION
+                | self._PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                dacl,
+                None,
+            )
+            if security_error:
+                raise OSError(
+                    security_error,
+                    f"cannot apply protected private ACL: {path}: "
+                    f"{ctypes.FormatError(security_error).strip()}",
+                )
+            self._verify_handle_private_security(raw_handle, path)
             if not self.kernel32.FlushFileBuffers(raw_handle):
                 self._raise_last_error("cannot persist private ACL", path)
             self._validate_expected_fingerprint(
@@ -2446,6 +2483,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._READ_CONTROL
             | self._FILE_READ_ATTRIBUTES
             | self._DELETE,
+            share_mode=self._FILE_SHARE_READ,
         )
         descriptor = None
         try:
@@ -2492,7 +2530,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._READ_CONTROL
             | self._FILE_READ_ATTRIBUTES
             | self._DELETE,
-            share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE,
+            share_mode=self._FILE_SHARE_READ,
         )
         descriptor = None
         try:
@@ -4147,7 +4185,7 @@ def _remove_transaction_dir(transaction_dir: Path) -> None:
 def _cleanup_transaction_dir_after_error(transaction_dir: Path) -> None:
     try:
         _remove_transaction_dir(transaction_dir)
-    except OSError as exc:
+    except Exception as exc:
         _print(f"[事务警告] {exc}", file=sys.stderr)
 
 

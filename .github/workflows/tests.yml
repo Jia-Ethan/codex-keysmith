@@ -2,8 +2,11 @@ name: Tests
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -61,6 +64,7 @@ jobs:
       matrix:
         python-version:
           - "3.10"
+          - "3.12"
           - "3.14"
 
     steps:
@@ -79,6 +83,18 @@ jobs:
 
       - name: Compile Python source
         run: python -m py_compile codex-instruct.py
+
+      - name: Run blocking Windows lifecycle contracts
+        run: >-
+          python -m pytest -p no:cacheprovider -q
+          tests/test_windows_filesystem.py::test_issue_1_v010_initializing_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_empty_private_initializing_journal_recovers_to_ready
+          tests/test_codex_instruct.py::test_deploy_yes_isolates_hooks
+          tests/test_codex_instruct.py::test_deploy_rolls_back_and_reraises_keyboard_interrupt
+          tests/test_codex_instruct.py::test_cli_restore_hooks_restores
+          tests/test_uninstall.py::test_uninstall_previews_then_restores_first_deployment
+          tests/test_recovery.py::test_recover_reenters_after_remove_claim_interruption
+          tests/test_uninstall_recovery.py::test_uninstall_initializing_cleanup_is_reentrant_after_empty_marker_publication
 
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests

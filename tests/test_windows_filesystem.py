@@ -41,6 +41,88 @@ def _make_windows_junction(link, target):
     assert created.returncode == 0, created.stdout + created.stderr
 
 
+def _create_v010_issue_1_fixture(codex_dir, *, private):
+    transaction_id = "d" * 32
+    journal_dir = codex_dir / f"{codex_instruct.JOURNAL_PREFIX}{transaction_id}"
+    if private:
+        codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
+    else:
+        journal_dir.mkdir()
+    plan = codex_instruct.inspect_directory(codex_dir)
+    config_before = codex_instruct._portable_fingerprint(plan.config_fingerprint)
+    directories = {
+        str(codex_dir.resolve()): {
+            "journal_dir": journal_dir.name,
+            "journal_identity": codex_instruct._portable_identity(
+                codex_instruct._directory_identity(journal_dir)
+            ),
+            "resources": {
+                "config": {
+                    "path": "config.toml",
+                    "before": config_before,
+                    "snapshot": "snapshot-config",
+                    "allowed_absent": False,
+                    "allowed_sha256": [
+                        hashlib.sha256(
+                            plan.updated_config_content.encode("utf-8")
+                        ).hexdigest()
+                    ],
+                    "allowed_portable": [],
+                },
+                "md": {
+                    "path": codex_instruct.DEFAULT_MD_FILENAME,
+                    "before": None,
+                    "snapshot": None,
+                    "allowed_absent": False,
+                    "allowed_sha256": [
+                        hashlib.sha256(
+                            codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8")
+                        ).hexdigest()
+                    ],
+                    "allowed_portable": [],
+                },
+                "manifest": {
+                    "path": codex_instruct.MANIFEST_FILENAME,
+                    "before": None,
+                    "snapshot": None,
+                    "allowed_absent": False,
+                    "allowed_sha256": [],
+                    "allowed_portable": [],
+                },
+            },
+            "residues": [],
+        }
+    }
+    base = {
+        "schema_version": 1,
+        "operation": "deploy",
+        "transaction_id": transaction_id,
+        "phase": "initializing",
+        "participants": [str(codex_dir.resolve())],
+        "directories": directories,
+    }
+    intent = json.loads(json.dumps(base))
+    intent.pop("phase")
+    intent_directory = intent["directories"][str(codex_dir.resolve())]
+    intent_directory.pop("residues")
+    intent_directory["resources"]["manifest"]["allowed_sha256"] = []
+    journal = dict(base)
+    journal["owner_directory"] = str(codex_dir.resolve())
+    for filename, data in (
+        (codex_instruct.INTENT_FILENAME, intent),
+        (codex_instruct.JOURNAL_FILENAME, journal),
+    ):
+        path = journal_dir / filename
+        if private:
+            codex_instruct._write_exclusive_private_json(path, data)
+        else:
+            path.write_text(
+                json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+    return journal_dir
+
+
 def test_platform_filesystem_contract_is_centralized():
     backend = codex_instruct._FILESYSTEM
     for method in (
@@ -251,80 +333,79 @@ def test_empty_private_initializing_journal_recovers_to_ready(tmp_path):
 
 def test_issue_1_v010_initializing_fixture_recovers_to_ready(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "v0.1.0 Issue 1 中文")
-    transaction_id = "d" * 32
-    journal_dir = codex_dir / f"{codex_instruct.JOURNAL_PREFIX}{transaction_id}"
-    codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
-    plan = codex_instruct.inspect_directory(codex_dir)
-    config_before = codex_instruct._portable_fingerprint(plan.config_fingerprint)
-    directories = {
-        str(codex_dir.resolve()): {
-            "journal_dir": journal_dir.name,
-            "journal_identity": codex_instruct._portable_identity(
-                codex_instruct._directory_identity(journal_dir)
-            ),
-            "resources": {
-                "config": {
-                    "path": "config.toml",
-                    "before": config_before,
-                    "snapshot": "snapshot-config",
-                    "allowed_absent": False,
-                    "allowed_sha256": [
-                        hashlib.sha256(
-                            plan.updated_config_content.encode("utf-8")
-                        ).hexdigest()
-                    ],
-                    "allowed_portable": [],
-                },
-                "md": {
-                    "path": codex_instruct.DEFAULT_MD_FILENAME,
-                    "before": None,
-                    "snapshot": None,
-                    "allowed_absent": False,
-                    "allowed_sha256": [
-                        hashlib.sha256(
-                            codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8")
-                        ).hexdigest()
-                    ],
-                    "allowed_portable": [],
-                },
-                "manifest": {
-                    "path": codex_instruct.MANIFEST_FILENAME,
-                    "before": None,
-                    "snapshot": None,
-                    "allowed_absent": False,
-                    "allowed_sha256": [],
-                    "allowed_portable": [],
-                },
-            },
-            "residues": [],
-        }
+    journal_dir = _create_v010_issue_1_fixture(codex_dir, private=True)
+
+    blocked = _run("--codex-dir", codex_dir, "--status")
+    assert blocked.returncode == 1
+    assert "deployability: blocked" in blocked.stdout.lower()
+
+    before_preview = {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
     }
-    base = {
-        "schema_version": 1,
-        "operation": "deploy",
-        "transaction_id": transaction_id,
-        "phase": "initializing",
-        "participants": [str(codex_dir.resolve())],
-        "directories": directories,
-    }
-    intent = json.loads(json.dumps(base))
-    intent.pop("phase")
-    intent_directory = intent["directories"][str(codex_dir.resolve())]
-    intent_directory.pop("residues")
-    intent_directory["resources"]["manifest"]["allowed_sha256"] = []
-    journal = dict(base)
-    journal["owner_directory"] = str(codex_dir.resolve())
-    codex_instruct._write_exclusive_private_json(
-        journal_dir / codex_instruct.INTENT_FILENAME,
-        intent,
-    )
-    codex_instruct._write_exclusive_private_json(
-        journal_dir / codex_instruct.JOURNAL_FILENAME,
-        journal,
-    )
+    preview = _run("--codex-dir", codex_dir, "--recover")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
+    } == before_preview
 
     recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
 
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert not journal_dir.exists()
+    ready = _run("--codex-dir", codex_dir, "--status")
+    assert ready.returncode == 0, ready.stdout + ready.stderr
+    assert "deployability: ready" in ready.stdout.lower()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows v0.1.0 inherited ACL fixture")
+def test_issue_1_v010_inherited_acl_fixture_recovers_to_ready(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "v0.1.0 inherited ACL Issue 1")
+    backend = codex_instruct._FILESYSTEM
+    configured = subprocess.run(
+        [
+            "icacls",
+            str(codex_dir),
+            "/inheritance:r",
+            "/grant:r",
+            f"*{backend._current_sid}:(OI)(CI)(F)",
+            "*S-1-5-18:(OI)(CI)(F)",
+            "*S-1-5-32-544:(OI)(CI)(F)",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert configured.returncode == 0, configured.stdout + configured.stderr
+    journal_dir = _create_v010_issue_1_fixture(codex_dir, private=False)
+    with pytest.raises(codex_instruct.HooksConflict, match="protected"):
+        backend.verify_private_security(journal_dir, is_directory=True)
+    backend.verify_recovery_directory_security(journal_dir)
+
+    blocked = _run("--codex-dir", codex_dir, "--status")
+    assert blocked.returncode == 1
+    assert "deployability: blocked" in blocked.stdout.lower()
+    before_preview = {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
+    }
+
+    preview = _run("--codex-dir", codex_dir, "--recover")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
+    } == before_preview
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
     assert not journal_dir.exists()
     ready = _run("--codex-dir", codex_dir, "--status")
@@ -534,6 +615,14 @@ def test_windows_private_acl_update_rejects_replaced_claim(monkeypatch):
     assert source.count("_fingerprint_descriptor") == 2
 
 
+def test_windows_private_acl_update_protects_and_revalidates_dacl():
+    source = inspect.getsource(
+        codex_instruct._WindowsFilesystemBackend.apply_private_path_security
+    )
+    assert "_PROTECTED_DACL_SECURITY_INFORMATION" in source
+    assert "_verify_handle_private_security" in source
+
+
 def test_failure_cleanup_contract_preserves_primary_exception(capsys):
     primary = RuntimeError("primary operation failure")
 
@@ -548,6 +637,38 @@ def test_failure_cleanup_contract_preserves_primary_exception(capsys):
     output = capsys.readouterr().err
     assert "primary operation failure" in output
     assert "secondary cleanup failure" in output
+
+
+def test_file_fingerprint_cleanup_validation_binds_identity():
+    actual = codex_instruct.FileFingerprint(
+        codex_instruct.FileIdentity(1, 2),
+        3,
+        4,
+        "a" * 64,
+    )
+    replaced = codex_instruct.FileFingerprint(
+        codex_instruct.FileIdentity(1, 99),
+        actual.size,
+        actual.modified_ns,
+        actual.sha256,
+    )
+
+    with pytest.raises(codex_instruct.HooksConflict, match="指纹"):
+        codex_instruct._FILESYSTEM._validate_expected_fingerprint(
+            Path("owned/member"),
+            actual,
+            replaced,
+        )
+
+
+def test_windows_verified_delete_handles_deny_writer_sharing():
+    for method in (
+        codex_instruct._WindowsFilesystemBackend.remove_verified_member,
+        codex_instruct._WindowsFilesystemBackend.remove_verified_file,
+    ):
+        source = inspect.getsource(method)
+        assert "share_mode=self._FILE_SHARE_READ" in source
+        assert "share_mode=self._FILE_SHARE_READ | self._FILE_SHARE_WRITE" not in source
 
 
 @pytest.mark.parametrize(
@@ -802,6 +923,38 @@ def test_windows_private_acl_rejects_extra_everyone_ace(tmp_path):
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native ACL claim contract")
+def test_windows_move_in_claim_acl_becomes_protected_and_private(tmp_path):
+    target = tmp_path / "move-in-claim.txt"
+    target.write_bytes(b"owned claim\n")
+    changed = subprocess.run(
+        [
+            "icacls",
+            str(target),
+            "/inheritance:e",
+            "/grant",
+            "*S-1-1-0:(R)",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert changed.returncode == 0, changed.stdout + changed.stderr
+    with pytest.raises(codex_instruct.HooksConflict, match="ACL"):
+        codex_instruct._FILESYSTEM.verify_private_security(
+            target,
+            is_directory=False,
+        )
+
+    expected = codex_instruct._fingerprint_regular_file(target)
+    codex_instruct._FILESYSTEM.apply_private_path_security(target, expected)
+
+    codex_instruct._FILESYSTEM.verify_private_security(
+        target,
+        is_directory=False,
+    )
+    assert codex_instruct._fingerprint_regular_file(target) == expected
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows recovery ACL contract")
 @pytest.mark.parametrize("operation", ["deploy", "uninstall"])
 @pytest.mark.parametrize("target_kind", ["directory", "member"])
@@ -988,6 +1141,53 @@ def test_windows_verified_delete_preserves_occupied_evidence_then_retries(tmp_pa
         identity,
         fingerprint,
     )
+    assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows verified delete race contract")
+@pytest.mark.parametrize("target_kind", ["member", "standalone"])
+def test_windows_verified_delete_handle_blocks_writer_until_mark_delete(
+    tmp_path,
+    monkeypatch,
+    target_kind,
+):
+    backend = codex_instruct._FILESYSTEM
+    owned = tmp_path / "owned"
+    backend.create_private_directory(owned)
+    target = owned / "member.json"
+    descriptor = backend.create_private_file(target)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(b"owned evidence\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    fingerprint = codex_instruct._fingerprint_regular_file(target)
+    writer_errors = []
+    real_mark_delete = backend._mark_delete
+
+    def assert_writer_blocked(handle, path):
+        try:
+            backend._open_handle(path, backend._GENERIC_WRITE)
+        except OSError as exc:
+            writer_errors.append(exc)
+        else:
+            pytest.fail("ordinary writer opened after verified fingerprint")
+        real_mark_delete(handle, path)
+
+    monkeypatch.setattr(backend, "_mark_delete", assert_writer_blocked)
+    if target_kind == "member":
+        access = backend.open_verified_owned_directory(
+            owned,
+            codex_instruct._directory_identity(owned),
+            {target.name: fingerprint},
+            True,
+        )
+        backend.remove_verified_member(access, target.name, fingerprint)
+        backend.close_owned_directory(access)
+    else:
+        backend.remove_verified_file(target, fingerprint.identity, fingerprint)
+
+    assert len(writer_errors) == 1
+    assert writer_errors[0].errno == 32
     assert not target.exists()
 
 
