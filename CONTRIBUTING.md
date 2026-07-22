@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD013 -->
 
-<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: PENDING -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 # 贡献指南 / Contributing
 
@@ -51,7 +51,7 @@ git diff --check
 
 当前完整测试集为 400+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 81% 门槛让 CI 通过。Release 验证必须使用完整、非 shallow 的 checkout 并取得全部 tags。候选构建必须使用完整 `--source-commit` 并精确匹配 HEAD，并能以非交互、有限超时方式验证每个已配置 remote 的同名 tag；remote 不可达、需要认证或与本地 tag/候选 commit 不一致时必须 fail closed。如果 `v$VERSION` 已存在于其他 commit，builder 必须拒绝且不得生成同版本资产。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本和 `SHA256SUMS` 可重复构建、内容完整且版本一致。
 
-Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows P0 原生后端与阻断式 recovery/lifecycle CI 已存在，但 fresh deployment 的 recovery-only / explicit beta 策略仍由发布决策控制；未经该决策，不得添加正式支持徽章或无边界兼容性声明。P1 仍需逐阶段硬中断、路径别名、长路径、本地化目录与 cleanup double-fault 证据。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows fresh deployment 已按 `EXPLICIT_BETA` 开放；相关改动必须保留 preview/执行路径的 beta 警告，并确保 status、recover、uninstall 与 restore-hooks 不误报。P0 原生后端与阻断式 recovery/lifecycle CI 不构成正式支持徽章或无边界兼容性声明。P1 仍需逐阶段硬中断、路径别名、长路径、本地化目录与 cleanup double-fault 证据，P2 正式支持边界仍未关闭。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
 
 ---
 
@@ -79,4 +79,4 @@ For a contribution:
 
 The current full suite contains 400+ tests. Do not remove tests, narrow measured source, or lower the combined 81% branch-coverage gate to make CI pass. Release verification requires a complete, non-shallow checkout with all tags. Candidate builds must pass a full `--source-commit` that exactly matches HEAD and must verify the same tag on every configured remote with non-interactive access and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, must fail closed. If `v$VERSION` already exists at another commit, the builder must refuse without generating same-version assets. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions.
 
-A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. The native Windows P0 backend and blocking recovery/lifecycle CI exist, but the recovery-only versus explicit-beta fresh-deployment policy remains a release decision; do not add a formal support badge or an unbounded compatibility claim before that decision. P1 still requires per-phase hard interruption, path aliases, long paths, localized profiles, and cleanup double-fault evidence. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. Windows fresh deployment is open under `EXPLICIT_BETA`; related changes must preserve the beta warning on preview and execution without emitting it from status, recover, uninstall, or restore-hooks. The native P0 backend and blocking recovery/lifecycle CI are not a formal support badge or an unbounded compatibility claim. P1 still requires per-phase hard interruption, path aliases, long paths, localized profiles, and cleanup double-fault evidence, while the P2 formal-support boundary remains open. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and release versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: PENDING -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 ## [Unreleased]
 
@@ -24,7 +24,7 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Deployment dry-runs now disclose collision-aware absolute backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, recognized legacy prompt, and existing manifest.
 - Release builds reject shallow, partial/promisor, or missing-object checkouts. Candidate and formal builds reconcile configured remote tag state without moving or rewriting the signed `v0.1.0` tag, compare every archive input byte with the validated commit, and refuse conflicting or overwritten assets.
 - v0.1.0 is documented as known-bad for Windows fresh deployment. Affected users are directed to preserve transaction evidence and use the verified v0.1.1 `status -> recover preview -> recover --yes -> status` path rather than deleting journals manually.
-- Native Windows recovery and the blocking P0 lifecycle matrix do not constitute a general support promise. The Windows fresh-deployment policy remains a release decision until recovery-only blocking or explicit beta wording is selected; neither option may be described as formal Windows support.
+- Windows fresh deployment is now available under the `EXPLICIT_BETA` policy. Deploy preview and execution print an explicit beta warning, while status, recover, uninstall, and restore-hooks remain free of deployment warnings. Native recovery and the blocking P0 lifecycle matrix still do not constitute formal Windows support; the P1 hard-interruption/path coverage and P2 formal-support boundaries remain open.
 
 ### Fixed
 

@@ -1645,6 +1645,78 @@ def test_deploy_dry_run_shows_hooks_detection(tmp_path):
     assert not (codex_dir / "gpt-unrestricted.md").exists()
 
 
+@pytest.mark.parametrize(
+    ("dry_run", "yes"),
+    [(True, False), (False, True)],
+)
+def test_windows_deploy_paths_show_explicit_beta_warning(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    dry_run,
+    yes,
+):
+    codex_dir = tmp_path / f"windows-beta-{dry_run}"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text(
+        'model = "gpt-5.6"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(codex_instruct, "_OUTPUT_LANGUAGE", "en")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_is_windows_platform",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        codex_instruct,
+        "find_codex_dirs",
+        lambda: [str(codex_dir)],
+    )
+
+    codex_instruct.deploy(
+        types.SimpleNamespace(
+            file=None,
+            name="gpt-unrestricted",
+            dry_run=dry_run,
+            yes=yes,
+            skip_hooks_isolation=False,
+        )
+    )
+
+    output = capsys.readouterr().out.lower()
+    assert "windows explicit beta" in output
+    assert "not formal windows support" in output
+    assert "p1/p2" in output
+    assert (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).exists() is yes
+
+
+def test_windows_beta_warning_is_not_emitted_by_non_deploy_operations(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    codex_dir = tmp_path / "windows-beta-nondeploy"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text(
+        'model = "gpt-5.6"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(codex_instruct, "_OUTPUT_LANGUAGE", "en")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_is_windows_platform",
+        lambda: True,
+    )
+
+    codex_instruct.show_status([str(codex_dir)])
+    codex_instruct.recover_deployment([str(codex_dir)], yes=False)
+    codex_instruct.uninstall([str(codex_dir)], yes=False)
+    assert not codex_instruct.restore_hooks(codex_dir)
+
+    assert "windows explicit beta" not in capsys.readouterr().out.lower()
+
+
 def test_deploy_rejects_non_file_hooks_before_writing(tmp_path):
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()

@@ -1,5 +1,5 @@
 <!-- markdownlint-disable MD013 MD033 MD041 -->
-<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: PENDING -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 <p align="center">
   <img src="docs/assets/readme/codex-keysmith-preview.png" alt="Illustrative codex-keysmith dry-run terminal preview; actual paths and output vary" width="100%">
@@ -44,7 +44,7 @@
 ## 复制给智能体安装
 
 ```text
-请先检查操作系统。macOS / Linux 可安装 codex-keysmith v0.1.0：只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0 下载 Release 资产，先用 SHA256SUMS 校验，不使用 curl | python。Windows 上的 v0.1.0 为 known-bad，不得 fresh deploy；如已留下 durable journal，保留全部 journal/marker/snapshot，改用已校验的 v0.1.1 脚本依次运行 --status、--recover 预览、--recover --yes、--status，不手工删除证据。任何平台都先运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；写入前等我确认。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
+请先检查操作系统。macOS / Linux 可安装 codex-keysmith v0.1.0：只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0 下载 Release 资产，先用 SHA256SUMS 校验，不使用 curl | python。Windows 上的 v0.1.0 为 known-bad，不得 fresh deploy；如已留下 durable journal，保留全部 journal/marker/snapshot，改用已校验的 v0.1.1 脚本依次运行 --status、--recover 预览、--recover --yes、--status，不手工删除证据。Windows v0.1.1 fresh deployment 仅以明确 beta 开放，preview 与执行都会显示 beta 警告；这不构成正式 Windows support，P1/P2 边界仍然适用。任何平台都先运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；写入前等我确认。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
 ```
 
 ## 友链 / Community
@@ -122,7 +122,7 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 
 候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。只有受保护 tag 驱动的 Release workflow 完成全部阻断测试、正式构建、哈希与远端资产校验后，对应资产才是公开 Release；本地候选资产不得冒充公开发布。
 
-Windows：v0.1.1 源码已经实现原生句柄、受保护 ACL、显式共享模式、稳定 volume/File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.12/3.14 阻断矩阵覆盖 deploy、rollback、restore-hooks、recover、uninstall、cleanup-marker re-entry 与 Issue #1 恢复。Windows fresh deployment 的发布策略仍待选择：要么代码级 recovery-only 阻挡，要么以醒目 beta 边界开放；当前证据不得解释为正式 Windows support。P1 仍缺逐阶段 hard-kill、SUBST/8.3/volume alias、长路径、本地化用户目录和更多 cleanup double-fault 覆盖。
+Windows：v0.1.1 源码已经实现原生句柄、受保护 ACL、显式共享模式、稳定 volume/File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.12/3.14 阻断矩阵覆盖 deploy、rollback、restore-hooks、recover、uninstall、cleanup-marker re-entry 与 Issue #1 恢复。Windows fresh deployment 已按 `EXPLICIT_BETA` 明确开放，preview 与执行路径都会显示醒目 beta 警告；status、recover、uninstall 与 restore-hooks 不会误报部署警告。该策略不构成正式 Windows support。P1 仍缺逐阶段 hard-kill、SUBST/8.3/volume alias、长路径、本地化用户目录和更多 cleanup double-fault 覆盖，P2 的正式支持与发布文档边界仍未关闭。
 
 v0.1.0 已在 Windows 留下 journal 的用户，应在隔离副本上先校验 v0.1.1 脚本，然后保留证据并执行：
 
@@ -142,7 +142,7 @@ py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --la
 - Python 3.9：保留 compatibility 测试，但 Python 3.9 已 EOL，不作为首选生产运行时。
 - 已验证 Codex CLI：`codex-cli 0.144.1`。其他 Codex 版本需重新核对配置格式和实际模型行为。
 - macOS / Linux：当前主要支持范围。
-- Windows：P0 recovery 与生命周期矩阵为阻断式验证，但 fresh deployment 的 recovery-only / explicit beta 策略仍待发布决策；两种方案都不等于正式支持。P1/P2 残余边界见上节。
+- Windows：P0 recovery 与生命周期矩阵为阻断式验证，fresh deployment 以 `EXPLICIT_BETA` 开放并显示 CLI 警告；这不等于正式支持。P1/P2 残余边界见上节。
 
 ### 第一次部署
 
@@ -383,7 +383,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
 - 部署、`--recover` 和 uninstall 都在删除自身恢复证据前执行全部受管理参与目录的 final fingerprint sweep；
 - 不跟随 symlink，不使用完整 TOML 解析器；遇到歧义、重复目标键、占用命名空间或不安全语法时停止；
 - `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
-- macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`，原子 no-replace/replace rename 使用 write-through，并在 create、rename 和 verified delete 后刷新父目录。Windows 逐 journal phase 的硬中断证据仍属 P1，因此这项实现契约不等于正式支持，也不替代待决定的 fresh-deployment 策略；
+- macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`，原子 no-replace/replace rename 使用 write-through，并在 create、rename 和 verified delete 后刷新父目录。Windows 逐 journal phase 的硬中断证据仍属 P1，因此这项实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
 - 在遵守操作系统和文件系统 `fsync` 语义的正常崩溃模型中，已发布 immutable intent 的中断 deploy/uninstall 由 durable journal 覆盖。两个窄窗口刻意 fail closed 并需要人工核对：journal 目录 `mkdir` 后、首份 intent 发布前，以及单步骤临时目录 `mkdtemp` 后、residue record 持久化前；
 - 原子目录 claim 后在原路径出现的并发替换会保留。journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；这类主动篡改，以及极端断电、设备不兑现 flush、文件系统损坏或目录项持久化异常，超出可证明边界；
 - `model_instructions_file` 是全局配置，没有 profile 隔离；hooks 只能整份隔离；
@@ -448,7 +448,7 @@ Release 构建要求完整、非 shallow、非 partial/promisor、无 reachable 
 ### 当前限制
 
 - 单文件 CLI，不提供 `pip install` 或自动更新；
-- Windows v0.1.0 fresh deployment known-bad；v0.1.1 fresh deployment 的 recovery-only / explicit beta 策略待决定，当前不宣称正式支持；
+- Windows v0.1.0 fresh deployment known-bad；v0.1.1 fresh deployment 以 `EXPLICIT_BETA` 开放并显示 CLI 警告，但不宣称正式支持，P1/P2 边界继续适用；
 - Python 3.9 仅保留 compatibility 测试；
 - Live Prompt Bank 不进入 PR gate；
 - `main` / `Unreleased` 是开发状态，不等于正式 Release；
@@ -561,7 +561,7 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 
 Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. Assets become a public Release only after the protected-tag workflow completes every blocking test, formal build, checksum, and remote-asset verification gate; local candidate assets are not published artifacts.
 
-Windows: the v0.1.1 source includes native handles, protected ACLs, explicit share modes, stable volume/File ID identity, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.12/3.14 jobs on `windows-2025` cover deploy, rollback, restore-hooks, recover, uninstall, cleanup-marker re-entry, and Issue #1 recovery. The fresh-deployment release policy is still pending: either block it in code as recovery-only or expose it with explicit beta boundaries. The current evidence is not a formal Windows support claim. P1 still lacks the per-phase hard-kill matrix, SUBST/8.3/volume aliases, long paths, localized profiles, and additional cleanup double faults.
+Windows: the v0.1.1 source includes native handles, protected ACLs, explicit share modes, stable volume/File ID identity, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.12/3.14 jobs on `windows-2025` cover deploy, rollback, restore-hooks, recover, uninstall, cleanup-marker re-entry, and Issue #1 recovery. Fresh deployment is open under the `EXPLICIT_BETA` policy, and both preview and execution print a prominent beta warning; status, recover, uninstall, and restore-hooks do not emit the deployment warning. This is not a formal Windows support claim. P1 still lacks the per-phase hard-kill matrix, SUBST/8.3/volume aliases, long paths, localized profiles, and additional cleanup double faults, while P2 formal-support and release-documentation boundaries remain open.
 
 For a v0.1.0 Windows journal, verify the v0.1.1 script in an isolated copy, preserve all evidence, and run:
 
@@ -581,7 +581,7 @@ The first status must be blocked, preview must not mutate the journal or managed
 - Python 3.9 remains in compatibility tests, but it is EOL and is not the preferred production runtime.
 - Verified Codex CLI: `codex-cli 0.144.1`. Recheck configuration compatibility and live model behavior for other versions.
 - macOS and Linux are the primary support range.
-- Windows P0 recovery and lifecycle coverage is blocking, but the recovery-only versus explicit-beta fresh-deployment policy remains a release decision. Neither option is a formal support claim; the remaining P1/P2 boundary is listed above.
+- Windows P0 recovery and lifecycle coverage is blocking, and fresh deployment is available under `EXPLICIT_BETA` with a CLI warning. This is not a formal support claim; the remaining P1/P2 boundary is listed above.
 
 ### First deployment
 
@@ -822,7 +822,7 @@ For the default bundled `gpt-unrestricted.md` deployment, the tool inspects `gpt
 - Deployment, `--recover`, and uninstall perform a complete final fingerprint sweep across every managed participant before deleting their own recovery evidence.
 - The CLI never follows symlinks and does not use a full TOML editor. Ambiguous, duplicate, namespace-occupying, or unsafe syntax stops the operation.
 - `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first deploy/uninstall mutation; later status detects it and fails closed until explicit `--recover`.
-- macOS/Linux use file and directory `fsync`. The Windows P0 backend calls `FlushFileBuffers` on managed file/directory handles, uses write-through atomic no-replace/replace renames, and flushes parent directories after create, rename, and verified delete. The per-journal-phase Windows hard-interruption matrix remains P1, so this implementation contract is not formal support and does not replace the pending fresh-deployment policy decision.
+- macOS/Linux use file and directory `fsync`. The Windows P0 backend calls `FlushFileBuffers` on managed file/directory handles, uses write-through atomic no-replace/replace renames, and flushes parent directories after create, rename, and verified delete. The per-journal-phase Windows hard-interruption matrix remains P1, so neither this implementation contract nor the `EXPLICIT_BETA` fresh-deployment policy is formal support.
 - Under normal operating-system and filesystem `fsync` semantics, interrupted deploy/uninstall is covered once immutable intent is published. Two narrow windows deliberately fail closed for manual inspection: journal-directory `mkdir` before the first intent publish, and per-step `mkdtemp` before its residue record is durable.
 - Replacements created at the original path after an atomic directory claim are preserved. Journal, intent, companion, manifest, and cleanup-claim evidence protects against accidental drift and ordinary races; it is not cryptographic authentication against coordinated same-user tampering. Such active tampering, extreme power loss, devices that ignore flush, filesystem corruption, and abnormal directory-entry persistence remain outside the provable boundary.
 - `model_instructions_file` is global rather than profile-scoped; hook isolation is whole-file only.
@@ -887,7 +887,7 @@ The current suite contains 400+ tests covering prompt parity, CLI behavior, disc
 ### Current limits
 
 - Single-file CLI; no `pip install` or automatic updater.
-- Windows v0.1.0 fresh deployment is known-bad; the v0.1.1 recovery-only versus explicit-beta fresh-deployment policy is pending, with no formal support claim.
+- Windows v0.1.0 fresh deployment is known-bad; v0.1.1 fresh deployment is open under `EXPLICIT_BETA` with a CLI warning, without a formal support claim, and the P1/P2 boundaries remain applicable.
 - Python 3.9 is compatibility-test only.
 - Live prompt-bank calls are not a PR gate.
 - `main` / `Unreleased` is development state, not a formal Release.

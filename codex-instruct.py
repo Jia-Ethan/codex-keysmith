@@ -439,6 +439,26 @@ def _print(*values, **kwargs) -> None:
     )
 
 
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
+
+
+def _print_windows_fresh_deployment_beta_warning() -> None:
+    if not _is_windows_platform():
+        return
+    _print(
+        _localized(
+            "\n[Windows 明确 Beta] fresh deployment 已开放为明确 beta。"
+            "P0 recovery 与生命周期测试为阻断项，但这不构成正式 Windows support。"
+            "请保留全部 journal/marker/snapshot 证据；P1/P2 边界仍然适用。",
+            "\n[Windows Explicit Beta] Fresh deployment is available as an explicit "
+            "beta. Blocking P0 recovery and lifecycle tests apply, but this is not "
+            "formal Windows support. Preserve all journal/marker/snapshot evidence; "
+            "the P1/P2 boundaries still apply.",
+        )
+    )
+
+
 def _filesystem_checkpoint(name: str) -> None:
     hook = _FILESYSTEM_CHECKPOINT_HOOK
     if hook is not None:
@@ -9920,6 +9940,7 @@ def _deploy_locked(args, codex_dirs: Optional[List[str]] = None) -> None:
     _print(f"[+] 找到 {len(codex_dirs)} 个 Codex 配置目录:")
     for d in codex_dirs:
         _print(f"    {d}")
+    _print_windows_fresh_deployment_beta_warning()
 
     preview_only = args.dry_run or not args.yes
     skip_hooks_isolation = getattr(args, "skip_hooks_isolation", False)

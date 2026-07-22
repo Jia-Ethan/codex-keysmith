@@ -146,6 +146,7 @@ def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
         assert value in {"PENDING", "RECOVERY_ONLY", "EXPLICIT_BETA"}
         values.append(value)
     assert len(set(values)) == 1
+    assert values[0] == "EXPLICIT_BETA"
 
 
 def test_release_build_is_reproducible_and_contains_required_files(
