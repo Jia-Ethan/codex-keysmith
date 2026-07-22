@@ -134,7 +134,7 @@ jobs:
           done < "$first/SHA256SUMS"
           (cd "$first" && sha256sum --check SHA256SUMS)
           version_output="$(python "$first/codex-instruct-${{ steps.source.outputs.tag }}.py" --version)"
-          expected_version_output="codex-instruct.py ${{ steps.source.outputs.version }}"
+          expected_version_output="codex-instruct-${{ steps.source.outputs.tag }}.py ${{ steps.source.outputs.version }}"
           if [ "$version_output" != "$expected_version_output" ]; then
             echo "Standalone script reported an unexpected version: ${version_output}" >&2
             exit 1

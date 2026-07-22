@@ -755,6 +755,9 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "diff -u" in release_workflow
     assert "cmp \"$first/$asset\" \"$second/$asset\"" in release_workflow
     assert "sha256sum --check SHA256SUMS" in release_workflow
+    assert 'expected_version_output="codex-instruct-${{ steps.source.outputs.tag }}.py' in (
+        release_workflow
+    )
     assert "gh release create" in release_workflow
     assert "gh release upload" in release_workflow
     assert "--draft" in release_workflow
