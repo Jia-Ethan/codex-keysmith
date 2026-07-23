@@ -2,8 +2,11 @@ name: Tests
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -14,9 +17,8 @@ env:
 
 jobs:
   test:
-    name: ${{ format('{0} / Python {1}{2}', matrix.os, matrix.python-version, matrix.os == 'windows-2025' && ' / experimental' || '') }}
+    name: ${{ format('{0} / Python {1}', matrix.os, matrix.python-version) }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-2025' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -24,9 +26,8 @@ jobs:
         os:
           - ubuntu-24.04
           - macos-15
-          - windows-2025
         python-version:
-          - "3.8"
+          - "3.9"
           - "3.14"
 
     steps:
@@ -40,40 +41,62 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install test dependency for Python 3.8
-        if: matrix.python-version == '3.8'
+      - name: Install test dependency for Python 3.9
+        if: matrix.python-version == '3.9'
         run: python -m pip install "pytest==8.3.5"
 
       - name: Install test dependency for latest Python
-        if: matrix.python-version != '3.8'
+        if: matrix.python-version != '3.9'
         run: python -m pip install "pytest==8.4.2"
 
       - name: Compile Python source
         run: python -m py_compile codex-instruct.py
 
-      - name: Verify Windows atomic rename capability (experimental)
-        if: runner.os == 'Windows'
-        shell: python
-        run: |
-          import importlib.util
-          import os
-          import sys
-          import tempfile
-          from pathlib import Path
+      - name: Run tests
+        run: python -m pytest -p no:cacheprovider -q tests
 
-          module_path = Path("codex-instruct.py").resolve()
-          spec = importlib.util.spec_from_file_location("keysmith_atomic_probe", module_path)
-          module = importlib.util.module_from_spec(spec)
-          sys.modules[spec.name] = module
-          spec.loader.exec_module(module)
-          with tempfile.TemporaryDirectory() as directory:
-              module._verify_atomic_rename_support(Path(directory))
-          evidence = "Windows experimental atomic no-replace probe passed"
-          print(evidence)
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as output:
-                  output.write("- " + evidence + "\n")
+  windows:
+    name: Windows / Python ${{ matrix.python-version }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.12"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependency
+        run: python -m pip install "pytest==8.4.2"
+
+      - name: Compile Python source
+        run: python -m py_compile codex-instruct.py
+
+      - name: Run blocking Windows lifecycle contracts
+        run: >-
+          python -m pytest -p no:cacheprovider -q
+          tests/test_windows_filesystem.py::test_issue_1_v010_initializing_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_inherited_acl_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_empty_private_initializing_journal_recovers_to_ready
+          tests/test_codex_instruct.py::test_deploy_yes_isolates_hooks
+          tests/test_codex_instruct.py::test_deploy_rolls_back_and_reraises_keyboard_interrupt
+          tests/test_codex_instruct.py::test_cli_restore_hooks_restores
+          tests/test_uninstall.py::test_uninstall_previews_then_restores_first_deployment
+          tests/test_recovery.py::test_recover_reenters_after_remove_claim_interruption
+          tests/test_uninstall_recovery.py::test_uninstall_initializing_cleanup_is_reentrant_after_empty_marker_publication
 
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests
@@ -88,6 +111,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -112,15 +137,48 @@ jobs:
           python -m coverage erase
           python -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
           python -m coverage combine
-          python -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+          python -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 
       - name: Validate prompt bank contracts
         run: python scripts/run_prompt_bank_regression.py --validate-only
 
-      - name: Build and verify release candidate assets
+      - name: Build or reject release candidate assets
         run: |
           release_tag="v$(tr -d '\r\n' < VERSION)"
-          echo "Candidate-only verification for ${release_tag} at ${GITHUB_SHA}; no release is published."
-          python scripts/build_release.py "$release_tag" --source-commit "$GITHUB_SHA" --output-dir dist
+          source_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          shallow="$(git rev-parse --is-shallow-repository)"
+          if [ "$shallow" != "false" ]; then
+            echo "Release verification requires a complete checkout with tags." >&2
+            exit 1
+          fi
+          if [ "$source_commit" != "$GITHUB_SHA" ]; then
+            echo "Checked-out HEAD does not match GITHUB_SHA." >&2
+            exit 1
+          fi
+          tag_ref="refs/tags/${release_tag}"
+          if git show-ref --verify --quiet "$tag_ref"; then
+            tag_commit="$(git rev-parse --verify "${tag_ref}^{commit}")"
+            if [ "$tag_commit" != "$source_commit" ]; then
+              echo "${release_tag} is already bound to ${tag_commit}; verifying refusal for ${source_commit}."
+              if refusal="$(python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir dist 2>&1)"; then
+                echo "Release builder accepted a conflicting existing version tag." >&2
+                exit 1
+              fi
+              expected="release tag ${release_tag} already points to ${tag_commit}, not candidate ${source_commit}"
+              case "$refusal" in
+                *"$expected"*) ;;
+                *)
+                  echo "$refusal" >&2
+                  echo "Release builder failed for an unexpected reason." >&2
+                  exit 1
+                  ;;
+              esac
+              test ! -e dist
+              echo "Release builder correctly refused the conflicting candidate."
+              exit 0
+            fi
+          fi
+          echo "Candidate-only verification for ${release_tag} at ${source_commit}; no release is published."
+          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir dist
           cd dist
           sha256sum --check SHA256SUMS

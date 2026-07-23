@@ -1,0 +1,218 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  blocking-tests:
+    name: All blocking tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tests.yml
+
+  publish:
+    name: Build and publish immutable assets
+    needs:
+      - blocking-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the complete tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Bind tag, HEAD, VERSION, notes, and source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          version="$(tr -d '\r\n' < VERSION)"
+          expected_tag="v${version}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "Tag ${tag} does not match VERSION ${version}." >&2
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/${tag}")" != "tag" ]; then
+            echo "Formal releases require an annotated tag object." >&2
+            exit 1
+          fi
+          head_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+          event_commit="$(git rev-parse --verify "${GITHUB_SHA}^{commit}")"
+          if [ "$head_commit" != "$tag_commit" ] || [ "$head_commit" != "$event_commit" ]; then
+            echo "HEAD, the peeled tag SHA, and GITHUB_SHA do not identify one commit." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
+            echo "Formal releases require a complete checkout." >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+            echo "Formal releases require a clean checkout." >&2
+            exit 1
+          fi
+          notes="docs/releases/${tag}.md"
+          if [ ! -f "$notes" ]; then
+            echo "Missing release notes source: ${notes}" >&2
+            exit 1
+          fi
+          notes_blob="${RUNNER_TEMP}/tagged-release-notes.md"
+          git cat-file blob "${head_commit}:${notes}" > "$notes_blob"
+          cmp "$notes" "$notes_blob"
+          policy_files=(
+            README.md
+            CHANGELOG.md
+            CONTRIBUTING.md
+            SECURITY.md
+            docs/hooks-transactions.md
+            "$notes"
+          )
+          policy=""
+          for policy_file in "${policy_files[@]}"; do
+            mapfile -t markers < <(
+              grep -Eo \
+                'WINDOWS_FRESH_DEPLOYMENT_POLICY: (PENDING|RECOVERY_ONLY|EXPLICIT_BETA)' \
+                "$policy_file" || true
+            )
+            if [ "${#markers[@]}" -ne 1 ]; then
+              echo "Expected one Windows policy marker in ${policy_file}." >&2
+              exit 1
+            fi
+            value="${markers[0]##*: }"
+            if [ -z "$policy" ]; then
+              policy="$value"
+            elif [ "$policy" != "$value" ]; then
+              echo "Windows fresh-deployment policy documents disagree." >&2
+              exit 1
+            fi
+          done
+          if [ "$policy" = "PENDING" ]; then
+            echo "Windows fresh-deployment policy is still pending." >&2
+            exit 1
+          fi
+          {
+            printf 'tag=%s\n' "$tag"
+            printf 'version=%s\n' "$version"
+            printf 'commit=%s\n' "$head_commit"
+            printf 'notes_path=%s\n' "$notes"
+            printf 'notes_blob=%s\n' "$notes_blob"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build twice and verify reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          first="${RUNNER_TEMP}/release-first"
+          second="${RUNNER_TEMP}/release-second"
+          python scripts/build_release.py "${{ steps.source.outputs.tag }}" --output-dir "$first"
+          python scripts/build_release.py "${{ steps.source.outputs.tag }}" --output-dir "$second"
+          diff -u "$first/SHA256SUMS" "$second/SHA256SUMS"
+          while read -r checksum asset; do
+            test -n "$checksum"
+            cmp "$first/$asset" "$second/$asset"
+          done < "$first/SHA256SUMS"
+          (cd "$first" && sha256sum --check SHA256SUMS)
+          version_output="$(python "$first/codex-instruct-${{ steps.source.outputs.tag }}.py" --version)"
+          expected_version_output="codex-instruct-${{ steps.source.outputs.tag }}.py ${{ steps.source.outputs.version }}"
+          if [ "$version_output" != "$expected_version_output" ]; then
+            echo "Standalone script reported an unexpected version: ${version_output}" >&2
+            exit 1
+          fi
+
+      - name: Stage, verify, and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/release-first"
+          tag="${{ steps.source.outputs.tag }}"
+          created=false
+          cleanup_failed_draft() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ] && [ "$created" = true ]; then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_draft EXIT
+
+          set +e
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>&1)"
+          existing_status=$?
+          set -e
+          if [ "$existing_status" -eq 0 ]; then
+            echo "Release ${tag} already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+          case "$existing" in
+            *"HTTP 404"*) ;;
+            *)
+              printf '%s\n' "$existing" >&2
+              echo "Could not prove that Release ${tag} is absent." >&2
+              exit 1
+              ;;
+          esac
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "codex-keysmith $tag" \
+            --notes-file "${{ steps.source.outputs.notes_blob }}"
+          created=true
+          gh release upload "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.zip" \
+            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.tar.gz" \
+            "$release_dir/codex-instruct-${{ steps.source.outputs.tag }}.py" \
+            "$release_dir/SHA256SUMS"
+
+          expected="${RUNNER_TEMP}/expected-assets.txt"
+          actual="${RUNNER_TEMP}/actual-assets.txt"
+          while read -r checksum asset; do
+            printf '%s\tsha256:%s\n' "$asset" "$checksum"
+          done < "$release_dir/SHA256SUMS" > "$expected"
+          printf 'SHA256SUMS\tsha256:%s\n' \
+            "$(sha256sum "$release_dir/SHA256SUMS" | cut -d' ' -f1)" >> "$expected"
+          sort -o "$expected" "$expected"
+
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .draft)" = "true"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+            --jq '.assets[] | [.name, .digest] | @tsv' | sort > "$actual"
+          diff -u "$expected" "$actual"
+
+          tagged_notes="${RUNNER_TEMP}/tagged-release-notes-final.md"
+          git cat-file blob \
+            "${{ steps.source.outputs.commit }}:${{ steps.source.outputs.notes_path }}" \
+            > "$tagged_notes"
+          cmp "${{ steps.source.outputs.notes_blob }}" "$tagged_notes"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          gh release edit "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest
+          created=false

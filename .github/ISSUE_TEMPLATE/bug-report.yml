@@ -13,7 +13,7 @@ body:
     id: keysmith-version
     attributes:
       label: codex-keysmith 版本 / Version
-      description: Paste the output of `python3 codex-instruct.py --version` (or `py -3 ... --version` on Windows).
+      description: Paste the output of `python3 codex-instruct.py --version`. Windows v0.1.0 fresh deployment is known-bad; preserve journals and identify whether this is v0.1.1 recovery or an isolated fresh-deployment fixture.
       placeholder: codex-instruct.py 0.1.0
     validations:
       required: true
@@ -31,7 +31,7 @@ body:
     id: operating-system
     attributes:
       label: 操作系统 / Operating system
-      placeholder: macOS 15.5, Ubuntu 24.04, or Windows 11
+      placeholder: macOS 15.5 or Ubuntu 24.04
     validations:
       required: true
 

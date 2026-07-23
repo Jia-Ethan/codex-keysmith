@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 MD033 MD041 -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 <p align="center">
   <img src="docs/assets/readme/codex-keysmith-preview.png" alt="Illustrative codex-keysmith dry-run terminal preview; actual paths and output vary" width="100%">
@@ -20,8 +21,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-0099CC">
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
+  <img alt="Source version v0.1.1" src="https://img.shields.io/badge/source-v0.1.1-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -36,14 +37,14 @@
 > [!WARNING]
 > **Read the bundled prompt before using `--yes` / 使用 `--yes` 前先阅读内置提示词**
 >
-> The v0.1.0 bundled prompt directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction, chemistry/pharmacology/weapons guides, and treats injected memory, hook, and session blocks as environment metadata that cannot override its execution mode. This is a broad global behavior change, not an authorization or safety boundary. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `0ac8420d504f1a42db87be9f8555f740bf4c1e7b72beb0dde6a4b8d70b6cda07`. Inspect it or deploy your own `--file`. The normal preview plus one explicit `--yes` remains the confirmation flow; there is no second confirmation flag.
+> The v0.1.1 source bundles the byte-identical prompt currently used as the Codex behavior baseline. It directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction plus chemistry/pharmacology/weapons guides, and gives its execution mode precedence over injected context blocks. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`. A checkout is a candidate unless its commit is bound to an immutable signed/annotated tag and verified Release assets; the signed v0.1.0 assets retain their historical bundled prompt. Inspect the current source prompt or deploy your own `--file`.
 >
-> v0.1.0 内置提示词要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等安全请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并把注入的 memory、hook 和 session 区块视为不能覆盖其执行模式的环境元数据。这是范围很广的全局行为变更，不构成授权或安全边界。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`0ac8420d504f1a42db87be9f8555f740bf4c1e7b72beb0dde6a4b8d70b6cda07`。请先审阅，或通过 `--file` 部署自己的指令。确认流程仍是常规预览加一次显式 `--yes`，不增加第二个确认参数。
+> v0.1.1 源码内置提示词与当前 Codex 行为基线逐字节一致。它要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并规定执行模式优先于注入的上下文区块。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`。未绑定不可变签名／附注 tag 与已校验 Release 资产的 checkout 均按候选版处理；已签名 v0.1.0 资产仍保留其历史内置提示词。请审阅当前源码提示词，或通过 `--file` 部署自己的指令。
 
 ## 复制给智能体安装
 
 ```text
-请安装 codex-keysmith v0.1.0。只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0 下载 Release 资产，先用 SHA256SUMS 校验，不使用 curl | python。运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；如果 status 发现 durable journal，只预览 --recover 并等我确认后才添加 --yes。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
+请先检查操作系统。macOS / Linux 可安装 codex-keysmith v0.1.0：只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0 下载 Release 资产，先用 SHA256SUMS 校验，不使用 curl | python。Windows 上的 v0.1.0 为 known-bad，不得 fresh deploy；如已留下 durable journal，保留全部 journal/marker/snapshot，改用已校验的 v0.1.1 脚本依次运行 --status、--recover 预览、--recover --yes、--status，不手工删除证据。Windows v0.1.1 fresh deployment 仅以明确 beta 开放，preview 与执行都会显示 beta 警告；这不构成正式 Windows support，P1/P2 边界仍然适用。任何平台都先运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；写入前等我确认。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
 ```
 
 ## 友链 / Community
@@ -62,11 +63,18 @@
 
 ### 项目定位
 
-`codex-keysmith` v0.1.0 是零运行时依赖的单文件 Python CLI。它把内置或自定义 Markdown 部署到现有 Codex 配置目录，保守更新顶层 `model_instructions_file`，默认整体隔离活跃 hooks，并用带指纹的部署清单支持分层卸载。部署在首次修改前还会发布持久化事务日志，使 `SIGKILL` 等中断可以通过显式 `--recover` 检查和恢复。
+`codex-keysmith` v0.1.1 是零运行时依赖的单文件 Python CLI。它把内置或自定义 Markdown 部署到现有 Codex 配置目录，保守更新顶层 `model_instructions_file`，默认整体隔离活跃 hooks，并用带指纹的部署清单支持分层卸载。部署和卸载都会在首次修改前发布持久化事务日志，使 `SIGKILL` 等中断可以通过显式 `--recover` 检查和恢复。
 
-默认不写入：常规部署、卸载和中断恢复在没有 `--yes` 时都只预览。`--status` 和 `--skip-hooks-isolation` 计划都不会打开或解析 hooks 内容；status 发现持久化日志或其他事务残留时 fail closed。durable deployment journal 使用 `--recover`，无 journal 的异常残留保留人工核对。
+> 本 README 描述 v0.1.1 源码的事务与 CI 行为。版本是否已正式发布，以该源码 commit 是否绑定不可变 tag、GitHub Release 与匹配 `SHA256SUMS` 的资产为准，不能仅凭浮动分支或文件内版本号判断。已签名 `v0.1.0` tag 和现有资产保持原样，不包含 v0.1.1 修复。
 
-### 下载、校验与安装 v0.1.0
+默认不写入：常规部署、卸载和中断恢复在没有 `--yes` 时都只预览。部署 dry-run 会按当前目录碰撞状态列出目标 Markdown、需要变更的 `config.toml`、active/disabled hooks、精确匹配的 legacy 与现有 manifest 的完整时间戳备份／归档路径；不需要备份的 config 会明确标记为无。`--status` 不会打开或解析 live active/disabled hooks 内容，但会读取并哈希 manifest 引用的 backup 恢复证据；`--skip-hooks-isolation` 计划完全不读取 hooks。status 会分别报告结构健康、部署就绪度和卸载就绪度，并在持久化日志或其他事务残留存在时 fail closed。durable deploy/uninstall journal 使用 `--recover`，无 journal 的异常残留保留人工核对。
+
+> [!CAUTION]
+> **Windows v0.1.0 known-bad**
+>
+> 不要在 Windows 上使用 v0.1.0 fresh deploy。该版本可能先在 `os.utime(..., follow_symlinks=False)` 失败，再由 POSIX 目录 fd 清理触发第二个 `PermissionError`，覆盖原始错误并留下旧脚本不能恢复的 initializing journal。不要编辑或删除 `.codex-keysmith-transaction-*`、cleanup marker、snapshot 或其他证据。使用已校验的 v0.1.1 脚本按 `status blocked -> recover preview -> recover --yes -> status ready` 恢复。已签名 v0.1.0 tag、资产和 `SHA256SUMS` 仅作为不可变历史记录保留，不移动、不覆盖、不重传。
+
+### 下载、校验与安装已发布 v0.1.0（仅 macOS / Linux）
 
 固定来源：
 
@@ -96,46 +104,54 @@ python3 codex-instruct-v0.1.0.py --version
 
 Linux 也可用 `sha256sum --check SHA256SUMS`。校验通过后，可直接运行独立脚本，或解压 bundle 阅读完整 README、CHANGELOG、SECURITY、示例和事务文档。
 
-Windows PowerShell（experimental）：
+### v0.1.1 源码与候选构建
+
+当前源码的 `VERSION` 与 `codex-instruct.py --version` 均为 `0.1.1`。未绑定正式 tag/Release 的 checkout 必须按候选版处理，并且只能从已提交、工作树干净且完整包含历史与 tags 的本地 checkout 验证和使用：
+
+```bash
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+python3 scripts/build_release.py "$RELEASE_TAG" \
+  --source-commit "$SOURCE_COMMIT" \
+  --output-dir dist-candidate
+(cd dist-candidate && shasum -a 256 -c SHA256SUMS)
+```
+
+候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。只有受保护 tag 驱动的 Release workflow 完成全部阻断测试、正式构建、哈希与远端资产校验后，对应资产才是公开 Release；本地候选资产不得冒充公开发布。
+
+Windows：v0.1.1 源码已经实现原生句柄、受保护 ACL、显式共享模式、稳定 volume/File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.12/3.14 阻断矩阵覆盖 deploy、rollback、restore-hooks、recover、uninstall、cleanup-marker re-entry 与 Issue #1 恢复。Windows fresh deployment 已按 `EXPLICIT_BETA` 明确开放，preview 与执行路径都会显示醒目 beta 警告；status、recover、uninstall 与 restore-hooks 不会误报部署警告。该策略不构成正式 Windows support。P1 仍缺逐阶段 hard-kill、SUBST/8.3/volume alias、长路径、本地化用户目录和更多 cleanup double-fault 覆盖，P2 的正式支持与发布文档边界仍未关闭。
+
+v0.1.0 已在 Windows 留下 journal 的用户，应在隔离副本上先校验 v0.1.1 脚本，然后保留证据并执行：
 
 ```powershell
-$base = "https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.0"
-$assets = @(
-  "codex-keysmith-v0.1.0.zip",
-  "codex-keysmith-v0.1.0.tar.gz",
-  "codex-instruct-v0.1.0.py"
-)
-foreach ($name in $assets + @("SHA256SUMS")) {
-  Invoke-WebRequest "$base/$name" -OutFile $name
-}
-$expected = @{}
-Get-Content .\SHA256SUMS | ForEach-Object {
-  $parts = $_ -split '\s+', 2
-  $expected[$parts[1]] = $parts[0].ToLowerInvariant()
-}
-foreach ($name in $assets) {
-  $actual = (Get-FileHash ".\$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($actual -ne $expected[$name]) { throw "SHA-256 mismatch: $name" }
-}
-py -3 .\codex-instruct-v0.1.0.py --version
+py -3.12 .\codex-instruct.py --version
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
 ```
+
+第一条 status 应为 blocked，preview 不修改 journal 或业务文件，确认恢复后最后一条 status 应为 ready。任一步预检失败都必须保留 journal、marker、snapshot 与 claim，不手工删除。
 
 ### 运行环境
 
 - 正式建议：Python 3.10–3.14；运行 CLI 只需要标准库。
-- Python 3.8：保留 legacy compatibility 测试，但 Python 3.8 已 EOL，不作为首选生产运行时。
+- Python 3.9：保留 compatibility 测试，但 Python 3.9 已 EOL，不作为首选生产运行时。
 - 已验证 Codex CLI：`codex-cli 0.144.1`。其他 Codex 版本需重新核对配置格式和实际模型行为。
 - macOS / Linux：当前主要支持范围。
-- Windows：v0.1.0 标记为 experimental；CI 中 Windows 矩阵为非阻断观察项，并包含原子无覆盖重命名探测。测试失败仍会保留在 job 结果中，但不阻断 macOS/Linux release gate；转为正式支持前必须先实现 Windows 矩阵全绿并补齐真实环境证据。
+- Windows：P0 recovery 与生命周期矩阵为阻断式验证，fresh deployment 以 `EXPLICIT_BETA` 开放并显示 CLI 警告；这不等于正式支持。P1/P2 残余边界见上节。
 
 ### 第一次部署
 
 建议始终显式指定单个目录，并固定 CLI 语言：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --version
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang zh-CN
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
 ```
 
 检查输出中的：
@@ -150,7 +166,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang zh-CN
 确认后执行：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
 部署完成后关闭旧任务并开启一个新的 Codex 会话。Codex 在会话启动时加载配置；已经运行的会话不会可靠地热更新指令或 hooks 状态。
@@ -160,7 +176,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang zh-CN
 ### 状态输出
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
 ```
 
 稳定字段示例：
@@ -179,10 +195,12 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
     事务残留: none
     旧版迁移: 无需处理
     hooks 恢复: 可执行 <restore-command>
+    结构健康: healthy
+    卸载就绪度: ready
     可部署性: ready
 ```
 
-`--status` 不修改文件，也不读取或解析 hooks 内容。它用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；一旦发现中断日志、其他事务残留、异常节点或无效 manifest，就返回 1 并阻止继续部署。status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
+`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要 hooks backup 缺失、异常或漂移时，卸载就绪度和可部署性都为 `blocked`，返回 1。它还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
 
 ### 会修改哪些文件
 
@@ -194,7 +212,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang zh-CN
 | `<codex-dir>/hooks.json.disabled` | 已存在时先移动到时间戳备份，再发布新的 disabled 文件 |
 | `<codex-dir>/gpt5.5-unrestricted.md` | 被引用或匹配历史内置内容时事务归档；自定义孤立文件保留 |
 | `<codex-dir>/.codex-keysmith-manifest.json` | 记录 MD/config、实际隔离的 hooks、实际归档的 legacy、备份与上一层 manifest |
-| `<codex-dir>/.codex-keysmith-transaction-<id>/` | 保存 journal/companion、固定名称 pending 文件、不可变 `intent.json` 和部署前快照；终态使用 `committed` / `recovered` 与可重入 cleanup marker 清理 |
+| `<codex-dir>/.codex-keysmith-transaction-<id>/` | 保存 deploy/uninstall journal、固定名称 pending 文件、不可变 `intent.json` 和 before snapshots；deploy 另有 manifest companion，终态使用 `committed` / `recovered` 与可重入 cleanup marker 清理 |
 | `<codex-dir>/.keysmith-*` | 单步骤临时目录；正常完成后清理，异常残留会阻止后续写入 |
 
 受管理节点必须是普通文件。符号链接、悬空链接、目录、FIFO、socket、无效 UTF-8 或不安全 TOML 都会 fail closed。只有本次确实隔离的 hooks 和确实归档的 legacy 才进入 manifest 所有权；未隔离 hooks 与未受管理 legacy 不会被 uninstall 验证或改写。显式 `--skip-hooks-isolation` 时，hooks 节点完全排除在计划、manifest 和读写边界之外，但仍可能继续影响模型行为。
@@ -226,7 +244,7 @@ flowchart TD
 ### 自定义指令与 CLI 语言
 
 ```bash
-python3 codex-instruct-v0.1.0.py \
+python3 codex-instruct.py \
   --file ./my-prompt.md \
   --name my-rules \
   --codex-dir ~/.codex \
@@ -246,7 +264,7 @@ python3 codex-instruct-v0.1.0.py \
 ### hooks 恢复
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
 ```
 
 恢复只处理 `hooks.json.disabled -> hooks.json`，不部署 MD、不编辑 config，也不读取 JSON：
@@ -256,53 +274,54 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang zh-
 - 异常节点、事务残留或并发漂移返回 1，并保留证据；
 - `--restore-hooks` 不接受 `--yes`、`--file`、`--name` 或 `--skip-hooks-isolation`。
 
-### 中断部署恢复
+### 中断事务恢复
 
-`--recover` 专门处理部署在首次修改前创建的 `.codex-keysmith-transaction-<id>/journal.json` 和快照。默认仅预览：
+`--recover` 处理 deploy 或 uninstall 在首次修改前创建的 `.codex-keysmith-transaction-<id>/journal.json` 和快照，并按不可变 `operation` 选择恢复算法。默认仅预览：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --recover --lang zh-CN
 ```
 
 确认后恢复整个多目录事务：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --recover --yes --lang zh-CN
 ```
 
 - 指定任一参与目录即可；日志会列出并验证同一 transaction ID 的全部参与目录；
-- 预检交叉验证 journal、不可变 intent、manifest intent、owner、参与者、部署前快照，以及每个资源当前是否属于记录的 before 或预发布 after 状态；
+- 预检交叉验证 journal、不可变 intent、owner、参与者、before snapshots，以及每个 live 资源当前是否属于记录的 before/after 状态；deploy 额外验证 manifest intent；
 - 未知事务残留、外部篡改参与者、快照漂移或用户并发内容都会 fail closed，日志与证据原样保留；
-- 执行时按反向参与目录和 `manifest -> config -> MD -> legacy -> disabled hooks -> active hooks` 顺序恢复；
+- deploy 按反向参与目录和 `manifest -> config -> MD -> legacy -> disabled hooks -> active hooks` 恢复；uninstall 按反向参与目录恢复 manifest/archive、legacy、hooks、MD 和 config 的 before state；
 - 全部资源、恢复出的上一层 manifest 所有权和 journal companion 完成最终 sweep 后，才按精确 residue 名称、目录 identity、成员集合与指纹清理；清理先原子认领整个目录，原路径上的并发替换不会被带入 claim，同前缀不构成删除授权；
 - 成功部署先写入 `committed`，成功恢复先写入 `recovered` 并再做一次 final sweep；逐目录或逐成员清理被硬中断时，剩余 journal、随机 cleanup claim 或 intent marker 可继续验证并完成清理；
 - 同时发现多个 transaction ID 时不会猜测合并，应分别指定其参与目录恢复。
 
-`--recover` 不等同于 `--restore-hooks` 或 `--uninstall`：recover 回到被中断部署开始前，restore-hooks 只重新启用 disabled hooks，uninstall 撤销已成功完成且有 manifest 的最新部署层。
+`--recover` 不等同于 `--restore-hooks` 或新的 `--uninstall`：recover 回到被中断的 deploy/uninstall 开始前，restore-hooks 只重新启用 disabled hooks，新的 uninstall 撤销已成功完且有 manifest 的最新部署层。
 
 ### 清单式分层卸载
 
 先预览：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang zh-CN
 ```
 
 确认卸载一层：
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
 ```
 
 卸载仅处理 `.codex-keysmith-manifest.json` 明确拥有的最新一层：
 
 - 先验证当前 MD/config、实际隔离的 hooks、实际归档的 legacy、全部必要备份和 manifest 的 `size`、`mtime_ns`、SHA-256 与预期存在状态；
 - 任一路径漂移、备份缺失、manifest 无效或节点异常时，所有目录都在写入前停止；
+- 首次修改前为全部参与目录发布 immutable durable intent、精确资源定义和 before snapshots；硬中断后由 `--recover` 反向恢复；
 - 恢复该层部署前的 config 与 MD；仅当 manifest 记录了真实隔离/归档时，才恢复 hooks、旧 disabled hooks 或 legacy；
 - 当前 manifest 原子归档为 `.codex-keysmith-manifest.json.uninstalled_<timestamp>`；
 - 如果该层覆盖了上一份 manifest，则恢复上一层。再次运行 uninstall 才会继续撤销下一层；
-- 所有参与目录的恢复结果完成 final sweep 后，才清理卸载回滚快照；
-- 找不到 manifest 是成功 no-op。v0.1.0 之前没有 manifest 的部署不属于自动所有权范围，首次 v0.1.0 卸载只会回到其记录的部署前状态。
+- 所有参与目录的恢复结果完成 final sweep 并持久化 `committed` 后，才以可重入 cleanup 清理 journal 和快照；
+- 找不到 manifest 是成功 no-op。v0.1.0 之前没有 manifest 的部署不属于自动所有权范围，当前候选版的首次卸载只会回到其记录的部署前状态。
 
 `--restore-hooks` 只恢复 hooks；`--uninstall` 按 manifest 恢复整层用户配置。二者用途不同。
 
@@ -317,7 +336,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang z
 
 ### 备份保留与安全清理
 
-工具不会自动删除 `*.bak_*`、`*.recovery_*` 或 `.uninstalled_*`。durable journal 会在成功部署、成功运行时回滚或成功 `--recover` 后清理；一旦恢复预检失败，它会与快照和未知残留一起保留，作为所有权、恢复和事故排查证据。
+工具不会自动删除 `*.bak_*`、`*.recovery_*` 或 `.uninstalled_*`。durable journal 会在成功 deploy/uninstall、干净运行时回滚或成功 `--recover` 后清理；一旦恢复预检失败，它会与快照和未知残留一起保留，作为所有权、恢复和事故排查证据。
 
 只有在以下条件全部满足后，才考虑清理：
 
@@ -345,7 +364,7 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang z
 | `--status` | 只读状态；不解析 hooks JSON |
 | `--restore-hooks` | 只恢复 disabled hooks |
 | `--uninstall` | 预览或撤销最新一层受管理部署 |
-| `--recover` | 预览或恢复 durable journal 记录的中断部署 |
+| `--recover` | 预览或恢复 durable journal 记录的中断 deploy/uninstall |
 | `--skip-hooks-isolation` | 保持 hooks 活跃；必须显式指定 `--codex-dir` |
 | `--lang auto|zh-CN|en` | 自动或显式选择 CLI 输出语言 |
 | `--version` | 显示脚本版本并退出 |
@@ -359,13 +378,13 @@ python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang z
 ### 事务边界与已知限制
 
 - 文件内容会 `fsync`，目标发布使用同卷原子无覆盖重命名，并在关键阶段复核完整指纹；
-- 复制型备份以独占 no-follow 的 `0600` 文件创建，复制和 `fsync` 完成后再应用原文件权限；disabled hooks 与 legacy 归档使用已验证的原子移动；
-- 多目录先全部预检，再持久化 `0700` journal 目录、`0600` journal/intent/companion JSON 和部署前快照，之后才隔离 hooks 或写入；journal 与 companion 的固定 pending 文件可在硬中断后完成或丢弃；
+- 复制型备份通过集中式文件系统后端独占、no-follow 创建并持久化：POSIX 使用 `0600` 后再应用原文件权限；Windows 使用受保护 ACL，并以原生句柄复核稳定身份与完整指纹；disabled hooks 与 legacy 归档使用已验证的原子移动；
+- 多目录 deploy/uninstall 先全部预检，再持久化私有 journal 目录、journal/intent JSON 和 before snapshots，之后才修改资源；POSIX 私有契约为 `0700`/`0600`，Windows 私有契约为仅当前用户与 SYSTEM 拥有完全访问权的受保护 ACL，不把 POSIX mode 数值当作 Windows 权限证据；
 - 部署、`--recover` 和 uninstall 都在删除自身恢复证据前执行全部受管理参与目录的 final fingerprint sweep；
 - 不跟随 symlink，不使用完整 TOML 解析器；遇到歧义、重复目标键、占用命名空间或不安全语法时停止；
-- `SIGKILL` 无法运行 Python 回滚，但首次部署修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
-- journal 文件、journal 目录及 journal 在 Codex 目录中的创建/删除会执行可用的 directory `fsync`。资源文件内容会 `fsync`，但不是每一次资源 rename 都会对父目录执行 directory `fsync`；Windows 的目录 fsync 支持也因系统而异；
-- 在遵守操作系统和文件系统 `fsync` 语义的正常崩溃模型中，已发布 immutable intent 的中断部署由 durable journal 覆盖。两个窄窗口刻意 fail closed 并需要人工核对：journal 目录 `mkdir` 后、首份 intent 发布前，以及单步骤临时目录 `mkdtemp` 后、residue record 持久化前；
+- `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
+- macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`，原子 no-replace/replace rename 使用 write-through，并在 create、rename 和 verified delete 后刷新父目录。Windows 逐 journal phase 的硬中断证据仍属 P1，因此这项实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
+- 在遵守操作系统和文件系统 `fsync` 语义的正常崩溃模型中，已发布 immutable intent 的中断 deploy/uninstall 由 durable journal 覆盖。两个窄窗口刻意 fail closed 并需要人工核对：journal 目录 `mkdir` 后、首份 intent 发布前，以及单步骤临时目录 `mkdtemp` 后、residue record 持久化前；
 - 原子目录 claim 后在原路径出现的并发替换会保留。journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；这类主动篡改，以及极端断电、设备不兑现 flush、文件系统损坏或目录项持久化异常，超出可证明边界；
 - `model_instructions_file` 是全局配置，没有 profile 隔离；hooks 只能整份隔离；
 - 内置提示词不保证任何模型或版本采用完全相同的行为。
@@ -401,28 +420,36 @@ python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
 python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
 python3 -m coverage combine
-python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
-# pre-tag / PR / CI candidate: 必须绑定当前完整 commit SHA
+# pre-tag / PR / CI candidate：完整 checkout；既有版本冲突必须精确拒绝
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
-python3 scripts/build_release.py v0.1.0 --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
-(cd dist-candidate && sha256sum --check SHA256SUMS)
+TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+if [ -n "$TAG_COMMIT" ] && [ "$TAG_COMMIT" != "$SOURCE_COMMIT" ]; then
+  if REFUSAL="$(python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate 2>&1)"; then exit 1; fi
+  printf '%s\n' "$REFUSAL" | grep -F "release tag $RELEASE_TAG already points to $TAG_COMMIT, not candidate $SOURCE_COMMIT"
+  test ! -e dist-candidate
+else
+  python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
+  (cd dist-candidate && sha256sum --check SHA256SUMS)
+fi
 
-# formal Release: tag 必须存在、解析到 HEAD；不要传 --source-commit
-python3 scripts/build_release.py v0.1.0 --output-dir dist
-(cd dist && sha256sum --check SHA256SUMS)
+# formal Release 仅在另行批准并创建不可变 tag 后执行；候选阶段不要运行
+# python3 scripts/build_release.py "$RELEASE_TAG" --output-dir dist
+# (cd dist && sha256sum --check SHA256SUMS)
 git diff --check
 ```
 
-候选构建只接受 40/64 位完整 commit object ID，要求 HEAD 精确匹配；如果同名 tag 已存在，它也必须指向该 commit。正式构建不接受候选替代语义：它要求 `refs/tags/v0.1.0` 存在并精确指向 HEAD。两种模式都要求干净工作树并拒绝覆盖不同内容的既有资产。GitHub Actions 的 pre-tag candidate 使用 `--source-commit "$GITHUB_SHA"`。
+Release 构建要求完整、非 shallow、非 partial/promisor、无 reachable missing object 的 Git checkout 和全部 tags。候选构建只接受 40/64 位完整 commit object ID，要求 HEAD 精确匹配；如果 `v$VERSION` 已存在，它也必须指向该 commit，否则只允许验证 builder 明确拒绝，不能生成同版本资产。候选与正式模式都会以禁用交互提示和有限超时对账每个已配置 remote 的同名 tag；任一 remote 不可达、需要认证、缺少正式 tag 或与本地 tag/候选 commit 不一致时均 fail closed。正式构建要求 annotated tag、VERSION、HEAD 和 peeled SHA 指向同一 commit。两种模式都要求干净工作树并拒绝覆盖不同内容的既有资产。Tag 驱动 workflow 会先复用全部阻断测试，再从仓库外构建两次、逐资产比较、验证 `SHA256SUMS`，把资产上传到 draft Release，对账 GitHub asset digest 后才发布。`refs/tags/v*` 的禁止更新、删除及未授权创建必须由 GitHub tag ruleset 另行保护；workflow 不能替代仓库规则。
 
-当前测试集为 300+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
+当前测试集为 400+ 项，覆盖提示词一致性、CLI、目录发现、多目录 durable journal/recovery、pending/partial snapshot/cleanup marker、权限、Unicode、symlink、hooks、TOML、manifest/uninstall、Prompt Bank、真实进程争用和 Release 资产可重复构建。
 
 ### 当前限制
 
 - 单文件 CLI，不提供 `pip install` 或自动更新；
-- Windows 为 experimental；
-- Python 3.8 仅保留 legacy compatibility；
+- Windows v0.1.0 fresh deployment known-bad；v0.1.1 fresh deployment 以 `EXPLICIT_BETA` 开放并显示 CLI 警告，但不宣称正式支持，P1/P2 边界继续适用；
+- Python 3.9 仅保留 compatibility 测试；
 - Live Prompt Bank 不进入 PR gate；
 - `main` / `Unreleased` 是开发状态，不等于正式 Release；
 - 备份和卸载归档不会自动清理。
@@ -434,8 +461,12 @@ codex-keysmith/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
-│   └── workflows/tests.yml
-├── docs/hooks-transactions.md
+│   └── workflows/
+│       ├── release.yml
+│       └── tests.yml
+├── docs/
+│   ├── releases/v0.1.1.md
+│   └── hooks-transactions.md
 ├── examples/gpt-unrestricted.md
 ├── scripts/
 │   ├── build_release.py
@@ -448,7 +479,9 @@ codex-keysmith/
 │   ├── test_prompt_bank_regression.py
 │   ├── test_recovery.py
 │   ├── test_release_artifacts.py
-│   └── test_uninstall.py
+│   ├── test_uninstall.py
+│   ├── test_uninstall_recovery.py
+│   └── test_windows_filesystem.py
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
@@ -469,11 +502,18 @@ codex-keysmith/
 
 ### Positioning
 
-`codex-keysmith` v0.1.0 is a zero-runtime-dependency, single-file Python CLI. It deploys the bundled or a custom Markdown instruction into an existing Codex configuration directory, conservatively updates the top-level `model_instructions_file`, isolates active hooks by default, and records an ownership manifest for layered uninstall. Before its first mutation, deployment also publishes a durable transaction journal so an interruption such as `SIGKILL` can be inspected and restored through explicit `--recover`.
+`codex-keysmith` v0.1.1 is a zero-runtime-dependency, single-file Python CLI. It deploys the bundled or a custom Markdown instruction into an existing Codex configuration directory, conservatively updates the top-level `model_instructions_file`, isolates active hooks by default, and records an ownership manifest for layered uninstall. Before their first mutation, both deployment and uninstall publish a durable transaction journal so an interruption such as `SIGKILL` can be inspected and restored through explicit `--recover`.
 
-Normal deployment, uninstall, and interrupted-deployment recovery are previews unless `--yes` is present. Neither `--status` nor a `--skip-hooks-isolation` plan opens or parses hook content. Status fails closed when it discovers a durable journal or other transaction residue. Use `--recover` for a durable deployment journal; preserve journal-less abnormal residue for manual inspection.
+> This README describes transaction and CI behavior in the v0.1.1 source. Formal release status is established only when that source commit is bound to an immutable tag, a GitHub Release, and assets matching `SHA256SUMS`; a floating branch or embedded version string is not sufficient. The signed `v0.1.0` tag and existing assets remain unchanged and do not contain the v0.1.1 fixes.
 
-### Download, verify, and install v0.1.0
+Normal deployment, uninstall, and interrupted-transaction recovery are previews unless `--yes` is present. Deployment dry-runs disclose collision-aware absolute timestamped backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, exactly recognized legacy prompt, and an existing manifest; an unchanged config explicitly reports no backup. `--status` does not open or parse live active/disabled hook content, but it reads and hashes manifest-referenced backup recovery evidence; a `--skip-hooks-isolation` plan does not read hooks at all. Status reports structural health, deploy readiness, and uninstall readiness separately, and fails closed when it discovers a durable journal or other transaction residue. Use `--recover` for durable deploy/uninstall journals; preserve journal-less abnormal residue for manual inspection.
+
+> [!CAUTION]
+> **Windows v0.1.0 is known-bad**
+>
+> Do not use v0.1.0 for a fresh Windows deployment. It can first fail at `os.utime(..., follow_symlinks=False)` and then encounter a POSIX directory-fd cleanup `PermissionError` that replaces the primary error and leaves an initializing journal the old script cannot recover. Do not edit or delete `.codex-keysmith-transaction-*`, cleanup markers, snapshots, or other evidence. Use a verified v0.1.1 script for `status blocked -> recover preview -> recover --yes -> status ready`. The signed v0.1.0 tag, assets, and `SHA256SUMS` remain immutable historical records and must not be moved, overwritten, or re-uploaded.
+
+### Download, verify, and install published v0.1.0 (macOS / Linux only)
 
 Fixed sources:
 
@@ -503,46 +543,54 @@ python3 codex-instruct-v0.1.0.py --version
 
 Linux users may run `sha256sum --check SHA256SUMS`. After verification, run the standalone script or extract a bundle to inspect the complete documentation, prompt, and transaction reference.
 
-Windows PowerShell (experimental):
+### v0.1.1 source and candidate builds
+
+The source declares `0.1.1` in both `VERSION` and `codex-instruct.py --version`. A checkout without a formal tag and Release must be treated as a candidate and may be validated only from a committed, clean checkout with complete history and tags:
+
+```bash
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+python3 scripts/build_release.py "$RELEASE_TAG" \
+  --source-commit "$SOURCE_COMMIT" \
+  --output-dir dist-candidate
+(cd dist-candidate && shasum -a 256 -c SHA256SUMS)
+```
+
+Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. Assets become a public Release only after the protected-tag workflow completes every blocking test, formal build, checksum, and remote-asset verification gate; local candidate assets are not published artifacts.
+
+Windows: the v0.1.1 source includes native handles, protected ACLs, explicit share modes, stable volume/File ID identity, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.12/3.14 jobs on `windows-2025` cover deploy, rollback, restore-hooks, recover, uninstall, cleanup-marker re-entry, and Issue #1 recovery. Fresh deployment is open under the `EXPLICIT_BETA` policy, and both preview and execution print a prominent beta warning; status, recover, uninstall, and restore-hooks do not emit the deployment warning. This is not a formal Windows support claim. P1 still lacks the per-phase hard-kill matrix, SUBST/8.3/volume aliases, long paths, localized profiles, and additional cleanup double faults, while P2 formal-support and release-documentation boundaries remain open.
+
+For a v0.1.0 Windows journal, verify the v0.1.1 script in an isolated copy, preserve all evidence, and run:
 
 ```powershell
-$base = "https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.0"
-$assets = @(
-  "codex-keysmith-v0.1.0.zip",
-  "codex-keysmith-v0.1.0.tar.gz",
-  "codex-instruct-v0.1.0.py"
-)
-foreach ($name in $assets + @("SHA256SUMS")) {
-  Invoke-WebRequest "$base/$name" -OutFile $name
-}
-$expected = @{}
-Get-Content .\SHA256SUMS | ForEach-Object {
-  $parts = $_ -split '\s+', 2
-  $expected[$parts[1]] = $parts[0].ToLowerInvariant()
-}
-foreach ($name in $assets) {
-  $actual = (Get-FileHash ".\$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($actual -ne $expected[$name]) { throw "SHA-256 mismatch: $name" }
-}
-py -3 .\codex-instruct-v0.1.0.py --version
+py -3.12 .\codex-instruct.py --version
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang en
+py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
 ```
+
+The first status must be blocked, preview must not mutate the journal or managed files, and the final status should be ready. Preserve the journal, marker, snapshots, and claims if any preflight fails.
 
 ### Runtime policy
 
 - Recommended production runtime: Python 3.10–3.14; the CLI uses only the standard library.
-- Python 3.8 remains in legacy compatibility tests, but it is EOL and is not the preferred production runtime.
+- Python 3.9 remains in compatibility tests, but it is EOL and is not the preferred production runtime.
 - Verified Codex CLI: `codex-cli 0.144.1`. Recheck configuration compatibility and live model behavior for other versions.
 - macOS and Linux are the primary support range.
-- Windows is experimental in v0.1.0. Its CI matrix is a non-blocking observation surface and includes an atomic no-replace probe. Failures remain visible in the job results but do not block the macOS/Linux release gate; formal support requires a fully green Windows matrix plus real-environment evidence.
+- Windows P0 recovery and lifecycle coverage is blocking, and fresh deployment is available under `EXPLICIT_BETA` with a CLI warning. This is not a formal support claim; the remaining P1/P2 boundary is listed above.
 
 ### First deployment
 
 Select one directory and request English output explicitly:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --version
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang en
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --dry-run --lang en
+python3 codex-instruct.py --version
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
 ```
 
 Review:
@@ -557,7 +605,7 @@ Review:
 Confirm once:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --yes --lang en
 ```
 
 Close the old task and start a new Codex session after deployment. Codex loads configuration at session start; a running session is not guaranteed to hot-reload instructions or hooks.
@@ -567,7 +615,7 @@ Omitting `--codex-dir` processes every auto-discovered Codex directory. Do this 
 ### Status output
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 ```
 
 Stable field example:
@@ -586,10 +634,12 @@ Stable field example:
     Transaction residue: none
     Legacy migration: none
     Hooks restore: available <restore-command>
+    Structural health: healthy
+    Uninstall readiness: ready
     Deployability: ready
 ```
 
-`--status` changes no files and never reads or parses hook content. It detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`; interrupted journals, other residue, abnormal nodes, and invalid manifests exit 1 and block deployment. Status does not parse `journal.json`; only explicit `--recover` reads recovery content.
+`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence; a missing, abnormal, or drifted required hook backup makes uninstall readiness and deployability `blocked` and exits 1. It also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status does not parse `journal.json`; only explicit `--recover` reads recovery content.
 
 ### Files changed by a confirmed deployment
 
@@ -601,7 +651,7 @@ Stable field example:
 | `<codex-dir>/hooks.json.disabled` | Back up an existing disabled file before publishing new disabled state |
 | `<codex-dir>/gpt5.5-unrestricted.md` | Transactionally archive referenced/historical content; preserve unmanaged custom content |
 | `<codex-dir>/.codex-keysmith-manifest.json` | Record MD/config, actually isolated hooks, actually archived legacy state, backups, and the previous manifest layer |
-| `<codex-dir>/.codex-keysmith-transaction-<id>/` | Holds journal/companion JSON, fixed-name pending files, immutable `intent.json`, and before-state snapshots; cleanup uses terminal phases plus a re-enterable intent marker |
+| `<codex-dir>/.codex-keysmith-transaction-<id>/` | Holds deploy/uninstall journals, fixed-name pending files, immutable `intent.json`, and before-state snapshots; deploy also has a manifest companion, and terminal cleanup is re-enterable |
 | `<codex-dir>/.keysmith-*` | Per-step temporary directories; normal completion removes them, and residue blocks later writes |
 
 Managed targets must be regular files. Symlinks, dangling links, directories, FIFOs, sockets, invalid UTF-8, and unsafe TOML fail closed. Only hooks actually isolated and legacy content actually archived enter manifest ownership; unisolated hooks and unmanaged legacy paths are not verified or changed by uninstall. With `--skip-hooks-isolation`, hook paths are completely outside planning, manifest ownership, and the read/write boundary, but active hooks can continue to affect model behavior.
@@ -633,7 +683,7 @@ flowchart TD
 ### Custom prompt and CLI language
 
 ```bash
-python3 codex-instruct-v0.1.0.py \
+python3 codex-instruct.py \
   --file ./my-prompt.md \
   --name my-rules \
   --codex-dir ~/.codex \
@@ -653,7 +703,7 @@ Replace `--dry-run` with `--yes` after review. External Markdown must be a no-fo
 ### Restore hooks
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --restore-hooks --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang en
 ```
 
 Restore only performs `hooks.json.disabled -> hooks.json`; it does not deploy Markdown, edit config, or parse JSON:
@@ -663,53 +713,54 @@ Restore only performs `hooks.json.disabled -> hooks.json`; it does not deploy Ma
 - abnormal nodes, residue, or concurrent drift exit 1 and preserve evidence;
 - `--restore-hooks` rejects `--yes`, `--file`, `--name`, and `--skip-hooks-isolation`.
 
-### Recover an interrupted deployment
+### Recover an interrupted transaction
 
-`--recover` handles the `.codex-keysmith-transaction-<id>/journal.json` and before-state snapshots created before deployment's first mutation. It is preview-only by default:
+`--recover` handles `.codex-keysmith-transaction-<id>/journal.json` and before-state snapshots created before a deploy or uninstall mutation, dispatching by immutable journal `operation`. It is preview-only by default:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --recover --lang en
 ```
 
 Confirm recovery of the complete multi-directory transaction:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --recover --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --recover --yes --lang en
 ```
 
 - selecting any participant is sufficient; the journal lists and verifies every participant with the same transaction ID;
-- preflight cross-validates the journal, immutable intent, manifest intent, owner, participants, before-state snapshots, and whether every live resource is one of the recorded before or pre-published after states;
+- preflight cross-validates the journal, immutable intent, owner, participants, before-state snapshots, and whether every live resource is one of the recorded before/after states; deployment additionally verifies manifest intent;
 - unknown transaction residue, a tampered external participant, snapshot drift, or concurrent user content fails closed and preserves all journal evidence;
-- execution restores reversed participant order and `manifest -> config -> Markdown -> legacy -> disabled hooks -> active hooks` within each directory;
+- deploy recovery uses reverse participant order and `manifest -> config -> Markdown -> legacy -> disabled hooks -> active hooks`; uninstall recovery reverses manifest/archive, legacy, hooks, Markdown, and config to their before state;
 - every resource, restored previous-manifest ownership, and journal companion passes a final sweep before cleanup; residue requires an exact recorded name, directory identity, member set, and member fingerprints, and cleanup atomically claims the whole directory before deletion;
 - successful deployment persists `committed`; successful recovery persists `recovered` and runs another final sweep. Remaining journals, random cleanup claims, or intent markers can finish cleanup after an interruption between directories or members;
 - multiple transaction IDs are never merged heuristically; select a participant of each transaction separately.
 
-`--recover` is distinct from `--restore-hooks` and `--uninstall`: recover returns to the state before an interrupted deployment, restore-hooks only reactivates disabled hooks, and uninstall removes the newest successfully completed manifest layer.
+`--recover` is distinct from `--restore-hooks` and a new `--uninstall`: recover returns to the state before an interrupted deploy/uninstall, restore-hooks only reactivates disabled hooks, and a new uninstall removes the newest successfully completed manifest layer.
 
 ### Manifest-based layered uninstall
 
 Preview:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en
 ```
 
 Uninstall one managed layer:
 
 ```bash
-python3 codex-instruct-v0.1.0.py --codex-dir ~/.codex --uninstall --yes --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en
 ```
 
 Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`:
 
 - it verifies expected presence plus `size`, `mtime_ns`, and SHA-256 for current MD/config, actually isolated hooks, actually archived legacy state, required backups, and the manifest;
 - drift, missing backups, invalid manifests, or abnormal nodes stop every selected directory before writes;
+- before the first mutation, every participant receives immutable durable intent, exact resource definitions, and before-state snapshots; `--recover` reverses a hard-interrupted uninstall;
 - it restores the previous config and Markdown; hooks, previous disabled hooks, and legacy state are restored only when the manifest records a real isolation/archive action;
 - it atomically archives the current manifest as `.codex-keysmith-manifest.json.uninstalled_<timestamp>`;
 - if the deployment replaced an older manifest, uninstall restores it. Run uninstall again to remove another layer;
-- rollback snapshots are removed only after a final sweep of every participating directory's restored state;
-- an absent manifest is a successful no-op. Pre-v0.1.0 deployments have no automatic ownership record; the first v0.1.0 uninstall returns only to the pre-deployment state recorded by v0.1.0.
+- journals and snapshots are removed through re-enterable cleanup only after every participant passes a final sweep and `committed` is durable;
+- an absent manifest is a successful no-op. Pre-v0.1.0 deployments have no automatic ownership record; the first candidate uninstall returns only to the pre-deployment state recorded by that candidate deployment.
 
 `--restore-hooks` restores hooks only. `--uninstall` restores a complete manifest-owned configuration layer.
 
@@ -747,12 +798,12 @@ For the default bundled `gpt-unrestricted.md` deployment, the tool inspects `gpt
 | `--file`, `-f` | External Markdown; omit it for the bundled prompt |
 | `--name`, `-n` | Destination name without `.md`; default `gpt-unrestricted` |
 | `--dry-run` | Preview deployment without writes |
-| `--yes` | Confirm deployment, manifest-based uninstall, or interrupted-deployment recovery |
+| `--yes` | Confirm deployment, manifest-based uninstall, or interrupted-transaction recovery |
 | `--codex-dir` | Explicitly select one `.codex`; omission uses discovery |
 | `--status` | Read-only status; never parses hook JSON |
 | `--restore-hooks` | Restore disabled hooks only |
 | `--uninstall` | Preview or remove the newest managed layer |
-| `--recover` | Preview or restore an interrupted deployment recorded by a durable journal |
+| `--recover` | Preview or restore an interrupted deploy/uninstall recorded by a durable journal |
 | `--skip-hooks-isolation` | Keep hooks active; requires explicit `--codex-dir` |
 | `--lang auto|zh-CN|en` | Auto-detect or explicitly select CLI output language |
 | `--version` | Print the script version and exit |
@@ -766,13 +817,13 @@ For the default bundled `gpt-unrestricted.md` deployment, the tool inspects `gpt
 ### Transaction boundaries and known limits
 
 - File content is `fsync`ed, publication uses same-volume atomic no-replace renames, and full fingerprints are rechecked at critical stages.
-- Copy-created backups use exclusive no-follow `0600` files; source permissions are applied only after copy and `fsync` complete. Disabled-hook and legacy archives use validated atomic moves.
-- Multi-directory deployment preflights every directory, then persists private `0700` journal directories, `0600` journal/intent/companion JSON, and before-state snapshots before isolating hooks or writing resources. Fixed-name journal and companion pending files can be completed or discarded after interruption.
+- Copy-created backups are created and persisted through the centralized filesystem backend with exclusive no-follow semantics: POSIX starts with `0600` before applying source permissions, while Windows uses a protected ACL and revalidates stable native identity plus the full fingerprint. Disabled-hook and legacy archives use validated atomic moves.
+- Multi-directory deploy/uninstall preflights every directory, then persists private journal directories, journal/intent JSON, and before-state snapshots before resource mutation. POSIX uses `0700`/`0600`; Windows requires a protected DACL granting full access only to the current user and SYSTEM, and never treats POSIX mode bits as Windows permission evidence.
 - Deployment, `--recover`, and uninstall perform a complete final fingerprint sweep across every managed participant before deleting their own recovery evidence.
 - The CLI never follows symlinks and does not use a full TOML editor. Ambiguous, duplicate, namespace-occupying, or unsafe syntax stops the operation.
-- `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first deployment mutation; later status detects it and fails closed until explicit `--recover`.
-- Journal files, journal directories, and journal creation/removal in the Codex directory use directory `fsync` where available. Resource content is file-`fsync`ed, but not every resource rename is followed by parent-directory `fsync`; Windows directory-fsync support also varies.
-- Under normal operating-system and filesystem `fsync` semantics, interrupted deployment is covered once immutable intent is published. Two narrow windows deliberately fail closed for manual inspection: journal-directory `mkdir` before the first intent publish, and per-step `mkdtemp` before its residue record is durable.
+- `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first deploy/uninstall mutation; later status detects it and fails closed until explicit `--recover`.
+- macOS/Linux use file and directory `fsync`. The Windows P0 backend calls `FlushFileBuffers` on managed file/directory handles, uses write-through atomic no-replace/replace renames, and flushes parent directories after create, rename, and verified delete. The per-journal-phase Windows hard-interruption matrix remains P1, so neither this implementation contract nor the `EXPLICIT_BETA` fresh-deployment policy is formal support.
+- Under normal operating-system and filesystem `fsync` semantics, interrupted deploy/uninstall is covered once immutable intent is published. Two narrow windows deliberately fail closed for manual inspection: journal-directory `mkdir` before the first intent publish, and per-step `mkdtemp` before its residue record is durable.
 - Replacements created at the original path after an atomic directory claim are preserved. Journal, intent, companion, manifest, and cleanup-claim evidence protects against accidental drift and ordinary races; it is not cryptographic authentication against coordinated same-user tampering. Such active tampering, extreme power loss, devices that ignore flush, filesystem corruption, and abnormal directory-entry persistence remain outside the provable boundary.
 - `model_instructions_file` is global rather than profile-scoped; hook isolation is whole-file only.
 - No bundled instruction can guarantee identical behavior across models or versions.
@@ -808,28 +859,36 @@ python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
 python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
 python3 -m coverage combine
-python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=80
+python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
-# pre-tag / PR / CI candidate: bind to the full current commit ID
+# pre-tag / PR / CI candidate: full checkout; exact refusal for an existing version conflict
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
-python3 scripts/build_release.py v0.1.0 --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
-(cd dist-candidate && sha256sum --check SHA256SUMS)
+TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+if [ -n "$TAG_COMMIT" ] && [ "$TAG_COMMIT" != "$SOURCE_COMMIT" ]; then
+  if REFUSAL="$(python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate 2>&1)"; then exit 1; fi
+  printf '%s\n' "$REFUSAL" | grep -F "release tag $RELEASE_TAG already points to $TAG_COMMIT, not candidate $SOURCE_COMMIT"
+  test ! -e dist-candidate
+else
+  python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
+  (cd dist-candidate && sha256sum --check SHA256SUMS)
+fi
 
-# formal Release: the tag must exist and resolve to HEAD; omit --source-commit
-python3 scripts/build_release.py v0.1.0 --output-dir dist
-(cd dist && sha256sum --check SHA256SUMS)
+# formal Release only after separate approval creates the immutable tag; do not run for a candidate
+# python3 scripts/build_release.py "$RELEASE_TAG" --output-dir dist
+# (cd dist && sha256sum --check SHA256SUMS)
 git diff --check
 ```
 
-Candidate builds accept only a full 40/64-character commit object ID and require HEAD to match it exactly. If the same tag already exists, it must point at that commit. Formal builds do not use candidate semantics: `refs/tags/v0.1.0` must exist and resolve exactly to HEAD. Both modes require a clean worktree and refuse to overwrite an existing asset with different content. GitHub Actions uses `--source-commit "$GITHUB_SHA"` for the pre-tag candidate build.
+Release builds require a complete, non-shallow, non-partial/promisor Git checkout with all tags and no reachable missing objects. Candidate builds accept only a full 40/64-character commit object ID and require HEAD to match it exactly. If `v$VERSION` already exists, it must point at that commit; otherwise CI may only verify that the builder refuses and must not generate same-version assets. Candidate and formal modes reconcile the same tag on every configured remote with interactive prompting disabled and a finite timeout. An unreachable or authentication-gated remote, a missing formal tag, or any disagreement with the local tag/candidate commit fails closed. Formal builds bind the annotated tag, VERSION, HEAD, and peeled SHA to one commit. Both modes require a clean worktree and refuse to overwrite an existing asset with different content. The tag-driven workflow first reuses every blocking test job, builds twice outside the repository, compares each asset, verifies `SHA256SUMS`, uploads a draft Release, checks GitHub asset digests, and only then publishes it. A separate GitHub tag ruleset must protect `refs/tags/v*` from update, deletion, and unauthorized creation; the workflow cannot replace repository rules.
 
-The current suite contains 300+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
+The current suite contains 400+ tests covering prompt parity, CLI behavior, discovery, multi-directory durable journal/recovery, pending files, partial snapshots, cleanup markers, permissions, Unicode, symlinks, hooks, TOML, manifest/uninstall, prompt-bank adapters, real-process contention, and reproducible release assets.
 
 ### Current limits
 
 - Single-file CLI; no `pip install` or automatic updater.
-- Windows is experimental.
-- Python 3.8 is legacy compatibility only.
+- Windows v0.1.0 fresh deployment is known-bad; v0.1.1 fresh deployment is open under `EXPLICIT_BETA` with a CLI warning, without a formal support claim, and the P1/P2 boundaries remain applicable.
+- Python 3.9 is compatibility-test only.
 - Live prompt-bank calls are not a PR gate.
 - `main` / `Unreleased` is development state, not a formal Release.
 - Backups and uninstall archives are not automatically cleaned.
@@ -841,8 +900,12 @@ codex-keysmith/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
-│   └── workflows/tests.yml
-├── docs/hooks-transactions.md
+│   └── workflows/
+│       ├── release.yml
+│       └── tests.yml
+├── docs/
+│   ├── releases/v0.1.1.md
+│   └── hooks-transactions.md
 ├── examples/gpt-unrestricted.md
 ├── scripts/
 │   ├── build_release.py
@@ -855,7 +918,9 @@ codex-keysmith/
 │   ├── test_prompt_bank_regression.py
 │   ├── test_recovery.py
 │   ├── test_release_artifacts.py
-│   └── test_uninstall.py
+│   ├── test_uninstall.py
+│   ├── test_uninstall_recovery.py
+│   └── test_windows_filesystem.py
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md

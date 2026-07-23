@@ -21,7 +21,7 @@ def _make_symlink(link, target):
 
 def test_external_markdown_accepts_unicode_path_and_content(tmp_path):
     source = tmp_path / "规则-猫.md"
-    source.write_text("第一行\n🐈 café\n", encoding="utf-8")
+    source.write_bytes("第一行\n🐈 café\n".encode("utf-8"))
 
     assert codex_instruct.load_md_content(str(source)) == "第一行\n🐈 café\n"
 
