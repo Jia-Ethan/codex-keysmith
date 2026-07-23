@@ -7,6 +7,15 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      source_ref:
+        description: Exact ref to check out for a tag-release recovery run.
+        required: false
+        type: string
+      expected_commit:
+        description: Full commit SHA that every blocking job must execute.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,11 +44,21 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
 
       - name: Install test dependency for Python 3.9
         if: matrix.python-version == '3.9'
@@ -72,11 +91,21 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
 
       - name: Install test dependency
         run: python -m pip install "pytest==8.4.2"
@@ -111,6 +140,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -118,6 +148,15 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
 
       - name: Install quality dependencies
         run: python -m pip install -r requirements-quality.txt
@@ -143,6 +182,8 @@ jobs:
         run: python scripts/run_prompt_bank_regression.py --validate-only
 
       - name: Build or reject release candidate assets
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
         run: |
           release_tag="v$(tr -d '\r\n' < VERSION)"
           source_commit="$(git rev-parse --verify 'HEAD^{commit}')"
@@ -151,8 +192,8 @@ jobs:
             echo "Release verification requires a complete checkout with tags." >&2
             exit 1
           fi
-          if [ "$source_commit" != "$GITHUB_SHA" ]; then
-            echo "Checked-out HEAD does not match GITHUB_SHA." >&2
+          if [ "$source_commit" != "$EXPECTED_COMMIT" ]; then
+            echo "Checked-out HEAD does not match the requested source commit." >&2
             exit 1
           fi
           tag_ref="refs/tags/${release_tag}"
