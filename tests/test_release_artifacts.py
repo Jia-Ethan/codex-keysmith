@@ -869,7 +869,7 @@ def test_release_creation_validator_binds_numeric_id_and_upload_url(
     tag = TAG
     commit = "d8335f99a557403f3ef919c8601502e5a8362414"
     notes = tmp_path / "notes.md"
-    notes.write_text("immutable release notes\n", encoding="utf-8")
+    notes.write_bytes(b"immutable release notes\n")
     expected_api = f"https://api.github.com/repos/{repo}/releases/{release_id}"
     expected_upload = (
         f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets"
@@ -884,7 +884,7 @@ def test_release_creation_validator_binds_numeric_id_and_upload_url(
         "name": f"codex-keysmith {tag}",
         "draft": True,
         "prerelease": False,
-        "body": notes.read_text(encoding="utf-8"),
+        "body": notes.read_bytes().decode("utf-8"),
         "assets": [],
     }
     created = tmp_path / "created.json"
