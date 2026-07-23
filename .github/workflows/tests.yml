@@ -88,6 +88,8 @@ jobs:
         run: >-
           python -m pytest -p no:cacheprovider -q
           tests/test_windows_filesystem.py::test_issue_1_v010_initializing_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_inherited_acl_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready
           tests/test_windows_filesystem.py::test_empty_private_initializing_journal_recovers_to_ready
           tests/test_codex_instruct.py::test_deploy_yes_isolates_hooks
           tests/test_codex_instruct.py::test_deploy_rolls_back_and_reraises_keyboard_interrupt

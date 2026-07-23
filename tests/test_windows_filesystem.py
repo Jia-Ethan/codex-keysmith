@@ -1,3 +1,4 @@
+import ctypes
 import hashlib
 import importlib.util
 import inspect
@@ -6,11 +7,13 @@ import os
 import subprocess
 import sys
 import types
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex-instruct.py"
+WINDOWS_INHERITED_ACE = 0x10
 spec = importlib.util.spec_from_file_location("codex_instruct_windows_fs", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = codex_instruct
@@ -41,13 +44,94 @@ def _make_windows_junction(link, target):
     assert created.returncode == 0, created.stdout + created.stderr
 
 
-def _create_v010_issue_1_fixture(codex_dir, *, private):
+def _apply_windows_recovery_acl(path, sddl):
+    backend = codex_instruct._FILESYSTEM
+    descriptor = wintypes.LPVOID()
+    descriptor_size = wintypes.DWORD()
+    if not backend.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        backend._SDDL_REVISION_1,
+        ctypes.byref(descriptor),
+        ctypes.byref(descriptor_size),
+    ):
+        backend._raise_last_error("cannot build inherited recovery fixture ACL", path)
+
+    handle = 0
+    try:
+        dacl_present = wintypes.BOOL()
+        dacl_defaulted = wintypes.BOOL()
+        dacl = wintypes.LPVOID()
+        if not backend.advapi32.GetSecurityDescriptorDacl(
+            descriptor,
+            ctypes.byref(dacl_present),
+            ctypes.byref(dacl),
+            ctypes.byref(dacl_defaulted),
+        ):
+            backend._raise_last_error("cannot read inherited recovery fixture ACL", path)
+        assert dacl_present.value and dacl.value
+        handle = backend._open_handle(
+            path,
+            backend._READ_CONTROL
+            | backend._WRITE_DAC
+            | backend._FILE_READ_ATTRIBUTES,
+        )
+        backend._validate_handle_type(handle, path, is_directory=True)
+        backend._validate_ntfs(handle, path)
+        security_error = backend.advapi32.SetSecurityInfo(
+            handle,
+            backend._SE_FILE_OBJECT,
+            backend._DACL_SECURITY_INFORMATION
+            | backend._PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            dacl,
+            None,
+        )
+        if security_error:
+            raise OSError(
+                security_error,
+                "cannot apply inherited recovery fixture ACL: {}: {}".format(
+                    path,
+                    ctypes.FormatError(security_error).strip(),
+                ),
+            )
+    finally:
+        if handle:
+            backend.kernel32.CloseHandle(handle)
+        backend.kernel32.LocalFree(descriptor)
+
+
+def _apply_windows_inheritable_recovery_acl(path):
+    backend = codex_instruct._FILESYSTEM
+    _apply_windows_recovery_acl(
+        path,
+        "D:P(A;OICI;FA;;;{})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)".format(
+            backend._current_sid
+        ),
+    )
+
+
+def _read_windows_acl(path):
+    backend = codex_instruct._FILESYSTEM
+    handle = backend._open_handle(
+        path,
+        backend._READ_CONTROL | backend._FILE_READ_ATTRIBUTES,
+    )
+    try:
+        return backend._handle_acl(handle, path)
+    finally:
+        backend.kernel32.CloseHandle(handle)
+
+
+def _create_v010_issue_1_fixture(codex_dir, *, private, journal_sddl=None):
     transaction_id = "d" * 32
     journal_dir = codex_dir / f"{codex_instruct.JOURNAL_PREFIX}{transaction_id}"
     if private:
         codex_instruct._FILESYSTEM.create_private_directory(journal_dir)
     else:
-        journal_dir.mkdir()
+        journal_dir.mkdir(mode=0o777)
+        if journal_sddl is not None:
+            _apply_windows_recovery_acl(journal_dir, journal_sddl)
     plan = codex_instruct.inspect_directory(codex_dir)
     config_before = codex_instruct._portable_fingerprint(plan.config_fingerprint)
     directories = {
@@ -367,21 +451,20 @@ def test_issue_1_v010_initializing_fixture_recovers_to_ready(tmp_path):
 def test_issue_1_v010_inherited_acl_fixture_recovers_to_ready(tmp_path):
     codex_dir = _make_codex_dir(tmp_path, "v0.1.0 inherited ACL Issue 1")
     backend = codex_instruct._FILESYSTEM
-    configured = subprocess.run(
-        [
-            "icacls",
-            str(codex_dir),
-            "/inheritance:r",
-            "/grant:r",
-            f"*{backend._current_sid}:(OI)(CI)(F)",
-            "*S-1-5-18:(OI)(CI)(F)",
-            "*S-1-5-32-544:(OI)(CI)(F)",
-        ],
-        text=True,
-        capture_output=True,
-    )
-    assert configured.returncode == 0, configured.stdout + configured.stderr
+    _apply_windows_inheritable_recovery_acl(codex_dir)
     journal_dir = _create_v010_issue_1_fixture(codex_dir, private=False)
+    protected, owner_sid, principals = _read_windows_acl(journal_dir)
+    assert not protected
+    assert owner_sid == backend._current_sid
+    assert set(principals) == {
+        backend._current_sid,
+        "S-1-5-18",
+        "S-1-5-32-544",
+    }
+    assert all(
+        mask == backend._FILE_ALL_ACCESS and flags & WINDOWS_INHERITED_ACE
+        for mask, flags in principals.values()
+    )
     with pytest.raises(codex_instruct.HooksConflict, match="protected"):
         backend.verify_private_security(journal_dir, is_directory=True)
     backend.verify_recovery_directory_security(journal_dir)
@@ -411,6 +494,94 @@ def test_issue_1_v010_inherited_acl_fixture_recovers_to_ready(tmp_path):
     ready = _run("--codex-dir", codex_dir, "--status")
     assert ready.returncode == 0, ready.stdout + ready.stderr
     assert "deployability: ready" in ready.stdout.lower()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows v0.1.0 CPython ACL fixture")
+def test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path, "v0.1.0 CPython 0700 Issue 1")
+    backend = codex_instruct._FILESYSTEM
+    journal_dir = _create_v010_issue_1_fixture(
+        codex_dir,
+        private=False,
+        journal_sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)",
+    )
+
+    protected, owner_sid, principals = _read_windows_acl(journal_dir)
+    assert protected
+    assert owner_sid == backend._current_sid
+    assert set(principals) == {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}
+    assert all(
+        mask == backend._FILE_ALL_ACCESS for mask, _flags in principals.values()
+    )
+    for filename in (codex_instruct.INTENT_FILENAME, codex_instruct.JOURNAL_FILENAME):
+        member_protected, member_owner, member_principals = _read_windows_acl(
+            journal_dir / filename
+        )
+        assert not member_protected
+        assert member_owner == backend._current_sid
+        assert set(member_principals) == set(principals)
+        assert all(
+            mask == backend._FILE_ALL_ACCESS and flags & WINDOWS_INHERITED_ACE
+            for mask, flags in member_principals.values()
+        )
+
+    backend.verify_recovery_directory_security(journal_dir)
+    blocked = _run("--codex-dir", codex_dir, "--status")
+    assert blocked.returncode == 1
+    assert "deployability: blocked" in blocked.stdout.lower()
+
+    before_preview = {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
+    }
+    preview = _run("--codex-dir", codex_dir, "--recover")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert {
+        str(path.relative_to(codex_dir)): (
+            "directory" if path.is_dir() else path.read_bytes()
+        )
+        for path in codex_dir.rglob("*")
+    } == before_preview
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert not journal_dir.exists()
+    ready = _run("--codex-dir", codex_dir, "--status")
+    assert ready.returncode == 0, ready.stdout + ready.stderr
+    assert "deployability: ready" in ready.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    ("owner_sid", "principals", "allowed"),
+    [
+        ("CURRENT", {"CURRENT"}, True),
+        ("CURRENT", {"CURRENT", "S-1-5-18", "S-1-5-32-544"}, True),
+        ("CURRENT", {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}, True),
+        ("FOREIGN", {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}, False),
+        (
+            "CURRENT",
+            {"S-1-3-4", "S-1-5-18", "S-1-5-32-544", "S-1-1-0"},
+            False,
+        ),
+        ("CURRENT", {"S-1-5-18", "S-1-5-32-544"}, False),
+        (
+            "CURRENT",
+            {"CURRENT", "S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
+            False,
+        ),
+    ],
+)
+def test_windows_recovery_acl_principal_shapes(owner_sid, principals, allowed):
+    assert (
+        codex_instruct._WindowsFilesystemBackend._recovery_acl_principals_allowed(
+            "CURRENT",
+            owner_sid,
+            principals,
+        )
+        is allowed
+    )
 
 
 def test_operation_directories_are_identity_deduplicated_and_stably_sorted(tmp_path):
