@@ -123,6 +123,14 @@ def _read_windows_acl(path):
         backend.kernel32.CloseHandle(handle)
 
 
+def _trusted_windows_owner_sids():
+    backend = codex_instruct._FILESYSTEM
+    owners = {backend._current_sid}
+    if backend._current_is_administrator:
+        owners.add("S-1-5-32-544")
+    return owners
+
+
 def _create_v010_issue_1_fixture(codex_dir, *, private, journal_sddl=None):
     transaction_id = "d" * 32
     journal_dir = codex_dir / f"{codex_instruct.JOURNAL_PREFIX}{transaction_id}"
@@ -455,7 +463,7 @@ def test_issue_1_v010_inherited_acl_fixture_recovers_to_ready(tmp_path):
     journal_dir = _create_v010_issue_1_fixture(codex_dir, private=False)
     protected, owner_sid, principals = _read_windows_acl(journal_dir)
     assert not protected
-    assert owner_sid == backend._current_sid
+    assert owner_sid in _trusted_windows_owner_sids()
     assert set(principals) == {
         backend._current_sid,
         "S-1-5-18",
@@ -508,7 +516,7 @@ def test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready(tmp_path):
 
     protected, owner_sid, principals = _read_windows_acl(journal_dir)
     assert protected
-    assert owner_sid == backend._current_sid
+    assert owner_sid in _trusted_windows_owner_sids()
     assert set(principals) == {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}
     assert all(
         mask == backend._FILE_ALL_ACCESS for mask, _flags in principals.values()
@@ -518,7 +526,7 @@ def test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready(tmp_path):
             journal_dir / filename
         )
         assert not member_protected
-        assert member_owner == backend._current_sid
+        assert member_owner in _trusted_windows_owner_sids()
         assert set(member_principals) == set(principals)
         assert all(
             mask == backend._FILE_ALL_ACCESS and flags & WINDOWS_INHERITED_ACE
@@ -554,31 +562,63 @@ def test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("owner_sid", "principals", "allowed"),
+    ("owner_sid", "principals", "current_is_administrator", "allowed"),
     [
-        ("CURRENT", {"CURRENT"}, True),
-        ("CURRENT", {"CURRENT", "S-1-5-18", "S-1-5-32-544"}, True),
-        ("CURRENT", {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}, True),
-        ("FOREIGN", {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"}, False),
+        ("CURRENT", {"CURRENT"}, False, True),
+        ("CURRENT", {"CURRENT", "S-1-5-18", "S-1-5-32-544"}, False, True),
+        ("S-1-5-32-544", {"CURRENT", "S-1-5-18"}, True, True),
+        ("S-1-5-32-544", {"CURRENT", "S-1-5-18"}, False, False),
+        (
+            "CURRENT",
+            {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
+            False,
+            True,
+        ),
+        (
+            "S-1-5-32-544",
+            {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
+            True,
+            True,
+        ),
+        (
+            "S-1-5-32-544",
+            {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
+            False,
+            False,
+        ),
+        (
+            "FOREIGN",
+            {"S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
+            True,
+            False,
+        ),
         (
             "CURRENT",
             {"S-1-3-4", "S-1-5-18", "S-1-5-32-544", "S-1-1-0"},
             False,
+            False,
         ),
-        ("CURRENT", {"S-1-5-18", "S-1-5-32-544"}, False),
+        ("CURRENT", {"S-1-5-18", "S-1-5-32-544"}, False, False),
         (
             "CURRENT",
             {"CURRENT", "S-1-3-4", "S-1-5-18", "S-1-5-32-544"},
             False,
+            False,
         ),
     ],
 )
-def test_windows_recovery_acl_principal_shapes(owner_sid, principals, allowed):
+def test_windows_recovery_acl_principal_shapes(
+    owner_sid,
+    principals,
+    current_is_administrator,
+    allowed,
+):
     assert (
         codex_instruct._WindowsFilesystemBackend._recovery_acl_principals_allowed(
             "CURRENT",
             owner_sid,
             principals,
+            current_is_administrator,
         )
         is allowed
     )

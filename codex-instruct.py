@@ -1386,6 +1386,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _DELETE = 0x00010000
     _READ_CONTROL = 0x00020000
     _WRITE_DAC = 0x00040000
+    _WRITE_OWNER = 0x00080000
     _FILE_LIST_DIRECTORY = 0x0001
     _FILE_TRAVERSE = 0x0020
     _FILE_READ_ATTRIBUTES = 0x0080
@@ -1504,6 +1505,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         self.msvcrt = __import__("msvcrt")
         self._configure_prototypes()
         self._current_sid = self._current_user_sid_string()
+        self._current_is_administrator = self._current_token_has_sid("S-1-5-32-544")
         self._security_descriptor = self._build_private_security_descriptor()
         self._security_attributes = self._SECURITY_ATTRIBUTES(
             ctypes.sizeof(self._SECURITY_ATTRIBUTES),
@@ -1613,6 +1615,17 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             ctypes.POINTER(wintypes.LPWSTR),
         ]
         self.advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+        self.advapi32.ConvertStringSidToSidW.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.POINTER(wintypes.LPVOID),
+        ]
+        self.advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+        self.advapi32.CheckTokenMembership.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        self.advapi32.CheckTokenMembership.restype = wintypes.BOOL
         self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
             wintypes.LPCWSTR,
             wintypes.DWORD,
@@ -1917,7 +1930,10 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     def _build_private_security_descriptor(self) -> int:
         descriptor = wintypes.LPVOID()
         size = wintypes.DWORD()
-        sddl = f"D:P(A;;FA;;;{self._current_sid})(A;;FA;;;SY)"
+        sddl = (
+            f"O:{self._current_sid}"
+            f"D:P(A;;FA;;;{self._current_sid})(A;;FA;;;SY)"
+        )
         if not self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl,
             self._SDDL_REVISION_1,
@@ -1926,6 +1942,25 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         ):
             self._raise_last_error("cannot build private ACL")
         return int(descriptor.value)
+
+    def _current_token_has_sid(self, sid: str) -> bool:
+        sid_pointer = wintypes.LPVOID()
+        if not self.advapi32.ConvertStringSidToSidW(
+            sid,
+            ctypes.byref(sid_pointer),
+        ):
+            self._raise_last_error("cannot build Windows token membership SID")
+        try:
+            is_member = wintypes.BOOL()
+            if not self.advapi32.CheckTokenMembership(
+                None,
+                sid_pointer,
+                ctypes.byref(is_member),
+            ):
+                self._raise_last_error("cannot verify Windows token membership")
+            return bool(is_member.value)
+        finally:
+            self.kernel32.LocalFree(sid_pointer)
 
     def create_private_directory(self, path: Path) -> None:
         if not self.kernel32.CreateDirectoryW(
@@ -2038,6 +2073,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             | self._GENERIC_WRITE
             | self._READ_CONTROL
             | self._WRITE_DAC
+            | self._WRITE_OWNER
             | self._FILE_READ_ATTRIBUTES,
             share_mode=self._FILE_SHARE_READ,
         )
@@ -2073,12 +2109,23 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
                 self._raise_last_error("cannot read private DACL", path)
             if not dacl_present.value or not dacl.value:
                 raise HooksConflict(f"private ACL has no DACL: {path}")
+            owner_defaulted = wintypes.BOOL()
+            owner = wintypes.LPVOID()
+            if not self.advapi32.GetSecurityDescriptorOwner(
+                wintypes.LPVOID(self._security_descriptor),
+                ctypes.byref(owner),
+                ctypes.byref(owner_defaulted),
+            ):
+                self._raise_last_error("cannot read private ACL owner", path)
+            if not owner.value:
+                raise HooksConflict(f"private ACL has no owner: {path}")
             security_error = self.advapi32.SetSecurityInfo(
                 raw_handle,
                 self._SE_FILE_OBJECT,
-                self._DACL_SECURITY_INFORMATION
+                self._OWNER_SECURITY_INFORMATION
+                | self._DACL_SECURITY_INFORMATION
                 | self._PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
+                owner,
                 None,
                 dacl,
                 None,
@@ -2215,11 +2262,15 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         current_sid: str,
         owner_sid: str,
         principals: set,
+        current_is_administrator: bool,
     ) -> bool:
-        if owner_sid != current_sid:
-            return False
         system_sid = "S-1-5-18"
         administrators_sid = "S-1-5-32-544"
+        trusted_owners = {current_sid}
+        if current_is_administrator:
+            trusted_owners.add(administrators_sid)
+        if owner_sid not in trusted_owners:
+            return False
         legacy_allowed = {current_sid, system_sid, administrators_sid}
         if current_sid in principals and principals <= legacy_allowed:
             return True
@@ -2246,6 +2297,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             self._current_sid,
             owner_sid,
             set(principals),
+            self._current_is_administrator,
         ):
             raise HooksConflict(f"recovery ACL grants unexpected access: {path}")
         if any(
