@@ -1409,11 +1409,13 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _FILE_DISPOSITION_FLAG_DELETE = 0x00000001
     _FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x00000002
     _FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000010
+    _OWNER_SECURITY_INFORMATION = 0x00000001
     _DACL_SECURITY_INFORMATION = 0x00000004
     _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
     _SE_FILE_OBJECT = 1
     _ACCESS_ALLOWED_ACE_TYPE = 0
     _FILE_ALL_ACCESS = 0x001F01FF
+    _OWNER_RIGHTS_SID = "S-1-3-4"
     _SE_DACL_PROTECTED = 0x1000
     _TOKEN_QUERY = 0x0008
     _TOKEN_USER = 1
@@ -1650,6 +1652,12 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
             ctypes.POINTER(wintypes.DWORD),
         ]
         self.advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        self.advapi32.GetSecurityDescriptorOwner.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        self.advapi32.GetSecurityDescriptorOwner.restype = wintypes.BOOL
         self.advapi32.GetSecurityDescriptorDacl.argtypes = [
             wintypes.LPVOID,
             ctypes.POINTER(wintypes.BOOL),
@@ -2103,11 +2111,14 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         self,
         handle: int,
         path: Path,
-    ) -> Tuple[bool, Dict[str, Tuple[int, int]]]:
+    ) -> Tuple[bool, str, Dict[str, Tuple[int, int]]]:
+        security_information = (
+            self._OWNER_SECURITY_INFORMATION | self._DACL_SECURITY_INFORMATION
+        )
         needed = wintypes.DWORD()
         self.advapi32.GetKernelObjectSecurity(
             handle,
-            self._DACL_SECURITY_INFORMATION,
+            security_information,
             None,
             0,
             ctypes.byref(needed),
@@ -2117,7 +2128,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         descriptor = ctypes.create_string_buffer(needed.value)
         if not self.advapi32.GetKernelObjectSecurity(
             handle,
-            self._DACL_SECURITY_INFORMATION,
+            security_information,
             descriptor,
             len(descriptor),
             ctypes.byref(needed),
@@ -2132,6 +2143,17 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         ):
             self._raise_last_error("cannot inspect private ACL control", path)
         protected = bool(control.value & self._SE_DACL_PROTECTED)
+        owner_defaulted = wintypes.BOOL()
+        owner_pointer = wintypes.LPVOID()
+        if not self.advapi32.GetSecurityDescriptorOwner(
+            descriptor,
+            ctypes.byref(owner_pointer),
+            ctypes.byref(owner_defaulted),
+        ):
+            self._raise_last_error("cannot inspect private ACL owner", path)
+        if not owner_pointer.value:
+            raise HooksConflict(f"private ACL has no owner: {path}")
+        owner_sid = self._sid_string(owner_pointer, path)
         dacl_present = wintypes.BOOL()
         dacl_defaulted = wintypes.BOOL()
         dacl = wintypes.LPVOID()
@@ -2169,36 +2191,62 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
                 + ctypes.sizeof(self._ACE_HEADER)
                 + ctypes.sizeof(wintypes.DWORD)
             )
-            sid_string = wintypes.LPWSTR()
-            if not self.advapi32.ConvertSidToStringSidW(
-                sid_pointer,
-                ctypes.byref(sid_string),
-            ):
-                self._raise_last_error("cannot describe private ACL principal", path)
-            try:
-                sid = sid_string.value
-            finally:
-                self.kernel32.LocalFree(sid_string)
+            sid = self._sid_string(sid_pointer, path)
             if sid in principals:
                 raise HooksConflict(f"private ACL repeats a principal: {path}")
             principals[sid] = (int(mask), int(header.AceFlags))
-        return protected, principals
+        return protected, owner_sid, principals
+
+    def _sid_string(self, sid_pointer: wintypes.LPVOID, path: Path) -> str:
+        sid_string = wintypes.LPWSTR()
+        if not self.advapi32.ConvertSidToStringSidW(
+            sid_pointer,
+            ctypes.byref(sid_string),
+        ):
+            self._raise_last_error("cannot describe private ACL principal", path)
+        try:
+            return sid_string.value
+        finally:
+            self.kernel32.LocalFree(sid_string)
+
+    @classmethod
+    def _recovery_acl_principals_allowed(
+        cls,
+        current_sid: str,
+        owner_sid: str,
+        principals: set,
+    ) -> bool:
+        if owner_sid != current_sid:
+            return False
+        system_sid = "S-1-5-18"
+        administrators_sid = "S-1-5-32-544"
+        legacy_allowed = {current_sid, system_sid, administrators_sid}
+        if current_sid in principals and principals <= legacy_allowed:
+            return True
+        return principals == {
+            cls._OWNER_RIGHTS_SID,
+            system_sid,
+            administrators_sid,
+        }
 
     def _verify_handle_private_security(self, handle: int, path: Path) -> None:
-        protected, principals = self._handle_acl(handle, path)
+        protected, owner_sid, principals = self._handle_acl(handle, path)
         if not protected:
             raise HooksConflict(f"private ACL is not protected: {path}")
         expected = {self._current_sid, "S-1-5-18"}
-        if set(principals) != expected or any(
+        if owner_sid != self._current_sid or set(principals) != expected or any(
             mask != self._FILE_ALL_ACCESS or flags != 0
             for mask, flags in principals.values()
         ):
             raise HooksConflict(f"private ACL grants unexpected access: {path}")
 
     def _verify_handle_recovery_security(self, handle: int, path: Path) -> None:
-        _protected, principals = self._handle_acl(handle, path)
-        allowed = {self._current_sid, "S-1-5-18", "S-1-5-32-544"}
-        if self._current_sid not in principals or set(principals) - allowed:
+        _protected, owner_sid, principals = self._handle_acl(handle, path)
+        if not self._recovery_acl_principals_allowed(
+            self._current_sid,
+            owner_sid,
+            set(principals),
+        ):
             raise HooksConflict(f"recovery ACL grants unexpected access: {path}")
         if any(
             mask != self._FILE_ALL_ACCESS

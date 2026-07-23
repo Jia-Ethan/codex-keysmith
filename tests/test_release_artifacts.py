@@ -77,6 +77,8 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
         path.write_bytes(data)
         source_bytes[relative_path] = data
 
+    (repo / ".gitattributes").write_bytes((REPO_ROOT / ".gitattributes").read_bytes())
+
     _run(["git", "init", "-q"], repo)
     _run(["git", "config", "user.name", "Release Test"], repo)
     _run(["git", "config", "user.email", "release-test@example.invalid"], repo)
@@ -540,6 +542,33 @@ def test_formal_build_reconciles_tag_with_configured_remote(
     _run(["git", "clone", "-q", source.as_uri(), str(clone)], tmp_path)
 
     release_builder.build_release(TAG, clone, tmp_path / "assets")
+
+
+def test_release_fixture_pins_lf_checkout_under_windows_autocrlf(
+    release_builder, tmp_path
+):
+    source, source_bytes = _make_release_repo(
+        tmp_path / "source-lf",
+        release_builder,
+    )
+    clone = tmp_path / "clone-lf"
+    _run(
+        [
+            "git",
+            "-c",
+            "core.autocrlf=true",
+            "clone",
+            "-q",
+            source.as_uri(),
+            str(clone),
+        ],
+        tmp_path,
+    )
+
+    for relative_path, expected in source_bytes.items():
+        assert (clone / relative_path).read_bytes() == expected
+
+    release_builder.build_release(TAG, clone, tmp_path / "assets-lf")
 
 
 def test_formal_build_rejects_local_tag_missing_from_remote(
