@@ -1,9 +1,11 @@
 import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tarfile
+import textwrap
 import zipfile
 from pathlib import Path
 
@@ -737,6 +739,11 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" in workflow
     assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in workflow
     assert "persist-credentials: false" in workflow
+    assert "source_ref:" in workflow
+    assert "expected_commit:" in workflow
+    assert workflow.count("ref: ${{ inputs.source_ref || github.sha }}") == 3
+    assert workflow.count("name: Bind checked-out source") == 3
+    assert "EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}" in workflow
     assert "actions/checkout@v" not in workflow
     assert "actions/setup-python@v" not in workflow
     assert '"pytest==8.3.5"' in workflow
@@ -770,12 +777,26 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
         REPO_ROOT / ".github" / "workflows" / "release.yml"
     ).read_text(encoding="utf-8")
     assert 'tags:\n      - "v*.*.*"' in release_workflow
+    assert "workflow_dispatch:" in release_workflow
+    assert "release_tag:" in release_workflow
+    assert "expected_tag_object:" in release_workflow
+    assert "expected_commit:" in release_workflow
     assert "uses: ./.github/workflows/tests.yml" in release_workflow
+    assert "source_ref: ${{ github.event_name == 'workflow_dispatch'" in release_workflow
     assert "needs:\n      - blocking-tests" in release_workflow
     assert "fetch-depth: 0" in release_workflow
     assert "fetch-tags: true" in release_workflow
     assert "persist-credentials: false" in release_workflow
+    assert "|| github.sha }}" in release_workflow
     assert 'refs/tags/${tag}^{commit}' in release_workflow
+    assert "github.workflow_sha" in release_workflow
+    assert release_workflow.count('git/ref/heads/main" --jq .object.sha') == 2
+    assert "git merge-base --is-ancestor" in release_workflow
+    assert 'git/ref/tags/${tag}' in release_workflow
+    assert "jq -r .tag" in release_workflow
+    assert "jq -r .object.type" in release_workflow
+    assert ".verification.verified" in release_workflow
+    assert ".verification.reason" in release_workflow
     assert 'expected_tag="v${version}"' in release_workflow
     assert "Formal releases require an annotated tag object" in release_workflow
     assert "WINDOWS_FRESH_DEPLOYMENT_POLICY" in release_workflow
@@ -788,13 +809,33 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert 'expected_version_output="codex-instruct-${{ steps.source.outputs.tag }}.py' in (
         release_workflow
     )
-    assert "gh release create" in release_workflow
-    assert "gh release upload" in release_workflow
-    assert "--draft" in release_workflow
-    assert ".assets[] | [.name, .digest]" in release_workflow
+    assert "gh release create" not in release_workflow
+    assert 'gh release upload "$tag"' not in release_workflow
+    assert "--paginate --slurp" in release_workflow
+    assert 'jq -r --arg tag "$tag"' in release_workflow
+    assert 'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"' in release_workflow
+    post_index = release_workflow.index(
+        'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"'
+    )
+    assert post_index < release_workflow.index("release_created=true", post_index)
+    assert 'if [ -z "$release_api" ]' not in release_workflow
+    assert "https://uploads.github.com/" in release_workflow
+    assert "https://api.github.com/repos/{}/releases/{}" in release_workflow
+    assert 'assert candidate["assets"] == []' in release_workflow
+    assert '"${upload_url}?name=${encoded_name}"' in release_workflow
+    assert 'releases/${release_id}' in release_workflow
+    assert 'gh api -X DELETE "$release_api"' in release_workflow
+    assert "primary_status=$?" in release_workflow
+    assert "Could not read owned draft Release" in release_workflow
+    assert "Publish response was lost" in release_workflow
+    assert "'.draft | tostring'" in release_workflow
+    assert 'gh api -X PATCH "$release_api"' in release_workflow
+    assert '"draft": True' in release_workflow
+    assert ".assets[] | [.name, .digest, .state" in release_workflow
     assert 'git cat-file blob "${head_commit}:${notes}"' in release_workflow
-    assert 'gh release edit "$tag"' in release_workflow
-    assert "--draft=false" in release_workflow
+    assert 'gh release edit "$tag"' not in release_workflow
+    assert "-F draft=false" in release_workflow
+    assert "-f make_latest=true" in release_workflow
     assert "--clobber" not in release_workflow
 
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -809,6 +850,78 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert 'SOURCE_COMMIT="$(git rev-parse --verify \'HEAD^{commit}\')"' in (
         pull_request_template
     )
+
+
+def test_release_creation_validator_binds_numeric_id_and_upload_url(
+    tmp_path, monkeypatch
+):
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    validator_start = workflow.index(
+        "          import json\n", workflow.index('draft_state="${RUNNER_TEMP}/draft-release-empty.json"')
+    )
+    validator_end = workflow.index("\n          PY", validator_start)
+    validator = textwrap.dedent(workflow[validator_start:validator_end])
+
+    repo = "Jia-Ethan/codex-keysmith"
+    release_id = "358412164"
+    tag = TAG
+    commit = "d8335f99a557403f3ef919c8601502e5a8362414"
+    notes = tmp_path / "notes.md"
+    notes.write_bytes(b"immutable release notes\n")
+    expected_api = f"https://api.github.com/repos/{repo}/releases/{release_id}"
+    expected_upload = (
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets"
+        "{?name,label}"
+    )
+    payload = {
+        "id": int(release_id),
+        "url": expected_api,
+        "upload_url": expected_upload,
+        "tag_name": tag,
+        "target_commitish": commit,
+        "name": f"codex-keysmith {tag}",
+        "draft": True,
+        "prerelease": False,
+        "body": notes.read_bytes().decode("utf-8"),
+        "assets": [],
+    }
+    created = tmp_path / "created.json"
+    state = tmp_path / "state.json"
+
+    def run_validator(created_payload, state_payload):
+        created.write_text(json.dumps(created_payload), encoding="utf-8")
+        state.write_text(json.dumps(state_payload), encoding="utf-8")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "release-validator",
+                str(created),
+                str(state),
+                str(notes),
+                tag,
+                commit,
+                release_id,
+                repo,
+            ],
+        )
+        exec(compile(validator, "<release-validator>", "exec"), {})
+
+    run_validator(payload, payload)
+
+    wrong_upload = dict(payload, upload_url=expected_upload.replace("/assets", "/wrong"))
+    with pytest.raises(AssertionError):
+        run_validator(wrong_upload, payload)
+
+    wrong_id = dict(payload, id=int(release_id) + 1)
+    with pytest.raises(AssertionError):
+        run_validator(payload, wrong_id)
+
+    nonempty = dict(payload, assets=[{"id": 1}])
+    with pytest.raises(AssertionError):
+        run_validator(payload, nonempty)
 
     quality_requirements = (REPO_ROOT / "requirements-quality.txt").read_text(
         encoding="ascii"

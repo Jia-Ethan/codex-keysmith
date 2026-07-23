@@ -4,12 +4,26 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed annotated tag to recover and publish.
+        required: true
+        type: string
+      expected_tag_object:
+        description: Full immutable tag-object SHA expected on GitHub.
+        required: true
+        type: string
+      expected_commit:
+        description: Full peeled commit SHA expected for the tagged source.
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -18,6 +32,9 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/tests.yml
+    with:
+      source_ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || '' }}
+      expected_commit: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_commit || '' }}
 
   publish:
     name: Build and publish immutable assets
@@ -32,6 +49,7 @@ jobs:
       - name: Check out the complete tagged source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
@@ -43,10 +61,40 @@ jobs:
 
       - name: Bind tag, HEAD, VERSION, notes, and source commit
         id: source
+        env:
+          DISPATCH_TAG: ${{ inputs.release_tag }}
+          DISPATCH_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          DISPATCH_COMMIT: ${{ inputs.expected_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$WORKFLOW_SHA" != "$GITHUB_SHA" ]; then
+              echo "Release recovery must run from the current main workflow commit." >&2
+              exit 1
+            fi
+            remote_main="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha
+            )"
+            if [ "$remote_main" != "$GITHUB_SHA" ]; then
+              echo "Release recovery workflow commit is no longer the remote main HEAD." >&2
+              exit 1
+            fi
+            tag="$DISPATCH_TAG"
+            expected_tag_object="$DISPATCH_TAG_OBJECT"
+            expected_commit="$DISPATCH_COMMIT"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+            expected_tag_object="$(git rev-parse --verify "refs/tags/${tag}")"
+            expected_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+          fi
+          if [[ ! "$expected_tag_object" =~ ^[0-9a-fA-F]{40}$ ]] \
+            || [[ ! "$expected_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Release recovery requires full 40-character tag and commit SHAs." >&2
+            exit 1
+          fi
           version="$(tr -d '\r\n' < VERSION)"
           expected_tag="v${version}"
           if [ "$tag" != "$expected_tag" ]; then
@@ -58,10 +106,37 @@ jobs:
             exit 1
           fi
           head_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          local_tag_object="$(git rev-parse --verify "refs/tags/${tag}")"
           tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
-          event_commit="$(git rev-parse --verify "${GITHUB_SHA}^{commit}")"
-          if [ "$head_commit" != "$tag_commit" ] || [ "$head_commit" != "$event_commit" ]; then
-            echo "HEAD, the peeled tag SHA, and GITHUB_SHA do not identify one commit." >&2
+          if [ "$local_tag_object" != "$expected_tag_object" ] \
+            || [ "$head_commit" != "$tag_commit" ] \
+            || [ "$head_commit" != "$expected_commit" ]; then
+            echo "HEAD, the local tag object, and the expected peeled commit disagree." >&2
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if ! git merge-base --is-ancestor "$expected_commit" "$GITHUB_SHA"; then
+              echo "Tagged payload commit is not an ancestor of the recovery workflow commit." >&2
+              exit 1
+            fi
+          elif [ "$head_commit" != "$GITHUB_SHA" ]; then
+            echo "Tag push HEAD does not match GITHUB_SHA." >&2
+            exit 1
+          fi
+          remote_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+          remote_tag_object="$(printf '%s' "$remote_ref" | jq -r .object.sha)"
+          remote_tag_type="$(printf '%s' "$remote_ref" | jq -r .object.type)"
+          if [ "$remote_tag_type" != "tag" ] || [ "$remote_tag_object" != "$expected_tag_object" ]; then
+            echo "Remote ref does not identify the expected annotated tag object." >&2
+            exit 1
+          fi
+          remote_tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${remote_tag_object}")"
+          if [ "$(printf '%s' "$remote_tag" | jq -r .tag)" != "$tag" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .object.type)" != "commit" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .object.sha)" != "$expected_commit" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .verification.verified)" != "true" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .verification.reason)" != "valid" ]; then
+            echo "Remote tag signature or peeled commit verification failed." >&2
             exit 1
           fi
           if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
@@ -115,6 +190,7 @@ jobs:
             printf 'tag=%s\n' "$tag"
             printf 'version=%s\n' "$version"
             printf 'commit=%s\n' "$head_commit"
+            printf 'tag_object=%s\n' "$local_tag_object"
             printf 'notes_path=%s\n' "$notes"
             printf 'notes_blob=%s\n' "$notes_blob"
           } >> "$GITHUB_OUTPUT"
@@ -143,76 +219,263 @@ jobs:
       - name: Stage, verify, and publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         shell: bash
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/release-first"
           tag="${{ steps.source.outputs.tag }}"
-          created=false
-          cleanup_failed_draft() {
-            status=$?
-            trap - EXIT
-            if [ "$status" -ne 0 ] && [ "$created" = true ]; then
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
+          expected_tag_object="${{ steps.source.outputs.tag_object }}"
+          expected_commit="${{ steps.source.outputs.commit }}"
+          notes_blob="${{ steps.source.outputs.notes_blob }}"
+          release_id=""
+          release_api=""
+          release_created=false
+          verify_remote_main() {
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+              return 0
             fi
-            exit "$status"
+            remote_main="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha
+            )"
+            if [ "$GITHUB_REF" != "refs/heads/main" ] \
+              || [ "$WORKFLOW_SHA" != "$GITHUB_SHA" ] \
+              || [ "$remote_main" != "$GITHUB_SHA" ]; then
+              echo "Release recovery workflow commit is no longer the remote main HEAD." >&2
+              return 1
+            fi
+          }
+          verify_remote_tag() {
+            remote_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+            remote_tag_object="$(printf '%s' "$remote_ref" | jq -r .object.sha)"
+            remote_tag_type="$(printf '%s' "$remote_ref" | jq -r .object.type)"
+            if [ "$remote_tag_type" != "tag" ] \
+              || [ "$remote_tag_object" != "$expected_tag_object" ]; then
+              echo "Remote release tag changed before publication." >&2
+              return 1
+            fi
+            remote_tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${remote_tag_object}")"
+            if [ "$(printf '%s' "$remote_tag" | jq -r .tag)" != "$tag" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .object.type)" != "commit" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .object.sha)" != "$expected_commit" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .verification.verified)" != "true" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .verification.reason)" != "valid" ]; then
+              echo "Remote release tag signature or peeled commit changed." >&2
+              return 1
+            fi
+          }
+          cleanup_failed_draft() {
+            primary_status=$?
+            trap - EXIT
+            if [ "$primary_status" -ne 0 ] && [ "$release_created" = true ]; then
+              set +e
+              draft="$(gh api "$release_api" --jq '.draft | tostring' 2>/dev/null)"
+              draft_status=$?
+              set -e
+              if [ "$draft_status" -ne 0 ]; then
+                echo "::warning::Could not read owned draft Release ${release_id}; primary failure preserved."
+              elif [ "$draft" = "true" ]; then
+                if ! gh api -X DELETE "$release_api" --silent; then
+                  echo "::warning::Failed to remove owned draft Release ${release_id}; primary failure preserved."
+                fi
+              elif [ "$draft" = "false" ]; then
+                echo "::warning::Owned Release ${release_id} is already published; cleanup skipped and primary failure preserved."
+              else
+                echo "::warning::Owned Release ${release_id} returned an invalid draft state; primary failure preserved."
+              fi
+            fi
+            exit "$primary_status"
           }
           trap cleanup_failed_draft EXIT
 
-          set +e
-          existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>&1)"
-          existing_status=$?
-          set -e
-          if [ "$existing_status" -eq 0 ]; then
+          existing_count="$(
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -r --arg tag "$tag" 'add | [.[] | select(.tag_name == $tag)] | length'
+          )"
+          if [ "$existing_count" != 0 ]; then
             echo "Release ${tag} already exists; refusing to overwrite it." >&2
             exit 1
           fi
-          case "$existing" in
-            *"HTTP 404"*) ;;
-            *)
-              printf '%s\n' "$existing" >&2
-              echo "Could not prove that Release ${tag} is absent." >&2
-              exit 1
-              ;;
-          esac
 
-          gh release create "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --draft \
-            --title "codex-keysmith $tag" \
-            --notes-file "${{ steps.source.outputs.notes_blob }}"
-          created=true
-          gh release upload "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.zip" \
-            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.tar.gz" \
-            "$release_dir/codex-instruct-${{ steps.source.outputs.tag }}.py" \
+          verify_remote_main
+          verify_remote_tag
+          request="${RUNNER_TEMP}/release-create.json"
+          python - "$tag" "$expected_commit" "$notes_blob" "$request" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          tag, commit, notes_path, request_path = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": "codex-keysmith {}".format(tag),
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": True,
+              "prerelease": False,
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          created_state="${RUNNER_TEMP}/created-release.json"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+            --input "$request" > "$created_state"
+          release_id="$(jq -r '.id // empty' "$created_state")"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Draft Release creation did not return a usable numeric ID; ownership is unknown." >&2
+            exit 1
+          fi
+          release_api="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          release_created=true
+          draft_state="${RUNNER_TEMP}/draft-release-empty.json"
+          gh api "$release_api" > "$draft_state"
+          python - "$created_state" "$draft_state" "$notes_blob" "$tag" \
+            "$expected_commit" "$release_id" "$GITHUB_REPOSITORY" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          created_path, state_path, notes_path, tag, commit, release_id, repo = sys.argv[1:]
+          created = json.loads(Path(created_path).read_text(encoding="utf-8"))
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          expected_api = "https://api.github.com/repos/{}/releases/{}".format(
+              repo, release_id
+          )
+          expected_upload = (
+              "https://uploads.github.com/repos/{}/releases/{}/assets{{?name,label}}"
+          ).format(repo, release_id)
+          for candidate in (created, state):
+              assert str(candidate["id"]) == release_id
+              assert candidate["url"] == expected_api
+              assert candidate["upload_url"] == expected_upload
+              assert candidate["tag_name"] == tag
+              assert candidate["target_commitish"] == commit
+              assert candidate["name"] == "codex-keysmith {}".format(tag)
+              assert candidate["draft"] is True
+              assert candidate["prerelease"] is False
+              assert candidate["body"].encode("utf-8") == Path(notes_path).read_bytes()
+              assert candidate["assets"] == []
+          PY
+          upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets"
+
+          assets=(
+            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.zip"
+            "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.tar.gz"
+            "$release_dir/codex-instruct-${{ steps.source.outputs.tag }}.py"
             "$release_dir/SHA256SUMS"
+          )
+          for asset_path in "${assets[@]}"; do
+            asset_name="$(basename "$asset_path")"
+            encoded_name="$(python -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$asset_name")"
+            gh api -X POST \
+              -H "Content-Type: application/octet-stream" \
+              --input "$asset_path" \
+              "${upload_url}?name=${encoded_name}" \
+              --silent
+          done
 
           expected="${RUNNER_TEMP}/expected-assets.txt"
           actual="${RUNNER_TEMP}/actual-assets.txt"
           while read -r checksum asset; do
-            printf '%s\tsha256:%s\n' "$asset" "$checksum"
+            printf '%s\tsha256:%s\tuploaded\t%s\n' \
+              "$asset" "$checksum" "$(wc -c < "$release_dir/$asset" | tr -d ' ')"
           done < "$release_dir/SHA256SUMS" > "$expected"
-          printf 'SHA256SUMS\tsha256:%s\n' \
-            "$(sha256sum "$release_dir/SHA256SUMS" | cut -d' ' -f1)" >> "$expected"
+          printf 'SHA256SUMS\tsha256:%s\tuploaded\t%s\n' \
+            "$(sha256sum "$release_dir/SHA256SUMS" | cut -d' ' -f1)" \
+            "$(wc -c < "$release_dir/SHA256SUMS" | tr -d ' ')" >> "$expected"
           sort -o "$expected" "$expected"
 
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .draft)" = "true"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
-            --jq '.assets[] | [.name, .digest] | @tsv' | sort > "$actual"
+          draft_state="${RUNNER_TEMP}/draft-release.json"
+          gh api "$release_api" > "$draft_state"
+          python - "$draft_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          state_path, notes_path, tag, commit, release_id = sys.argv[1:]
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          assert str(state["id"]) == release_id
+          assert state["tag_name"] == tag
+          assert state["target_commitish"] == commit
+          assert state["name"] == "codex-keysmith {}".format(tag)
+          assert state["draft"] is True
+          assert state["prerelease"] is False
+          assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
+          assert len(state["assets"]) == 4
+          PY
+          jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
+            "$draft_state" | sort > "$actual"
           diff -u "$expected" "$actual"
 
           tagged_notes="${RUNNER_TEMP}/tagged-release-notes-final.md"
           git cat-file blob \
             "${{ steps.source.outputs.commit }}:${{ steps.source.outputs.notes_path }}" \
             > "$tagged_notes"
-          cmp "${{ steps.source.outputs.notes_blob }}" "$tagged_notes"
+          cmp "$notes_blob" "$tagged_notes"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          verify_remote_main
+          verify_remote_tag
 
-          gh release edit "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false \
-            --latest
-          created=false
+          publish_error="${RUNNER_TEMP}/release-publish-error.txt"
+          set +e
+          published="$(gh api -X PATCH "$release_api" \
+            -F draft=false \
+            -f make_latest=true \
+            2> "$publish_error"
+          )"
+          publish_status=$?
+          set -e
+          if [ "$publish_status" -ne 0 ]; then
+            published="$(gh api "$release_api" 2>/dev/null || true)"
+            published_draft="$(
+              printf '%s' "$published" | jq -r '.draft | tostring' 2>/dev/null || true
+            )"
+            if [ "$published_draft" != "false" ]; then
+              cat "$publish_error" >&2
+              exit "$publish_status"
+            fi
+            echo "::warning::Publish response was lost, but numeric-ID verification confirms publication; continuing final verification."
+          fi
+          if [ "$(printf '%s' "$published" | jq -r .draft)" != "false" ] \
+            || [ "$(printf '%s' "$published" | jq -r .tag_name)" != "$tag" ]; then
+            echo "Release publication response did not confirm the expected tag." >&2
+            exit 1
+          fi
+          release_created=false
+          for _attempt in {1..10}; do
+            published_state="$(gh api "$release_api" 2>/dev/null || true)"
+            latest_tag="$(
+              gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+                --jq .tag_name 2>/dev/null || true
+            )"
+            if [ "$(printf '%s' "$published_state" | jq -r '.draft | tostring' 2>/dev/null)" = "false" ] \
+              && [ "$latest_tag" = "$tag" ]; then
+              break
+            fi
+            sleep 1
+          done
+          final_state="${RUNNER_TEMP}/published-release.json"
+          printf '%s' "$published_state" > "$final_state"
+          python - "$final_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          state_path, notes_path, tag, commit, release_id = sys.argv[1:]
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          assert str(state["id"]) == release_id
+          assert state["tag_name"] == tag
+          assert state["target_commitish"] == commit
+          assert state["draft"] is False
+          assert state["prerelease"] is False
+          assert state["published_at"]
+          assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
+          assert len(state["assets"]) == 4
+          PY
+          jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
+            "$final_state" | sort > "$actual"
+          diff -u "$expected" "$actual"
+          test "$latest_tag" = "$tag"
