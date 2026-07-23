@@ -6,7 +6,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- Release recovery now keeps an existing immutable signed tag, reruns every blocking job against its exact peeled commit, and stages draft assets through the numeric Release ID and returned upload URL instead of querying an unpublished draft by tag.
 
 ## [0.1.1] - 2026-07-22
 
