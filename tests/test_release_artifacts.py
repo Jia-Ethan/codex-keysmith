@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
 TAG = "v0.1.1"
 VERSION = "0.1.1"
+RELEASE_DATE = "2026-07-23"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "LICENSE",
@@ -108,7 +109,7 @@ def _asset_hashes(output_dir):
     }
 
 
-def test_repository_version_metadata_is_release_state_neutral():
+def test_repository_metadata_matches_release_and_unreleased_main():
     version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
     script = (REPO_ROOT / "codex-instruct.py").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -116,23 +117,39 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-07-22".format(VERSION) in changelog
-    assert "Source version v0.1.1" in readme
+    assert "## [{}] - {}".format(VERSION, RELEASE_DATE) in changelog
+    assert "v0.1.1 is formally published" in readme
+    assert "v0.1.1 已从 signed annotated tag" in readme
     assert "v0.1.1 local candidate" not in readme
     assert "This candidate has no tag" not in readme
-    chinese_candidate = readme.split("### v0.1.1 源码与候选构建", 1)[1].split(
+    chinese_unreleased = readme.split(
+        "### `main` / Unreleased 源码与后续候选构建",
+        1,
+    )[1].split(
         "\n## English\n",
         1,
     )[0]
-    english_candidate = readme.split("### v0.1.1 source and candidate builds", 1)[1]
-    assert "codex-instruct-v0.1.0.py" in readme.split(
-        "### v0.1.1 源码与候选构建",
+    english_unreleased = readme.split(
+        "### `main` / Unreleased source and future candidate builds",
+        1,
+    )[1]
+    chinese_release = readme.split("### 下载、校验与安装已发布 v0.1.1", 1)[1].split(
+        "### `main` / Unreleased 源码与后续候选构建",
         1,
     )[0]
-    assert "codex-instruct-v0.1.0.py" not in chinese_candidate
-    assert "codex-instruct-v0.1.0.py" not in english_candidate
-    assert "python3 codex-instruct.py --codex-dir" in chinese_candidate
-    assert "python3 codex-instruct.py --codex-dir" in english_candidate
+    english_release = readme.split(
+        "### Download, verify, and install published v0.1.1",
+        1,
+    )[1].split(
+        "### `main` / Unreleased source and future candidate builds",
+        1,
+    )[0]
+    assert "codex-instruct-v0.1.1.py" in chinese_release
+    assert "codex-instruct-v0.1.1.py" in english_release
+    assert "codex-instruct-v0.1.0.py" not in chinese_release
+    assert "codex-instruct-v0.1.0.py" not in english_release
+    assert "python3 codex-instruct.py --codex-dir" in chinese_unreleased
+    assert "python3 codex-instruct.py --codex-dir" in english_unreleased
 
 
 def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():

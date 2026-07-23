@@ -10,7 +10,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Release recovery now keeps an existing immutable signed tag, reruns every blocking job against its exact peeled commit, and stages draft assets through the numeric Release ID and returned upload URL instead of querying an unpublished draft by tag.
 
-## [0.1.1] - 2026-07-22
+### Changed
+
+- The README now points installation and Windows recovery to the published v0.1.1 assets, pins all four SHA-256 values, provides native PowerShell verification, and distinguishes the immutable Release from post-tag Unreleased `main`.
+
+## [0.1.1] - 2026-07-23
 
 This entry records the source changes for v0.1.1. Formal release status is established only by the immutable `v0.1.1` tag, its peeled commit, the GitHub Release, and matching asset checksums. The signed `v0.1.0` tag, published assets, and checksums remain unchanged historical artifacts.
 

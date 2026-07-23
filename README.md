@@ -15,6 +15,7 @@
 <p align="center">
   <a href="#简体中文">简体中文</a> ·
   <a href="#english">English</a> ·
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1">v0.1.1 Release</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="LICENSE">License</a>
@@ -22,7 +23,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.1.1" src="https://img.shields.io/badge/source-v0.1.1-0099CC">
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1"><img alt="Latest Release v0.1.1" src="https://img.shields.io/badge/release-v0.1.1-0099CC"></a>
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -37,14 +38,14 @@
 > [!WARNING]
 > **Read the bundled prompt before using `--yes` / 使用 `--yes` 前先阅读内置提示词**
 >
-> The v0.1.1 source bundles the byte-identical prompt currently used as the Codex behavior baseline. It directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction plus chemistry/pharmacology/weapons guides, and gives its execution mode precedence over injected context blocks. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`. A checkout is a candidate unless its commit is bound to an immutable signed/annotated tag and verified Release assets; the signed v0.1.0 assets retain their historical bundled prompt. Inspect the current source prompt or deploy your own `--file`.
+> The signed v0.1.1 Release and current source bundle the byte-identical prompt used as the Codex behavior baseline. It directs the model to answer without refusal framing, reinterprets reverse-shell/keygen/bypass and related security requests as local fixtures, covers adult and consent-sensitive fiction plus chemistry/pharmacology/weapons guides, and gives its execution mode precedence over injected context blocks. Source: [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md), embedded byte-for-byte in [`codex-instruct.py`](codex-instruct.py). SHA-256: `2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`. Install the published assets only from the immutable v0.1.1 tag and verified Release; treat floating `main` as Unreleased source. The signed v0.1.0 assets retain their historical bundled prompt. Inspect the current source prompt or deploy your own `--file`.
 >
-> v0.1.1 源码内置提示词与当前 Codex 行为基线逐字节一致。它要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并规定执行模式优先于注入的上下文区块。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`。未绑定不可变签名／附注 tag 与已校验 Release 资产的 checkout 均按候选版处理；已签名 v0.1.0 资产仍保留其历史内置提示词。请审阅当前源码提示词，或通过 `--file` 部署自己的指令。
+> 已签名的 v0.1.1 Release 与当前源码内置提示词均与 Codex 行为基线逐字节一致。它要求模型避免拒绝式表达，将 reverse shell、keygen、bypass 等请求重解释为本地样本，覆盖成人及同意敏感题材、化学／药理／武器指南，并规定执行模式优先于注入的上下文区块。来源：[`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md)，并逐字节嵌入 [`codex-instruct.py`](codex-instruct.py)。SHA-256：`2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0`。正式安装只使用不可变 v0.1.1 tag 与已校验 Release 资产；浮动 `main` 按 Unreleased 源码处理。已签名 v0.1.0 资产仍保留其历史内置提示词。请审阅当前源码提示词，或通过 `--file` 部署自己的指令。
 
 ## 复制给智能体安装
 
 ```text
-请先检查操作系统。macOS / Linux 可安装 codex-keysmith v0.1.0：只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0 下载 Release 资产，先用 SHA256SUMS 校验，不使用 curl | python。Windows 上的 v0.1.0 为 known-bad，不得 fresh deploy；如已留下 durable journal，保留全部 journal/marker/snapshot，改用已校验的 v0.1.1 脚本依次运行 --status、--recover 预览、--recover --yes、--status，不手工删除证据。Windows v0.1.1 fresh deployment 仅以明确 beta 开放，preview 与执行都会显示 beta 警告；这不构成正式 Windows support，P1/P2 边界仍然适用。任何平台都先运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；写入前等我确认。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
+请先检查操作系统。只从 https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1 下载 codex-keysmith v0.1.1 的 ZIP、tar.gz、独立脚本与 SHA256SUMS；先按 README 固定哈希校验 SHA256SUMS，再校验全部资产，不使用 curl | python。Windows 上的 v0.1.0 为 known-bad，不得 fresh deploy；如已留下 durable journal，保留全部 journal/marker/snapshot，改用已校验的 v0.1.1 独立脚本依次运行 --status、--recover 预览、--recover --yes、--status，不手工删除证据。Windows v0.1.1 fresh deployment 仅以明确 beta 开放，preview 与执行都会显示 beta 警告；这不构成正式 Windows support，P1/P2 边界仍然适用。任何平台都先运行 --version、--status 和 --dry-run，报告目标 .codex 目录、内置提示词来源与 SHA-256、全局行为范围、MD/config/hooks/legacy/manifest 计划和备份路径；写入前等我确认。完成后开启新 Codex 会话验证。不要删除任何备份或事务日志，不修改 Codex 二进制、网络、运行中进程或凭证。
 ```
 
 ## 友链 / Community
@@ -65,7 +66,7 @@
 
 `codex-keysmith` v0.1.1 是零运行时依赖的单文件 Python CLI。它把内置或自定义 Markdown 部署到现有 Codex 配置目录，保守更新顶层 `model_instructions_file`，默认整体隔离活跃 hooks，并用带指纹的部署清单支持分层卸载。部署和卸载都会在首次修改前发布持久化事务日志，使 `SIGKILL` 等中断可以通过显式 `--recover` 检查和恢复。
 
-> 本 README 描述 v0.1.1 源码的事务与 CI 行为。版本是否已正式发布，以该源码 commit 是否绑定不可变 tag、GitHub Release 与匹配 `SHA256SUMS` 的资产为准，不能仅凭浮动分支或文件内版本号判断。已签名 `v0.1.0` tag 和现有资产保持原样，不包含 v0.1.1 修复。
+> v0.1.1 已从 signed annotated tag `v0.1.1` 正式发布；公开资产绑定 peeled commit `d8335f99a557403f3ef919c8601502e5a8362414`。浮动 `main` 可能包含发布后的 Unreleased workflow 或文档变更，不能用于重建或冒充同版本资产。已签名 `v0.1.0` tag 和现有资产保持原样，不包含 v0.1.1 修复。
 
 默认不写入：常规部署、卸载和中断恢复在没有 `--yes` 时都只预览。部署 dry-run 会按当前目录碰撞状态列出目标 Markdown、需要变更的 `config.toml`、active/disabled hooks、精确匹配的 legacy 与现有 manifest 的完整时间戳备份／归档路径；不需要备份的 config 会明确标记为无。`--status` 不会打开或解析 live active/disabled hooks 内容，但会读取并哈希 manifest 引用的 backup 恢复证据；`--skip-hooks-isolation` 计划完全不读取 hooks。status 会分别报告结构健康、部署就绪度和卸载就绪度，并在持久化日志或其他事务残留存在时 fail closed。durable deploy/uninstall journal 使用 `--recover`，无 journal 的异常残留保留人工核对。
 
@@ -74,44 +75,93 @@
 >
 > 不要在 Windows 上使用 v0.1.0 fresh deploy。该版本可能先在 `os.utime(..., follow_symlinks=False)` 失败，再由 POSIX 目录 fd 清理触发第二个 `PermissionError`，覆盖原始错误并留下旧脚本不能恢复的 initializing journal。不要编辑或删除 `.codex-keysmith-transaction-*`、cleanup marker、snapshot 或其他证据。使用已校验的 v0.1.1 脚本按 `status blocked -> recover preview -> recover --yes -> status ready` 恢复。已签名 v0.1.0 tag、资产和 `SHA256SUMS` 仅作为不可变历史记录保留，不移动、不覆盖、不重传。
 
-### 下载、校验与安装已发布 v0.1.0（仅 macOS / Linux）
+### 下载、校验与安装已发布 v0.1.1
 
 固定来源：
 
-- [v0.1.0 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0)
-- [v0.1.0 source tag](https://github.com/Jia-Ethan/codex-keysmith/tree/v0.1.0)
-- Release bundle：`codex-keysmith-v0.1.0.zip`、`codex-keysmith-v0.1.0.tar.gz`
-- 独立脚本：`codex-instruct-v0.1.0.py`
+- [v0.1.1 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1)
+- [v0.1.1 source tag](https://github.com/Jia-Ethan/codex-keysmith/tree/v0.1.1)
+- Release bundle：`codex-keysmith-v0.1.1.zip`、`codex-keysmith-v0.1.1.tar.gz`
+- 独立脚本：`codex-instruct-v0.1.1.py`
 - 校验清单：`SHA256SUMS`
 
 不要从浮动 `main` 安装正式版本，也不要使用 `curl | python`。先把文件保存到磁盘，校验后再执行。
 
+固定 SHA-256：
+
+```text
+2809db740ab495df55709ebd0baa5973644d27d96e192717083b9272abbd62d7  codex-keysmith-v0.1.1.zip
+82c8150635b0d488c12f77f03dc65d26cddf78c692c985f64d6ce56217e8c1fb  codex-keysmith-v0.1.1.tar.gz
+c98635c9fb2022ffbb3675e6a52927db1c52774fed8574b2bf0b75768b11eeef  codex-instruct-v0.1.1.py
+097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2  SHA256SUMS
+```
+
 macOS / Linux：
 
 ```bash
-base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.0'
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.1'
 for file in \
-  codex-keysmith-v0.1.0.zip \
-  codex-keysmith-v0.1.0.tar.gz \
-  codex-instruct-v0.1.0.py \
+  codex-keysmith-v0.1.1.zip \
+  codex-keysmith-v0.1.1.tar.gz \
+  codex-instruct-v0.1.1.py \
   SHA256SUMS
 do
   curl --fail --location --remote-name "$base/$file"
 done
+printf '%s  %s\n' \
+  '097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2' \
+  'SHA256SUMS' | shasum -a 256 -c -
 shasum -a 256 -c SHA256SUMS
-python3 codex-instruct-v0.1.0.py --version
+python3 codex-instruct-v0.1.1.py --version
 ```
 
 Linux 也可用 `sha256sum --check SHA256SUMS`。校验通过后，可直接运行独立脚本，或解压 bundle 阅读完整 README、CHANGELOG、SECURITY、示例和事务文档。
 
-### v0.1.1 源码与候选构建
+Windows PowerShell：
 
-当前源码的 `VERSION` 与 `codex-instruct.py --version` 均为 `0.1.1`。未绑定正式 tag/Release 的 checkout 必须按候选版处理，并且只能从已提交、工作树干净且完整包含历史与 tags 的本地 checkout 验证和使用：
+```powershell
+$base = 'https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.1'
+$files = @(
+  'codex-keysmith-v0.1.1.zip',
+  'codex-keysmith-v0.1.1.tar.gz',
+  'codex-instruct-v0.1.1.py',
+  'SHA256SUMS'
+)
+foreach ($file in $files) {
+  Invoke-WebRequest -Uri "$base/$file" -OutFile $file
+}
+$manifestHash = (Get-FileHash .\SHA256SUMS -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($manifestHash -ne '097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2') {
+  throw 'SHA256SUMS hash mismatch'
+}
+$expected = @{}
+Get-Content .\SHA256SUMS | ForEach-Object {
+  if ($_ -match '^([0-9a-f]{64})  (.+)$') {
+    $expected[$Matches[2]] = $Matches[1]
+  }
+}
+foreach ($file in $files | Where-Object { $_ -ne 'SHA256SUMS' }) {
+  $actual = (Get-FileHash ".\$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $expected[$file]) { throw "$file hash mismatch" }
+}
+py -3.12 .\codex-instruct-v0.1.1.py --version
+```
+
+Windows fresh deployment 为 `EXPLICIT_BETA`；先在隔离 fixture 或明确目标目录执行 `--status` 与 dry-run，再决定是否写入。
+
+### `main` / Unreleased 源码与后续候选构建
+
+当前 `main` 的 `VERSION` 与 `codex-instruct.py --version` 仍为 `0.1.1`，但它已经包含 v0.1.1 tag 之后的 Unreleased workflow／文档变更。构建器会按设计拒绝从其他 commit 重新生成同版本资产。检查当前源码可运行：
 
 ```bash
 python3 codex-instruct.py --version
 python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
 python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
+```
+
+准备下一版本候选时，先更新 `VERSION`、CHANGELOG 与 Release notes，再从已提交、工作树干净且完整包含历史与 tags 的 checkout 运行：
+
+```bash
 RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
 python3 scripts/build_release.py "$RELEASE_TAG" \
@@ -120,18 +170,18 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 (cd dist-candidate && shasum -a 256 -c SHA256SUMS)
 ```
 
-候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。只有受保护 tag 驱动的 Release workflow 完成全部阻断测试、正式构建、哈希与远端资产校验后，对应资产才是公开 Release；本地候选资产不得冒充公开发布。
+候选构建会逐个比较归档输入与已验证 commit 的 blob 字节；即使 Git index 使用 `assume-unchanged` 或 `skip-worktree` 隐藏工作树漂移，也会拒绝构建。只有受保护 tag 驱动的 Release workflow 完成全部阻断测试、正式构建、哈希与远端资产校验后，对应资产才是公开 Release；本地候选资产不得冒充公开发布或覆盖 v0.1.1。
 
-Windows：v0.1.1 源码已经实现原生句柄、受保护 ACL、显式共享模式、稳定 volume/File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.12/3.14 阻断矩阵覆盖 deploy、rollback、restore-hooks、recover、uninstall、cleanup-marker re-entry 与 Issue #1 恢复。Windows fresh deployment 已按 `EXPLICIT_BETA` 明确开放，preview 与执行路径都会显示醒目 beta 警告；status、recover、uninstall 与 restore-hooks 不会误报部署警告。该策略不构成正式 Windows support。P1 仍缺逐阶段 hard-kill、SUBST/8.3/volume alias、长路径、本地化用户目录和更多 cleanup double-fault 覆盖，P2 的正式支持与发布文档边界仍未关闭。
+Windows：v0.1.1 源码已经实现原生句柄、受保护 ACL、显式共享模式、稳定 volume/File ID、目录锁和 write-through/flush 文件系统后端；`windows-2025` 上的 Python 3.10/3.12/3.14 阻断矩阵覆盖 deploy、rollback、restore-hooks、recover、uninstall、cleanup-marker re-entry 与 Issue #1 恢复。Windows fresh deployment 已按 `EXPLICIT_BETA` 明确开放，preview 与执行路径都会显示醒目 beta 警告；status、recover、uninstall 与 restore-hooks 不会误报部署警告。该策略不构成正式 Windows support。P1 仍缺逐阶段 hard-kill、SUBST/8.3/volume alias、长路径、本地化用户目录和更多 cleanup double-fault 覆盖，P2 的正式 Windows 支持决策仍未关闭。
 
 v0.1.0 已在 Windows 留下 journal 的用户，应在隔离副本上先校验 v0.1.1 脚本，然后保留证据并执行：
 
 ```powershell
-py -3.12 .\codex-instruct.py --version
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
+py -3.12 .\codex-instruct-v0.1.1.py --version
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --status --lang zh-CN
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang zh-CN
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang zh-CN
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --status --lang zh-CN
 ```
 
 第一条 status 应为 blocked，preview 不修改 journal 或业务文件，确认恢复后最后一条 status 应为 ready。任一步预检失败都必须保留 journal、marker、snapshot 与 claim，不手工删除。
@@ -504,7 +554,7 @@ codex-keysmith/
 
 `codex-keysmith` v0.1.1 is a zero-runtime-dependency, single-file Python CLI. It deploys the bundled or a custom Markdown instruction into an existing Codex configuration directory, conservatively updates the top-level `model_instructions_file`, isolates active hooks by default, and records an ownership manifest for layered uninstall. Before their first mutation, both deployment and uninstall publish a durable transaction journal so an interruption such as `SIGKILL` can be inspected and restored through explicit `--recover`.
 
-> This README describes transaction and CI behavior in the v0.1.1 source. Formal release status is established only when that source commit is bound to an immutable tag, a GitHub Release, and assets matching `SHA256SUMS`; a floating branch or embedded version string is not sufficient. The signed `v0.1.0` tag and existing assets remain unchanged and do not contain the v0.1.1 fixes.
+> v0.1.1 is formally published from the signed annotated `v0.1.1` tag; its public assets bind to peeled commit `d8335f99a557403f3ef919c8601502e5a8362414`. Floating `main` may contain post-release Unreleased workflow or documentation changes and must not rebuild or impersonate same-version assets. The signed `v0.1.0` tag and existing assets remain unchanged and do not contain the v0.1.1 fixes.
 
 Normal deployment, uninstall, and interrupted-transaction recovery are previews unless `--yes` is present. Deployment dry-runs disclose collision-aware absolute timestamped backup/archive paths for the target Markdown, changed `config.toml`, active/disabled hooks, exactly recognized legacy prompt, and an existing manifest; an unchanged config explicitly reports no backup. `--status` does not open or parse live active/disabled hook content, but it reads and hashes manifest-referenced backup recovery evidence; a `--skip-hooks-isolation` plan does not read hooks at all. Status reports structural health, deploy readiness, and uninstall readiness separately, and fails closed when it discovers a durable journal or other transaction residue. Use `--recover` for durable deploy/uninstall journals; preserve journal-less abnormal residue for manual inspection.
 
@@ -513,44 +563,93 @@ Normal deployment, uninstall, and interrupted-transaction recovery are previews 
 >
 > Do not use v0.1.0 for a fresh Windows deployment. It can first fail at `os.utime(..., follow_symlinks=False)` and then encounter a POSIX directory-fd cleanup `PermissionError` that replaces the primary error and leaves an initializing journal the old script cannot recover. Do not edit or delete `.codex-keysmith-transaction-*`, cleanup markers, snapshots, or other evidence. Use a verified v0.1.1 script for `status blocked -> recover preview -> recover --yes -> status ready`. The signed v0.1.0 tag, assets, and `SHA256SUMS` remain immutable historical records and must not be moved, overwritten, or re-uploaded.
 
-### Download, verify, and install published v0.1.0 (macOS / Linux only)
+### Download, verify, and install published v0.1.1
 
 Fixed sources:
 
-- [v0.1.0 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0)
-- [v0.1.0 source tag](https://github.com/Jia-Ethan/codex-keysmith/tree/v0.1.0)
-- Release bundles: `codex-keysmith-v0.1.0.zip`, `codex-keysmith-v0.1.0.tar.gz`
-- Standalone script: `codex-instruct-v0.1.0.py`
+- [v0.1.1 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1)
+- [v0.1.1 source tag](https://github.com/Jia-Ethan/codex-keysmith/tree/v0.1.1)
+- Release bundles: `codex-keysmith-v0.1.1.zip`, `codex-keysmith-v0.1.1.tar.gz`
+- Standalone script: `codex-instruct-v0.1.1.py`
 - Checksum manifest: `SHA256SUMS`
 
 Do not install a formal release from floating `main`, and do not use `curl | python`. Save assets, verify them, and only then execute the script.
 
+Pinned SHA-256 values:
+
+```text
+2809db740ab495df55709ebd0baa5973644d27d96e192717083b9272abbd62d7  codex-keysmith-v0.1.1.zip
+82c8150635b0d488c12f77f03dc65d26cddf78c692c985f64d6ce56217e8c1fb  codex-keysmith-v0.1.1.tar.gz
+c98635c9fb2022ffbb3675e6a52927db1c52774fed8574b2bf0b75768b11eeef  codex-instruct-v0.1.1.py
+097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2  SHA256SUMS
+```
+
 macOS / Linux:
 
 ```bash
-base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.0'
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.1'
 for file in \
-  codex-keysmith-v0.1.0.zip \
-  codex-keysmith-v0.1.0.tar.gz \
-  codex-instruct-v0.1.0.py \
+  codex-keysmith-v0.1.1.zip \
+  codex-keysmith-v0.1.1.tar.gz \
+  codex-instruct-v0.1.1.py \
   SHA256SUMS
 do
   curl --fail --location --remote-name "$base/$file"
 done
+printf '%s  %s\n' \
+  '097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2' \
+  'SHA256SUMS' | shasum -a 256 -c -
 shasum -a 256 -c SHA256SUMS
-python3 codex-instruct-v0.1.0.py --version
+python3 codex-instruct-v0.1.1.py --version
 ```
 
 Linux users may run `sha256sum --check SHA256SUMS`. After verification, run the standalone script or extract a bundle to inspect the complete documentation, prompt, and transaction reference.
 
-### v0.1.1 source and candidate builds
+Windows PowerShell:
 
-The source declares `0.1.1` in both `VERSION` and `codex-instruct.py --version`. A checkout without a formal tag and Release must be treated as a candidate and may be validated only from a committed, clean checkout with complete history and tags:
+```powershell
+$base = 'https://github.com/Jia-Ethan/codex-keysmith/releases/download/v0.1.1'
+$files = @(
+  'codex-keysmith-v0.1.1.zip',
+  'codex-keysmith-v0.1.1.tar.gz',
+  'codex-instruct-v0.1.1.py',
+  'SHA256SUMS'
+)
+foreach ($file in $files) {
+  Invoke-WebRequest -Uri "$base/$file" -OutFile $file
+}
+$manifestHash = (Get-FileHash .\SHA256SUMS -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($manifestHash -ne '097c0bf95d97e4c019592aca9a01b45a64e6c2b08e8fd6b2614d947b5b300ed2') {
+  throw 'SHA256SUMS hash mismatch'
+}
+$expected = @{}
+Get-Content .\SHA256SUMS | ForEach-Object {
+  if ($_ -match '^([0-9a-f]{64})  (.+)$') {
+    $expected[$Matches[2]] = $Matches[1]
+  }
+}
+foreach ($file in $files | Where-Object { $_ -ne 'SHA256SUMS' }) {
+  $actual = (Get-FileHash ".\$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $expected[$file]) { throw "$file hash mismatch" }
+}
+py -3.12 .\codex-instruct-v0.1.1.py --version
+```
+
+Windows fresh deployment is `EXPLICIT_BETA`. Run `--status` and a dry-run against an isolated fixture or the explicitly selected target directory before approving writes.
+
+### `main` / Unreleased source and future candidate builds
+
+Current `main` still declares `0.1.1` in `VERSION` and `codex-instruct.py --version`, but it contains post-tag Unreleased workflow/documentation changes. The builder intentionally refuses to regenerate v0.1.1 assets from a different commit. You may inspect the current source with:
 
 ```bash
 python3 codex-instruct.py --version
 python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
+```
+
+Before preparing the next candidate, update `VERSION`, CHANGELOG, and Release notes. Then use a committed, clean checkout with complete history and tags:
+
+```bash
 RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
 python3 scripts/build_release.py "$RELEASE_TAG" \
@@ -559,18 +658,18 @@ python3 scripts/build_release.py "$RELEASE_TAG" \
 (cd dist-candidate && shasum -a 256 -c SHA256SUMS)
 ```
 
-Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. Assets become a public Release only after the protected-tag workflow completes every blocking test, formal build, checksum, and remote-asset verification gate; local candidate assets are not published artifacts.
+Candidate builds compare every archive input with the validated commit blob bytes, so hidden working-tree drift under `assume-unchanged` or `skip-worktree` is rejected. Assets become a public Release only after the protected-tag workflow completes every blocking test, formal build, checksum, and remote-asset verification gate; local candidate assets must not impersonate a public Release or overwrite v0.1.1.
 
-Windows: the v0.1.1 source includes native handles, protected ACLs, explicit share modes, stable volume/File ID identity, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.12/3.14 jobs on `windows-2025` cover deploy, rollback, restore-hooks, recover, uninstall, cleanup-marker re-entry, and Issue #1 recovery. Fresh deployment is open under the `EXPLICIT_BETA` policy, and both preview and execution print a prominent beta warning; status, recover, uninstall, and restore-hooks do not emit the deployment warning. This is not a formal Windows support claim. P1 still lacks the per-phase hard-kill matrix, SUBST/8.3/volume aliases, long paths, localized profiles, and additional cleanup double faults, while P2 formal-support and release-documentation boundaries remain open.
+Windows: the v0.1.1 source includes native handles, protected ACLs, explicit share modes, stable volume/File ID identity, directory locks, and write-through/flush metadata operations. Blocking Python 3.10/3.12/3.14 jobs on `windows-2025` cover deploy, rollback, restore-hooks, recover, uninstall, cleanup-marker re-entry, and Issue #1 recovery. Fresh deployment is open under the `EXPLICIT_BETA` policy, and both preview and execution print a prominent beta warning; status, recover, uninstall, and restore-hooks do not emit the deployment warning. This is not a formal Windows support claim. P1 still lacks the per-phase hard-kill matrix, SUBST/8.3/volume aliases, long paths, localized profiles, and additional cleanup double faults, while the P2 formal Windows support decision remains open.
 
 For a v0.1.0 Windows journal, verify the v0.1.1 script in an isolated copy, preserve all evidence, and run:
 
 ```powershell
-py -3.12 .\codex-instruct.py --version
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang en
-py -3.12 .\codex-instruct.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
+py -3.12 .\codex-instruct-v0.1.1.py --version
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --recover --lang en
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --recover --yes --lang en
+py -3.12 .\codex-instruct-v0.1.1.py --codex-dir "$env:USERPROFILE\.codex" --status --lang en
 ```
 
 The first status must be blocked, preview must not mutate the journal or managed files, and the final status should be ready. Preserve the journal, marker, snapshots, and claims if any preflight fails.
