@@ -14,18 +14,16 @@ body:
     attributes:
       label: codex-keysmith 版本 / Version
       description: Paste the output of `python3 codex-instruct.py --version`. Windows v0.1.0 fresh deployment is known-bad; preserve journals and identify whether this is v0.1.1 recovery or an isolated fresh-deployment fixture.
-      placeholder: codex-instruct.py 0.1.0
+      placeholder: codex-instruct.py 0.1.1
     validations:
       required: true
 
   - type: input
     id: release-and-commit
     attributes:
-      label: Release tag 与 commit / Release tag and commit
-      description: Provide the fixed Release tag and commit SHA. If this came from main, write Unreleased plus the full SHA.
-      placeholder: v0.1.0 / 0123456789abcdef0123456789abcdef01234567
-    validations:
-      required: true
+      label: Release tag 与 commit（可选）/ Release tag and commit (optional)
+      description: If known, the fixed Release tag and commit SHA. Leave blank if unsure.
+      placeholder: v0.1.1 / 0123456789abcdef0123456789abcdef01234567
 
   - type: input
     id: operating-system
@@ -38,18 +36,14 @@ body:
   - type: input
     id: python-version
     attributes:
-      label: Python 版本 / Python version
+      label: Python 版本（可选）/ Python version (optional)
       placeholder: Python 3.14.0
-    validations:
-      required: true
 
   - type: input
     id: codex-version
     attributes:
-      label: Codex CLI 版本 / Codex CLI version
+      label: Codex CLI 版本（可选）/ Codex CLI version (optional)
       placeholder: codex-cli 0.144.1
-    validations:
-      required: true
 
   - type: dropdown
     id: operation
@@ -73,36 +67,21 @@ body:
   - type: textarea
     id: reproduction
     attributes:
-      label: 复现步骤 / Reproduction steps
-      description: Provide the smallest sequence that reproduces the problem.
+      label: 实际发生的问题（含复现步骤和预期结果）/ What happened (include steps and what you expected)
+      description: Provide the smallest sequence that reproduces the problem, what you expected, and what actually happened.
       placeholder: |
         1. Run ...
-        2. Observe ...
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: 预期结果 / Expected behavior
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: 实际结果 / Actual behavior
+        2. Expected ...
+        3. Actually saw ...
     validations:
       required: true
 
   - type: textarea
     id: diagnostic-output
     attributes:
-      label: 脱敏后的 status / dry-run / recover preview / error 输出 / Redacted diagnostic output
+      label: 脱敏后的 status / dry-run / recover preview / error 输出（可选，但强烈建议附上）/ Redacted diagnostic output (optional, strongly recommended)
       description: Include `--status`, `--dry-run`, and `--recover` preview where applicable. Explain why they are unavailable if the failure prevents them.
       render: shell
-    validations:
-      required: true
 
   - type: textarea
     id: additional-context
