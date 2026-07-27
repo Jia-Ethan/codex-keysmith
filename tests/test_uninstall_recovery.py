@@ -713,7 +713,12 @@ def test_multi_directory_uninstall_recovers_each_primary_mutation_checkpoint(
 def test_uninstall_publishes_immutable_multi_directory_intent_before_mutation(tmp_path):
     first = _make_rich_deployment(tmp_path, "intent-first")
     second = _make_rich_deployment(tmp_path, "intent-second")
-    participants = [str(first.resolve()), str(second.resolve())]
+    participants = [
+        str(item.path)
+        for item in codex_instruct._normalize_operation_directories(
+            [str(first), str(second)]
+        )
+    ]
 
     interrupted = _interrupt_uninstall(tmp_path, [first, second], "config")
 
