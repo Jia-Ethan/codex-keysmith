@@ -1540,6 +1540,184 @@ def test_uninstall_recovery_rejects_tampered_evidence_without_mutation(
     assert journal_dir.exists()
 
 
+def test_recovery_after_merged_config_publication_restores_live_rewrite(tmp_path):
+    codex_dir = tmp_path / "merged-config-recovery"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('model = "before"\n', encoding="utf-8")
+    deployed = _run("--codex-dir", codex_dir, "--yes")
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    live_rewrite = (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'external = true\n'
+    )
+    (codex_dir / "config.toml").write_text(live_rewrite, encoding="utf-8")
+
+    source = f"""
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+real = m.atomic_write_text
+
+def stop_after_config(path, *args, **kwargs):
+    result = real(path, *args, **kwargs)
+    if Path(path).name == "config.toml":
+        os._exit({HARD_EXIT})
+    return result
+
+m.atomic_write_text = stop_after_config
+m.uninstall([{str(codex_dir)!r}], True)
+"""
+    interrupted = _write_child(tmp_path, "interrupt-merged-config.py", source)
+
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    journal_dir = _single_journal(codex_dir)
+    journal = json.loads(
+        (journal_dir / codex_instruct.JOURNAL_FILENAME).read_text(encoding="utf-8")
+    )
+    owner = journal["owner_directory"]
+    config_resource = journal["directories"][owner]["resources"]["config"]
+    assert len(config_resource["allowed_sha256"]) == 1
+    assert config_resource["allowed_portable"] == []
+    assert (
+        codex_dir / "config.toml"
+    ).read_text(encoding="utf-8") == (
+        'model = "ccswitch-model"\nexternal = true\n'
+    )
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == live_rewrite
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+    _assert_no_transaction_artifacts(codex_dir)
+
+
+def test_merged_config_write_residue_cleanup_failure_rolls_back_and_keeps_evidence(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    codex_dir = tmp_path / "merged-config-cleanup-failure"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('model = "before"\n', encoding="utf-8")
+    deployed = _run("--codex-dir", codex_dir, "--yes")
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    live_rewrite = (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'external = true\n'
+    )
+    (codex_dir / "config.toml").write_text(live_rewrite, encoding="utf-8")
+    real_strict_cleanup = codex_instruct._strict_cleanup_transaction_dir
+    cleanup_calls = 0
+    injected = False
+
+    def fail_write_residue_cleanup(transaction_dir):
+        nonlocal cleanup_calls, injected
+        if Path(transaction_dir).name.startswith(".keysmith-write-"):
+            cleanup_calls += 1
+            if cleanup_calls == 1:
+                injected = True
+                raise codex_instruct.TransactionResidueCleanupFailure(
+                    "injected write-residue cleanup failure",
+                    Path(transaction_dir),
+                )
+        return real_strict_cleanup(transaction_dir)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_strict_cleanup_transaction_dir",
+        fail_write_residue_cleanup,
+    )
+    monkeypatch.setattr(codex_instruct, "_OUTPUT_LANGUAGE", "en")
+    with pytest.raises(SystemExit) as caught:
+        codex_instruct.uninstall([str(codex_dir)], yes=True)
+
+    assert caught.value.code == 1
+    assert injected is True
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == live_rewrite
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+    journal_dir = _single_journal(codex_dir)
+    journal = json.loads(
+        (journal_dir / codex_instruct.JOURNAL_FILENAME).read_text(encoding="utf-8")
+    )
+    assert journal["phase"] == "recovered"
+    assert journal_dir.exists()
+    output = capsys.readouterr().out
+    assert "Run --recover to finish cleanup" in output
+    _assert_no_cjk(output)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_strict_cleanup_transaction_dir",
+        real_strict_cleanup,
+    )
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == live_rewrite
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+    _assert_no_transaction_artifacts(codex_dir)
+
+
+def test_merged_config_write_residue_is_pre_authorized_by_immutable_intent(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = tmp_path / "merged-config-residue"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('model = "before"\n', encoding="utf-8")
+    deployed = _run("--codex-dir", codex_dir, "--yes")
+    assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+    (codex_dir / "config.toml").write_text(
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n',
+        encoding="utf-8",
+    )
+    real_make_registered = codex_instruct._make_registered_transaction_dir
+    checked = False
+
+    def verify_intent_before_write(parent, kind, allowed_members):
+        nonlocal checked
+        if kind == "write-prepared":
+            states = codex_instruct._ACTIVE_DEPLOYMENT_STATES
+            assert states is not None
+            data = states[0].journal_data
+            owner = str(Path(parent).resolve())
+            resource = data["directories"][owner]["resources"]["config"]
+            assert len(resource["allowed_sha256"]) == 1
+            intent = json.loads(
+                (states[0].journal_dir / codex_instruct.INTENT_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert intent["directories"][owner]["resources"]["config"][
+                "allowed_sha256"
+            ] == resource["allowed_sha256"]
+            checked = True
+        return real_make_registered(parent, kind, allowed_members)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_make_registered_transaction_dir",
+        verify_intent_before_write,
+    )
+
+    codex_instruct.uninstall([str(codex_dir)], yes=True)
+
+    assert checked is True
+
+
 def test_committed_uninstall_cleanup_is_previewable_and_reentrant(tmp_path):
     first = _make_rich_deployment(tmp_path, "committed-cleanup-first")
     second = _make_rich_deployment(tmp_path, "committed-cleanup-second")
@@ -1583,6 +1761,190 @@ m.uninstall([{str(first)!r}, {str(second)!r}], True)
         )
         assert (codex_dir / codex_instruct.LEGACY_MD_FILENAME).read_bytes() == (
             b"legacy prompt\n"
+        )
+        _assert_no_transaction_artifacts(codex_dir)
+
+
+@pytest.mark.parametrize("damage", ["tamper", "delete"])
+def test_terminal_recovered_cleanup_revalidates_restored_manifest_backups(
+    tmp_path,
+    damage,
+):
+    codex_dir = tmp_path / f"recovered-manifest-backup-{damage}"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text('model = "before"\n', encoding="utf-8")
+    first = _run("--codex-dir", codex_dir, "--yes")
+    assert first.returncode == 0, first.stdout + first.stderr
+    (codex_dir / "config.toml").write_text(
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'model = "changed-before-second-layer"\n',
+        encoding="utf-8",
+    )
+    second = _run("--codex-dir", codex_dir, "--yes")
+    assert second.returncode == 0, second.stdout + second.stderr
+    current_manifest = json.loads(
+        (codex_dir / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    restored_manifest_backup = codex_dir / current_manifest["previous_manifest"]["backup"]
+    assert restored_manifest_backup.is_file()
+
+    source = f"""
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+real_update = m._update_deployment_journals
+real_execute = m._execute_uninstall_state
+
+
+def fail_after_first_mutation(state, timestamp):
+    real_execute(state, timestamp)
+    raise OSError("force reverse recovery")
+
+
+def stop_after_recovered(states, phase):
+    result = real_update(states, phase)
+    if phase == "recovered":
+        os._exit({HARD_EXIT})
+    return result
+
+m._execute_uninstall_state = fail_after_first_mutation
+m._update_deployment_journals = stop_after_recovered
+m.uninstall([{str(codex_dir)!r}], True)
+"""
+    interrupted = _write_child(
+        tmp_path,
+        f"interrupt-recovered-manifest-backup-{damage}.py",
+        source,
+    )
+
+    assert interrupted.returncode == HARD_EXIT
+    journal_dir = _single_journal(codex_dir)
+    journal = json.loads(
+        (journal_dir / codex_instruct.JOURNAL_FILENAME).read_text(encoding="utf-8")
+    )
+    assert journal["phase"] == "recovered"
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).is_file()
+    restored_current_manifest = json.loads(
+        (codex_dir / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert restored_current_manifest["deployment_id"] == current_manifest["deployment_id"]
+    required_backup = codex_dir / restored_current_manifest["previous_manifest"]["backup"]
+    assert required_backup == restored_manifest_backup
+    if damage == "tamper":
+        required_backup.write_bytes(b"tampered historical backup\n")
+    else:
+        required_backup.unlink()
+    evidence = _snapshot_tree(codex_dir)
+
+    recovered = _run("--codex-dir", codex_dir, "--recover", "--yes")
+
+    assert recovered.returncode == 1
+    _assert_no_cjk(recovered.stdout + recovered.stderr)
+    assert _snapshot_tree(codex_dir) == evidence
+    assert journal_dir.exists()
+
+
+def test_committed_terminal_cleanup_revalidates_restored_manifest_backups(tmp_path):
+    first = tmp_path / "committed-manifest-backup-first"
+    second = tmp_path / "committed-manifest-backup-second"
+    for codex_dir in (first, second):
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text('model = "before"\n', encoding="utf-8")
+        first_layer = _run("--codex-dir", codex_dir, "--yes")
+        second_layer = _run("--codex-dir", codex_dir, "--yes")
+        assert first_layer.returncode == 0, first_layer.stdout + first_layer.stderr
+        assert second_layer.returncode == 0, second_layer.stdout + second_layer.stderr
+    source = f"""
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+{_filesystem_exit_hook_source("journal-directory-removed")}
+m.uninstall([{str(first)!r}, {str(second)!r}], True)
+"""
+    interrupted = _write_child(tmp_path, "interrupt-committed-manifest-backup.py", source)
+
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    remaining = first if _journal_dirs(first) else second
+    journal_dir = _single_journal(remaining)
+    journal = json.loads(
+        (journal_dir / codex_instruct.JOURNAL_FILENAME).read_text(encoding="utf-8")
+    )
+    assert journal["phase"] == "committed"
+    restored_manifest = json.loads(
+        (remaining / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    required_backup = remaining / restored_manifest["config"]["backup"]
+    required_backup.write_bytes(b"tampered historical backup\n")
+    evidence = _snapshot_tree(remaining)
+
+    recovered = _run("--codex-dir", remaining, "--recover", "--yes")
+
+    assert recovered.returncode == 1
+    _assert_no_cjk(recovered.stdout + recovered.stderr)
+    assert _snapshot_tree(remaining) == evidence
+    assert journal_dir.exists()
+
+
+def test_committed_merged_config_cleanup_validates_sha_only_after(tmp_path):
+    first = tmp_path / "committed-merged-first"
+    second = tmp_path / "committed-merged-second"
+    for codex_dir in (first, second):
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text(
+            'model = "before"\n',
+            encoding="utf-8",
+        )
+        deployed = _run("--codex-dir", codex_dir, "--yes")
+        assert deployed.returncode == 0, deployed.stdout + deployed.stderr
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-model"\n'
+            'model_instructions_file = "./gpt-unrestricted.md"\n'
+            'external = true\n',
+            encoding="utf-8",
+        )
+    source = f"""
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("child_keysmith", {str(MODULE_PATH)!r})
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+{_filesystem_exit_hook_source("journal-directory-removed")}
+m.uninstall([{str(first)!r}, {str(second)!r}], True)
+"""
+    interrupted = _write_child(tmp_path, "interrupt-committed-merged.py", source)
+
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    remaining = first if _journal_dirs(first) else second
+    journal = json.loads(
+        (
+            _single_journal(remaining) / codex_instruct.JOURNAL_FILENAME
+        ).read_text(encoding="utf-8")
+    )
+    assert journal["phase"] == "committed"
+    for directory in journal["participants"]:
+        resource = journal["directories"][directory]["resources"]["config"]
+        assert len(resource["allowed_sha256"]) == 1
+        assert resource["allowed_portable"] == []
+
+    recovered = _run("--codex-dir", remaining, "--recover", "--yes")
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    for codex_dir in (first, second):
+        assert (codex_dir / "config.toml").read_text(encoding="utf-8") == (
+            'model = "ccswitch-model"\nexternal = true\n'
         )
         _assert_no_transaction_artifacts(codex_dir)
 
@@ -1740,6 +2102,34 @@ def test_uninstall_resource_invariants_reject_ambiguous_recovery_state(
 
     with pytest.raises(ValueError):
         codex_instruct._validate_uninstall_journal_resources(resources, owner)
+
+
+def test_uninstall_loader_rejects_residue_outside_immutable_resource_states(
+    tmp_path,
+):
+    codex_dir = _make_rich_deployment(tmp_path, "unauthorized-residue")
+    interrupted = _interrupt_uninstall(tmp_path, [codex_dir], "md-claim")
+    assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    journal_dir = _single_journal(codex_dir)
+    journal_path = journal_dir / codex_instruct.JOURNAL_FILENAME
+    data = json.loads(journal_path.read_text(encoding="utf-8"))
+    owner = data["owner_directory"]
+    residue = data["directories"][owner]["residues"][0]
+    member = next(iter(residue["members"]))
+    residue["members"][member] = {
+        "size": 7,
+        "mtime_ns": 1,
+        "sha256": "0" * 64,
+    }
+    residue["auth"] = codex_instruct._residue_authorization_digest(
+        data["transaction_id"],
+        owner,
+        residue,
+    )
+    journal_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="residue 成员不属于受管资源"):
+        codex_instruct._load_uninstall_journal(journal_dir)
 
 
 @pytest.mark.parametrize("damage", ["invalid-json", "invalid-operation"])

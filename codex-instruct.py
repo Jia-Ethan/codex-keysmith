@@ -962,6 +962,14 @@ class ConfigConflict(HooksConflict):
     """Raised when config.toml cannot be updated without guessing."""
 
 
+class TransactionResidueCleanupFailure(HooksConflict):
+    """Raised when a published write cannot remove its registered residue."""
+
+    def __init__(self, message: str, transaction_dir: Path):
+        super().__init__(message)
+        self.transaction_dir = transaction_dir
+
+
 _PLANNED_HOOKS_UNSET = object()
 
 
@@ -4309,6 +4317,17 @@ def _cleanup_transaction_dir_after_error(transaction_dir: Path) -> None:
         _print(f"[事务警告] {exc}", file=sys.stderr)
 
 
+def _strict_cleanup_transaction_dir(transaction_dir: Path) -> None:
+    """Remove a successful transaction residue or surface durable cleanup failure."""
+    try:
+        _remove_transaction_dir(transaction_dir)
+    except Exception as exc:
+        raise TransactionResidueCleanupFailure(
+            f"registered transaction residue cleanup failed: {transaction_dir}",
+            transaction_dir,
+        ) from exc
+
+
 def _run_cleanup_preserving_primary(
     primary_exception: BaseException,
     steps: List[Tuple[str, Callable[[], None]]],
@@ -4510,6 +4529,7 @@ def _transactional_replace_existing(
         },
     )
     previous_claim = transaction_dir / "previous"
+    previous_unlinked = False
 
     try:
         if not _atomic_rename_no_replace(destination, previous_claim):
@@ -4529,8 +4549,27 @@ def _transactional_replace_existing(
             on_published(prepared_fingerprint)
 
         previous_claim.unlink()
-        _cleanup_transaction_dir_after_error(transaction_dir)
-    except BaseException:
+        previous_unlinked = True
+        # Success is not durable until this registered residue is gone. If
+        # strict cleanup fails, surface a typed error while the uninstall
+        # journal still authorizes the empty residue. The enclosing uninstall
+        # rolls back from its durable snapshot and retains that journal.
+        _strict_cleanup_transaction_dir(transaction_dir)
+    except BaseException as primary:
+        if previous_unlinked:
+            current = _fingerprint_or_none(destination)
+            if current is None or current != prepared_fingerprint:
+                raise HooksConflict(
+                    f"residue 清理失败后发布文件已漂移: {destination}"
+                ) from primary
+            if not isinstance(primary, TransactionResidueCleanupFailure):
+                primary = TransactionResidueCleanupFailure(
+                    f"registered transaction residue cleanup failed: {transaction_dir}",
+                    transaction_dir,
+                )
+            raise primary
+
+        rollback_incomplete = False
         try:
             if _path_entry_exists(previous_claim):
                 if _path_entry_exists(destination):
@@ -4576,11 +4615,15 @@ def _transactional_replace_existing(
                             timestamp,
                         )
         except BaseException as cleanup_exc:
+            rollback_incomplete = True
             _print(
                 f"[事务警告] 写入回滚未完整完成: {cleanup_exc}",
                 file=sys.stderr,
             )
-        _cleanup_transaction_dir_after_error(transaction_dir)
+        if rollback_incomplete:
+            _cleanup_transaction_dir_after_error(transaction_dir)
+        else:
+            _remove_transaction_dir(transaction_dir)
         raise
 
 
@@ -5487,6 +5530,7 @@ class UninstallPlan:
     manifest: Optional[Dict[str, Any]] = None
     manifest_fingerprint: Optional[FileFingerprint] = None
     current_fingerprints: Optional[Dict[Path, FileFingerprint]] = None
+    merged_config_content: Optional[str] = None
     hooks_state: str = "unchanged"
     blockers: Optional[List[str]] = None
 
@@ -5568,6 +5612,164 @@ def _preflight_manifest_path(
         plan.blockers.append(f"{label} 已漂移，拒绝卸载: {path}")
 
 
+def _fingerprint_matches_portable(
+    fingerprint: FileFingerprint,
+    expected: Optional[Dict[str, Any]],
+) -> bool:
+    return expected is not None and (
+        fingerprint.size == expected["size"]
+        and fingerprint.modified_ns == expected["mtime_ns"]
+        and fingerprint.sha256 == expected["sha256"]
+    )
+
+
+def _merge_uninstall_config_statement(
+    current_content: str,
+    current_analysis: "TomlRootAnalysis",
+    original_content: str,
+    original_analysis: "TomlRootAnalysis",
+) -> str:
+    current_statement = current_analysis.instruction_statement
+    if current_statement is None:
+        raise ConfigConflict(
+            "当前 config.toml 缺少受管的顶层 model_instructions_file"
+        )
+    original_statement = original_analysis.instruction_statement
+    if original_statement is None:
+        merged = (
+            current_content[: current_statement.start]
+            + current_content[current_statement.end :]
+        )
+    else:
+        original_ending = _statement_newline(original_content, original_statement)
+        current_ending = _statement_newline(current_content, current_statement)
+        original_text = original_content[
+            original_statement.start : original_statement.end
+        ]
+        if original_ending:
+            original_text = original_text[: -len(original_ending)]
+        merged = (
+            current_content[: current_statement.start]
+            + original_text
+            + current_ending
+            + current_content[current_statement.end :]
+        )
+
+    merged_analysis = _analyze_toml_root(merged)
+    if (
+        merged_analysis.instruction_reference
+        != original_analysis.instruction_reference
+    ):
+        raise ConfigConflict(
+            "合并后的顶层 model_instructions_file 未恢复到部署前状态"
+        )
+    return merged
+
+
+def _preflight_uninstall_config(
+    plan: UninstallPlan,
+    config: Dict[str, Any],
+    md: Dict[str, Any],
+) -> None:
+    config_path = plan.codex_dir / config["path"]
+    node = _classify_node(config_path)
+    if not node.regular:
+        plan.blockers.append(
+            _localized(
+                "config.toml 应为普通文件，但当前为 "
+                f"{node.kind}: {config_path}",
+                "config.toml must be a regular file, but is a "
+                f"{node.kind}: {config_path}",
+            )
+        )
+        return
+    try:
+        content, fingerprint = _read_regular_text_with_fingerprint(
+            config_path,
+            "config.toml",
+        )
+        analysis = _analyze_toml_root(content)
+    except (OSError, UnicodeDecodeError, ConfigConflict) as exc:
+        plan.blockers.append(
+            _localized(
+                f"config.toml 已漂移且目标字段存在歧义或不支持的结构: {exc}",
+                "config.toml drifted and has target-field ambiguity or "
+                f"unsupported structure ({type(exc).__name__})",
+            )
+        )
+        return
+    plan.current_fingerprints[config_path] = fingerprint
+
+    exact_after_content = (
+        fingerprint.size == config["after"]["size"]
+        and fingerprint.sha256 == config["after"]["sha256"]
+    )
+    owned_reference = f'./{md["path"]}'
+    if analysis.instruction_reference != owned_reference:
+        current_state = (
+            "缺失"
+            if analysis.instruction_statement is None
+            else "指向其他路径"
+        )
+        plan.blockers.append(
+            _localized(
+                "config.toml 顶层 model_instructions_file 所有权冲突: "
+                f"当前字段{current_state}，预期仍引用 {owned_reference}",
+                "top-level config.toml model_instructions_file ownership conflict: "
+                f"the current field is {'missing' if analysis.instruction_statement is None else 'set to another path'}; "
+                f"expected it to still reference {owned_reference}",
+            )
+        )
+        return
+
+    if exact_after_content or not config["changed"]:
+        return
+
+    if config["backup"] is None:
+        plan.blockers.append(
+            _localized(
+                "config.toml manifest 缺少字段恢复备份",
+                "config.toml manifest is missing its field-restoration backup",
+            )
+        )
+        return
+    backup_path = plan.codex_dir / config["backup"]
+    backup_node = _classify_node(backup_path)
+    if not backup_node.regular:
+        plan.blockers.append(
+            _localized(
+                f"config.toml 备份是 {backup_node.kind}: {backup_path}",
+                f"config.toml backup is a {backup_node.kind}: {backup_path}",
+            )
+        )
+        return
+    try:
+        original_content, backup_fingerprint = _read_regular_text_with_fingerprint(
+            backup_path,
+            "config.toml 备份",
+        )
+        if not _fingerprint_matches_portable(backup_fingerprint, config["before"]):
+            raise ConfigConflict("config.toml 备份内容或时间戳不匹配")
+        original_analysis = _analyze_toml_root(original_content)
+        merged = _merge_uninstall_config_statement(
+            content,
+            analysis,
+            original_content,
+            original_analysis,
+        )
+    except (OSError, UnicodeDecodeError, ConfigConflict) as exc:
+        plan.blockers.append(
+            _localized(
+                f"config.toml 备份无法安全用于字段恢复: {exc}",
+                "config.toml backup cannot be used safely for field restoration "
+                f"({type(exc).__name__})",
+            )
+        )
+        return
+    plan.current_fingerprints[backup_path] = backup_fingerprint
+    plan.merged_config_content = merged
+
+
 def _preflight_backup(
     plan: UninstallPlan,
     name: Optional[str],
@@ -5592,7 +5794,7 @@ def _preflight_backup(
         plan.blockers.append(f"{label} 备份无法安全读取: {exc}")
         return
     plan.current_fingerprints[path] = fingerprint
-    if not _portable_matches(path, expected):
+    if not _fingerprint_matches_portable(fingerprint, expected):
         plan.blockers.append(f"{label} 备份内容或时间戳不匹配: {path}")
 
 
@@ -5633,9 +5835,7 @@ def inspect_uninstall_directory(
     hooks = manifest["hooks"]
     legacy = manifest["legacy"]
     previous = manifest["previous_manifest"]
-    _preflight_manifest_path(
-        plan, codex_dir / config["path"], config["after"], "config.toml"
-    )
+    _preflight_uninstall_config(plan, config, md)
     _preflight_manifest_path(plan, codex_dir / md["path"], md["after"], "提示词文件")
     hooks_path = codex_dir / "hooks.json"
     disabled_path = codex_dir / "hooks.json.disabled"
@@ -5677,7 +5877,14 @@ def inspect_uninstall_directory(
             plan, codex_dir / legacy["path"], legacy["after"], "旧版提示词"
         )
 
-    _preflight_backup(plan, config["backup"], config["before"] if config["changed"] else None, "config.toml")
+    config_backup = codex_dir / config["backup"] if config["backup"] else None
+    if plan.merged_config_content is None or config_backup not in plan.current_fingerprints:
+        _preflight_backup(
+            plan,
+            config["backup"],
+            config["before"] if config["changed"] else None,
+            "config.toml",
+        )
     _preflight_backup(plan, md["backup"], md["before"], "提示词文件")
     if inspect_hook_backups:
         _preflight_backup(
@@ -7309,15 +7516,30 @@ def _validate_uninstall_terminal_state(data: Dict[str, Any], phase: str) -> None
         codex_dir = Path(directory)
         resources = data["directories"][directory]["resources"]
         for resource in resources.values():
-            expected = (
-                resource["before"]
-                if phase == "recovered"
-                else _uninstall_after_state(resource)
-            )
             path = codex_dir / resource["path"]
-            if not _portable_matches(path, expected):
+            valid = (
+                _portable_matches(path, resource["before"])
+                if phase == "recovered"
+                else _uninstall_resource_matches_after(path, resource)
+            )
+            if not valid:
                 raise HooksConflict(
                     f"uninstall {phase} 终态验证失败: {path}"
+                )
+        manifest_resource = resources["manifest"]
+        if phase == "committed" or manifest_resource["before"] is not None:
+            ownership = inspect_uninstall_directory(
+                codex_dir,
+                inspect_residue=False,
+            )
+            if ownership.blockers:
+                raise HooksConflict(
+                    _localized(
+                        f"uninstall {phase} 事务清单所有权无效: "
+                        + "; ".join(ownership.blockers),
+                        f"uninstall {phase} manifest-layer ownership is invalid; "
+                        f"{len(ownership.blockers)} blocker(s) found",
+                    )
                 )
 
 
@@ -7333,6 +7555,16 @@ def _cleanup_uninstall_terminal_journals(
     if not yes:
         _print("[预览] 终态资源不会反向恢复；确认清理请添加 --yes。")
         return
+    _cleanup_uninstall_residues(
+        reference,
+        {
+            directory: (
+                Path(directory)
+                / reference["directories"][directory]["journal_dir"]
+            )
+            for directory in reference["participants"]
+        },
+    )
     _remove_retained_cleanup_markers(retained_cleanup_markers)
     for journal_dir, data in journals:
         if _path_entry_exists(journal_dir / JOURNAL_PENDING_FILENAME):
@@ -7454,8 +7686,7 @@ def _restore_uninstall_before_state(
             current = _fingerprint_or_none(path)
             if before is None:
                 if current is not None:
-                    after = _uninstall_after_state(resource)
-                    if not _portable_matches(path, after):
+                    if not _uninstall_resource_matches_after(path, resource):
                         raise HooksConflict(f"卸载恢复目标已漂移: {path}")
                     _remove_owned_file(path, current)
                 continue
@@ -8464,13 +8695,21 @@ def _select_uninstall_manifest_archive(path: Path, timestamp: str) -> Path:
 
 def _uninstall_after_state(resource: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     portable = resource["allowed_portable"]
-    if len(portable) == 1:
+    if len(portable) == 1 and not resource["allowed_sha256"]:
         return portable[0]
-    if resource["allowed_absent"] and not portable:
+    if resource["allowed_absent"] and not portable and not resource["allowed_sha256"]:
         return None
-    if len(portable) != 1:
-        raise ValueError("uninstall resource 缺少唯一 after 状态")
-    return portable[0]
+    raise ValueError("uninstall resource 缺少唯一 portable after 状态")
+
+
+def _uninstall_resource_matches_after(path: Path, resource: Dict[str, Any]) -> bool:
+    allowed_sha256 = resource["allowed_sha256"]
+    if allowed_sha256:
+        if len(allowed_sha256) != 1:
+            return False
+        current = _fingerprint_or_none(path)
+        return current is not None and current.sha256 == allowed_sha256[0]
+    return _portable_matches(path, _uninstall_after_state(resource))
 
 
 def _validate_uninstall_journal_resources(
@@ -8514,9 +8753,19 @@ def _validate_uninstall_journal_resources(
         )
         if resource["snapshot"] != expected_snapshot:
             raise ValueError(f"卸载恢复日志 {label} 快照名无效: {directory}")
-        if resource["allowed_sha256"]:
-            raise ValueError(f"卸载恢复日志 {label} 不应使用 SHA-only after")
-        _uninstall_after_state(resource)
+        allowed_sha256 = resource["allowed_sha256"]
+        if allowed_sha256:
+            if (
+                label != "config"
+                or len(allowed_sha256) != 1
+                or resource["allowed_absent"]
+                or resource["allowed_portable"]
+            ):
+                raise ValueError(
+                    f"卸载恢复日志 {label} SHA-only after 状态无效: {directory}"
+                )
+        else:
+            _uninstall_after_state(resource)
     if resources["config"]["before"] is None:
         raise ValueError(f"卸载恢复日志 config 缺少 before: {directory}")
     if resources["md"]["before"] is None:
@@ -8560,6 +8809,7 @@ def _create_uninstall_journals(
             path: Path,
             before: Optional[FileFingerprint],
             after: Optional[Dict[str, Any]],
+            after_sha256: Optional[str] = None,
         ) -> Dict[str, Any]:
             return _journal_resource(
                 path.name,
@@ -8569,7 +8819,8 @@ def _create_uninstall_journals(
                     if before is not None
                     else None
                 ),
-                allowed_absent=after is None,
+                allowed_absent=after is None and after_sha256 is None,
+                allowed_sha256=[after_sha256] if after_sha256 is not None else [],
                 allowed_portable=[after] if after is not None else [],
             )
 
@@ -8585,7 +8836,22 @@ def _create_uninstall_journals(
                 "config",
                 config_path,
                 current(config_path),
-                config["before"] if config["changed"] else config["after"],
+                (
+                    None
+                    if plan.merged_config_content is not None
+                    else (
+                        config["before"]
+                        if config["changed"]
+                        else _portable_fingerprint(current(config_path))
+                    )
+                ),
+                (
+                    hashlib.sha256(
+                        plan.merged_config_content.encode("utf-8")
+                    ).hexdigest()
+                    if plan.merged_config_content is not None
+                    else None
+                ),
             ),
             "md": resource("md", md_path, current(md_path), md["before"]),
             "manifest": resource(
@@ -8890,7 +9156,17 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
 
     _update_uninstall_phase(state, "config-intent")
     config_path = codex_dir / config["path"]
-    if config["changed"]:
+    if plan.merged_config_content is not None:
+        atomic_write_text(
+            config_path,
+            plan.merged_config_content,
+            expected_fingerprint=plan.current_fingerprints[config_path],
+            on_published=lambda published: state.post_expected.__setitem__(
+                config_path,
+                _portable_fingerprint(published),
+            ),
+        )
+    elif config["changed"]:
         current = plan.current_fingerprints[config_path]
         config_backup = codex_dir / config["backup"]
         _replace_owned_from_backup(
@@ -8899,7 +9175,17 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             config_backup,
             plan.current_fingerprints[config_backup],
         )
-    _record_post(state, config_path)
+        _record_post(state, config_path)
+    else:
+        expected = plan.current_fingerprints[config_path]
+        if not _path_has_fingerprint(config_path, expected):
+            raise HooksConflict(
+                _localized(
+                    f"config.toml 在卸载字段检查后发生变化: {config_path}",
+                    f"config.toml changed after uninstall field validation: {config_path}",
+                )
+            )
+        state.post_expected[config_path] = _portable_fingerprint(expected)
 
     _update_uninstall_phase(state, "md-intent")
     md_path = codex_dir / md["path"]
@@ -9166,6 +9452,17 @@ def _uninstall_locked(codex_dirs: List[str], yes: bool) -> None:
             sys.exit(1)
         _print(f"[错误] 卸载失败，开始反向恢复: {exc}")
         rollback_errors = []
+        failed_residue = (
+            exc.transaction_dir
+            if isinstance(exc, TransactionResidueCleanupFailure)
+            else None
+        )
+        if failed_residue is not None:
+            record = _OWNED_DIRECTORY_RECORDS.pop(str(failed_residue), None)
+            if record is None:
+                rollback_errors.append(
+                    f"写入 residue 缺少活动所有权记录: {failed_residue}"
+                )
         for state in reversed(states):
             rollback_errors.extend(_rollback_uninstall_state(state))
         for error in rollback_errors:
@@ -9176,15 +9473,25 @@ def _uninstall_locked(codex_dirs: List[str], yes: bool) -> None:
                     states[0].journal_data,
                     "recovered",
                 )
-                _cleanup_uninstall_residues(
-                    states[0].journal_data,
-                    {
-                        str(state.codex_dir.resolve()): state.journal_dir
-                        for state in states
-                    },
-                )
                 _update_deployment_journals(states, "recovered")
-                _remove_deployment_journals(states)
+                if isinstance(exc, TransactionResidueCleanupFailure):
+                    _print(
+                        _localized(
+                            "[恢复] 写入 residue 清理失败；已保留 recovered journal，"
+                            "请运行 --recover 完成清理。",
+                            "[Restore] Write residue cleanup failed; the recovered "
+                            "journal was preserved. Run --recover to finish cleanup.",
+                        )
+                    )
+                else:
+                    _cleanup_uninstall_residues(
+                        states[0].journal_data,
+                        {
+                            str(state.codex_dir.resolve()): state.journal_dir
+                            for state in states
+                        },
+                    )
+                    _remove_deployment_journals(states)
             except BaseException as recovery_exc:
                 rollback_errors.append(str(recovery_exc))
                 _print(f"  [回滚警告] durable recovery 清理失败: {recovery_exc}")
@@ -9697,6 +10004,10 @@ def _detect_newline(content: str) -> str:
 
 def _analyze_toml_root(content: str) -> TomlRootAnalysis:
     """Conservatively locate top-level TOML keys without parsing nested tables."""
+    # This zero-dependency scanner protects the target field and rejects
+    # unsupported/ambiguous statement boundaries.  It is deliberately not a
+    # complete TOML validator: unrelated value syntax and cross-table key
+    # redefinition can remain outside what it proves.
     index = 1 if content.startswith("\ufeff") else 0
     statements = []
     first_table_start = None
@@ -10456,12 +10767,38 @@ def _deploy_locked(args, codex_dirs: Optional[List[str]] = None) -> None:
             sys.exit(1)
         _print(f"\n[错误] 部署失败，开始回滚: {exc}")
         rollback_errors = []
+        failed_residue = (
+            exc.transaction_dir
+            if isinstance(exc, TransactionResidueCleanupFailure)
+            else None
+        )
+        if failed_residue is not None:
+            record = _OWNED_DIRECTORY_RECORDS.pop(str(failed_residue), None)
+            if record is None:
+                rollback_errors.append(
+                    f"写入 residue 缺少活动所有权记录: {failed_residue}"
+                )
         for state in reversed(states):
             rollback_errors.extend(rollback_deployment_state(state, md_filename))
         for rollback_error in rollback_errors:
             _print(f"  [回滚警告] {rollback_error}")
         if rollback_errors:
             _print("[错误] 部署未完成，部分路径需要使用现有备份手动恢复。")
+        elif isinstance(exc, TransactionResidueCleanupFailure):
+            try:
+                _validate_terminal_journal_state(states[0].journal_data, "recovered")
+                _update_deployment_journals(states, "recovered")
+                _print(
+                    _localized(
+                        "[恢复] 写入 residue 清理失败；已保留 recovered journal，"
+                        "请运行 --recover 完成清理。",
+                        "[Restore] Write residue cleanup failed; the recovered "
+                        "journal was preserved. Run --recover to finish cleanup.",
+                    )
+                )
+            except BaseException as recovery_exc:
+                rollback_errors.append(str(recovery_exc))
+                _print(f"  [回滚警告] durable recovery 持久化失败: {recovery_exc}")
         else:
             try:
                 _remove_deployment_journals(states)
