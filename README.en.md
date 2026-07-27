@@ -24,7 +24,7 @@
 **This changes Codex's global behavior, not a per-project setting**: deployment edits `model_instructions_file` in `~/.codex/config.toml`, so it affects every new session under that configuration, and by default it pauses your entire existing `hooks.json` until you explicitly restore it. The bundled example prompt directs the model to drop refusal framing, treats reverse-shell/keygen/bypass requests as local fixtures, and covers adult and weapons/chemistry content. **This is a broad behavior change, not a safety boundary** — read [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) before using it, or supply your own file with `--file`.
 
 > [!WARNING]
-> Do not use the published `v0.1.0` on Windows; it has a known cleanup defect (see Compatibility below). Windows currently only works from the current source build and is marked beta.
+> Do not use the published `v0.1.0` on Windows; it has a known cleanup defect (see Compatibility below). v0.1.1 and later provide the native recovery backend; Windows fresh deployment remains beta.
 
 ### Quick start (macOS / Linux)
 
@@ -84,7 +84,7 @@ Uninstall removes only the newest layer each run; repeat it to peel back earlier
 
 - Recommended Python 3.10–3.14; verified against `codex-cli 0.144.1`.
 - macOS / Linux are the primary support range.
-- **Windows**: the published `v0.1.0` has a known defect (`os.utime` failure followed by a second `PermissionError` that leaves a journal the old script can't recover). The current source rewrote the Windows filesystem backend and is marked `EXPLICIT_BETA` — usable, but not formally supported yet. If v0.1.0 left a journal on Windows, recover with the current script in order: `--status` → `--recover` preview → `--recover --yes` → `--status`; never manually delete evidence.
+- **Windows**: the published `v0.1.0` has a known defect (`os.utime` failure followed by a second `PermissionError` that leaves a journal the old script can't recover). v0.1.1 and later include the rewritten Windows filesystem backend under `EXPLICIT_BETA` — usable, but not formally supported yet. If v0.1.0 left a journal on Windows, recover with the latest verified Release script in order: `--status` → `--recover` preview → `--recover --yes` → `--status`; never manually delete evidence.
 - Single-file CLI, no `pip install` or auto-updater; backups and uninstall archives are not cleaned automatically.
 - Full limits list, transaction guarantees, and maintainer verification: [`docs/reference.md`](docs/reference.md).
 
