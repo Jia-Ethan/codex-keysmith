@@ -13,15 +13,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.1.1"
-VERSION = "0.1.1"
+TAG = "v0.1.2"
+VERSION = "0.1.2"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "VERSION",
     "codex-instruct.py",
-    "docs/releases/v0.1.1.md",
+    "docs/releases/v0.1.2.md",
     "examples/gpt-unrestricted.md",
 }
 WINDOWS_POLICY_FILES = (
@@ -30,7 +30,7 @@ WINDOWS_POLICY_FILES = (
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/hooks-transactions.md",
-    "docs/releases/v0.1.1.md",
+    "docs/releases/v0.1.2.md",
 )
 
 
@@ -117,9 +117,9 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-07-22".format(VERSION) in changelog
-    assert "Source version v0.1.1" in readme
-    assert "v0.1.1 local candidate" not in readme
+    assert "## [{}] - 2026-07-27".format(VERSION) in changelog
+    assert "Source version v0.1.2" in readme
+    assert "v0.1.2 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
