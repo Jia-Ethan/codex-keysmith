@@ -12,7 +12,7 @@
 | `Unreleased` / `main` | Best effort 开发状态；不视为稳定 Release |
 | 更早版本与未标记快照 | 不支持 |
 
-Windows v0.1.0 fresh deployment 为 known-bad；v0.1.1 提供受验证的 Issue #1 recovery 路径，并以 `EXPLICIT_BETA` 开放 fresh deployment。preview 与执行会显示 beta 警告，但这不构成正式 Windows 安全支持承诺；P1/P2 残余边界仍然适用。Python 3.9 仅保留 compatibility 测试；建议使用 Python 3.10–3.14。
+Windows v0.1.0 fresh deployment 为 known-bad；v0.1.1 及后续版本提供受验证的 Issue #1 recovery 路径，并以 `EXPLICIT_BETA` 开放 fresh deployment。preview 与执行会显示 beta 警告，但这不构成正式 Windows 安全支持承诺；P1/P2 残余边界仍然适用。Python 3.9 仅保留 compatibility 测试；建议使用 Python 3.10–3.14。
 
 ## 私密报告漏洞
 
@@ -52,7 +52,7 @@ v0.1.0 之前没有部署清单的状态不属于自动卸载所有权。成功�
 | `Unreleased` / `main` | Best-effort development state, not a stable Release |
 | Older releases and untagged snapshots | Unsupported |
 
-Windows v0.1.0 fresh deployment is known-bad; v0.1.1 provides a verified Issue #1 recovery path and opens fresh deployment under `EXPLICIT_BETA`. Preview and execution display a beta warning, but this is not a formal Windows security-support commitment; the remaining P1/P2 boundaries still apply. Python 3.9 is retained only for compatibility testing; Python 3.10–3.14 is recommended.
+Windows v0.1.0 fresh deployment is known-bad; v0.1.1 and later provide a verified Issue #1 recovery path and open fresh deployment under `EXPLICIT_BETA`. Preview and execution display a beta warning, but this is not a formal Windows security-support commitment; the remaining P1/P2 boundaries still apply. Python 3.9 is retained only for compatibility testing; Python 3.10–3.14 is recommended.
 
 ## Private vulnerability reporting
 

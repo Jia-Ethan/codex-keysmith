@@ -13,8 +13,8 @@ body:
     id: keysmith-version
     attributes:
       label: codex-keysmith 版本 / Version
-      description: Paste the output of `python3 codex-instruct.py --version`. Windows v0.1.0 fresh deployment is known-bad; preserve journals and identify whether this is v0.1.1 recovery or an isolated fresh-deployment fixture.
-      placeholder: codex-instruct.py 0.1.1
+      description: Paste the output of `python3 codex-instruct.py --version`. Windows v0.1.0 fresh deployment is known-bad; preserve journals and identify whether this uses v0.1.1 or later recovery, or an isolated fresh-deployment fixture.
+      placeholder: codex-instruct.py 0.1.2
     validations:
       required: true
 
@@ -23,7 +23,7 @@ body:
     attributes:
       label: Release tag 与 commit（可选）/ Release tag and commit (optional)
       description: If known, the fixed Release tag and commit SHA. Leave blank if unsure.
-      placeholder: v0.1.1 / 0123456789abcdef0123456789abcdef01234567
+      placeholder: v0.1.2 / 0123456789abcdef0123456789abcdef01234567
 
   - type: input
     id: operating-system

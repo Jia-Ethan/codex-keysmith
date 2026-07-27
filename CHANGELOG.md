@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-27
+
+This patch release fixes schema-1 config ownership around external `config.toml` rewrites and includes the release-recovery hardening merged after v0.1.1. Formal release status is established only by the immutable signed `v0.1.2` annotated tag, its peeled commit, the GitHub Release, and matching asset checksums.
+
 ### Fixed
 
 - Schema-1 manifest config ownership is now interpreted as semantic ownership of the top-level `model_instructions_file`, fixing CCSwitch-style rewrites of unrelated `config.toml` fields blocking status, deploy, or uninstall. Uninstall preserves unrelated live content while restoring/removing only the pre-deployment instruction statement, fails closed when that reference is missing/different or the target field is ambiguous/uses unsupported structure, and keeps full-file fingerprints for CAS, durable snapshots, rollback, concurrency, and recovery. Merged config publication uses one immutable SHA-only uninstall after-state without weakening any other resource.
@@ -98,6 +102,7 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0

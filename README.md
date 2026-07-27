@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.1.1" src="https://img.shields.io/badge/source-v0.1.1-0099CC">
+  <img alt="Source version v0.1.2" src="https://img.shields.io/badge/source-v0.1.2-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -37,7 +37,7 @@
 **这会改变 Codex 的全局行为，不是项目级设置**：部署会修改 `~/.codex/config.toml` 里的 `model_instructions_file`，因此影响该配置下的**所有新会话**；默认还会暂停你现有的整份 `hooks.json`，直到你显式恢复。内置的示例提示词会让模型不再用拒绝式话术回答，把 reverse shell / keygen / bypass 一类请求当作本地样本处理，也覆盖成人题材、化学/药理/武器类内容。**这不是安全边界，是一次影响很广的行为切换**——用前请打开 [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) 看一眼，或者用 `--file` 换成你自己的指令。
 
 > [!WARNING]
-> 不要在 Windows 上使用已发布的 `v0.1.0`；它有已知的清理缺陷（详见「兼容性与限制」）。Windows 目前只能用当前源码构建，且标记为 beta。
+> 不要在 Windows 上使用已发布的 `v0.1.0`；它有已知的清理缺陷（详见「兼容性与限制」）。v0.1.1 及后续版本已提供原生恢复后端；Windows fresh deployment 仍标记为 beta。
 
 ### 快速开始（macOS / Linux）
 
@@ -97,7 +97,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 
 - 推荐 Python 3.10–3.14；已验证 Codex CLI `codex-cli 0.144.1`。
 - macOS / Linux 是主要支持范围。
-- **Windows**：已发布的 `v0.1.0` 存在已知缺陷（`os.utime` 失败后触发第二个 `PermissionError`，会留下无法用旧脚本恢复的 journal）。当前源码已重写 Windows 文件系统后端并标记 `EXPLICIT_BETA`，可以试用，但还不是正式支持；如果你在 Windows 上用 v0.1.0 留下了 journal，用当前脚本按 `--status` → `--recover` 预览 → `--recover --yes` → `--status` 的顺序恢复，不要手工删除任何证据。
+- **Windows**：已发布的 `v0.1.0` 存在已知缺陷（`os.utime` 失败后触发第二个 `PermissionError`，会留下无法用旧脚本恢复的 journal）。v0.1.1 及后续版本已重写 Windows 文件系统后端并标记 `EXPLICIT_BETA`，可以试用，但还不是正式支持；如果 v0.1.0 留下了 journal，用最新已校验 Release 脚本按 `--status` → `--recover` 预览 → `--recover --yes` → `--status` 的顺序恢复，不要手工删除任何证据。
 - 单文件 CLI，没有 `pip install` 或自动更新；备份和卸载归档不会自动清理。
 - 完整限制清单、事务保证、维护者验证步骤见 [`docs/reference.md`](docs/reference.md)。
 

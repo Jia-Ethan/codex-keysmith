@@ -4,7 +4,7 @@
 
 # Hooks, durable journal, and file transaction model
 
-This document describes the v0.1.1 durable transaction and native-filesystem candidate. It is the technical reference for deployment, interrupted deploy/uninstall recovery, hooks restore, status health, and manifest-based uninstall. The signed v0.1.0 artifacts remain unchanged; their Windows initializing-journal failure is handled by the v0.1.1 recovery path.
+This document describes the v0.1.2 durable transaction and native-filesystem implementation. It is the technical reference for deployment, interrupted deploy/uninstall recovery, hooks restore, status health, and manifest-based uninstall. The signed v0.1.0 artifacts remain unchanged; their Windows initializing-journal failure is handled by the v0.1.1 and later recovery path.
 
 ## 中文说明
 
