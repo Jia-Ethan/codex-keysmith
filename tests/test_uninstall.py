@@ -359,9 +359,9 @@ def test_frozen_schema1_manifest_supports_external_rewrite_field_only_restore(
     config = codex_dir / "config.toml"
     backup = codex_dir / manifest["config"]["backup"]
     md = codex_dir / manifest["md"]["path"]
-    config.write_text(deployed_config, encoding="utf-8")
-    backup.write_text(original, encoding="utf-8")
-    md.write_text(prompt, encoding="utf-8")
+    config.write_bytes(deployed_config.encode("utf-8"))
+    backup.write_bytes(original.encode("utf-8"))
+    md.write_bytes(prompt.encode("utf-8"))
     for path, expected in (
         (config, manifest["config"]["after"]),
         (backup, manifest["config"]["before"]),

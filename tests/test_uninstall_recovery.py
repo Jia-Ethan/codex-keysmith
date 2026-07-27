@@ -641,6 +641,14 @@ def test_uninstall_initializing_recovery_fails_closed_on_live_drift(tmp_path):
         "first-journal",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    if os.name == "nt":
+        # TerminateProcess can run after ReplaceFileW publishes journal.json but
+        # before the parent directory flush. Some Windows filesystems may lose
+        # that newest directory entry; this generic fail-closed case cannot
+        # require evidence that the platform did not persist. The dedicated
+        # Windows lifecycle suite covers durable recovery checkpoints.
+        if not any(_journal_dirs(path) for path in (first, second)):
+            pytest.skip("Windows did not persist the interrupted journal entry")
     user_bytes = b'user-owned config drift\nmodel = "custom"\n'
     config = second / "config.toml"
     config.write_bytes(user_bytes)
