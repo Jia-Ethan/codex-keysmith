@@ -53,7 +53,7 @@ Omitting `--codex-dir` processes every auto-discovered directory; only do this f
 | Path | What happens |
 | --- | --- |
 | `<codex-dir>/gpt-unrestricted.md` (or custom `--name`) | Create, or back up and replace |
-| `<codex-dir>/config.toml` | Only `model_instructions_file` changes; unchanged values stay untouched |
+| `<codex-dir>/config.toml` | Owns and edits only top-level `model_instructions_file`; external rewrites of other fields do not block status/uninstall and survive uninstall |
 | `<codex-dir>/hooks.json` | Isolated to `hooks.json.disabled` by default (backed up first) |
 | `<codex-dir>/.codex-keysmith-manifest.json` | Records what this deployment changed, for later uninstall |
 
@@ -70,7 +70,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en        # pr
 python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en  # confirm
 ```
 
-Uninstall removes only the newest layer each run; repeat it to peel back earlier deployments.
+Uninstall removes only the newest layer each run; repeat it to peel back earlier deployments. Long-lived config ownership covers only the top-level `model_instructions_file`: rewrites by CCSwitch or similar tools remain compatible while that field still references this layer's Markdown. Uninstall restores or removes only the pre-deployment field statement and preserves all other live content. A missing/different target reference, target-field ambiguity, or unsupported statement structure still fails closed.
 
 ### If something goes wrong
 

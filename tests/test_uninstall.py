@@ -11,6 +11,11 @@ from pathlib import Path
 import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex-instruct.py"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "schema1-historical-field-restore.json"
+)
 spec = importlib.util.spec_from_file_location("codex_instruct_uninstall", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = codex_instruct
@@ -334,6 +339,315 @@ def test_uninstall_previews_then_restores_first_deployment(tmp_path):
     assert not (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
     assert list(codex_dir.glob(f"{codex_instruct.MANIFEST_FILENAME}.uninstalled_*"))
     assert list(codex_dir.glob("config.toml.bak_*"))
+
+
+def test_frozen_schema1_manifest_supports_external_rewrite_field_only_restore(
+    tmp_path,
+):
+    manifest = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    codex_dir = tmp_path / "historical-schema1"
+    codex_dir.mkdir()
+    original = (
+        'model_instructions_file = "./historical.md"\n'
+        'model = "pre-schema-one"\n'
+    )
+    deployed_config = (
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'model = "pre-schema-one"\n'
+    )
+    prompt = "frozen schema-1 historical prompt\n"
+    config = codex_dir / "config.toml"
+    backup = codex_dir / manifest["config"]["backup"]
+    md = codex_dir / manifest["md"]["path"]
+    config.write_bytes(deployed_config.encode("utf-8"))
+    backup.write_bytes(original.encode("utf-8"))
+    md.write_bytes(prompt.encode("utf-8"))
+    for path, expected in (
+        (config, manifest["config"]["after"]),
+        (backup, manifest["config"]["before"]),
+        (md, manifest["md"]["after"]),
+    ):
+        os.utime(path, ns=(expected["mtime_ns"], expected["mtime_ns"]))
+        assert codex_instruct._portable_matches(path, expected)
+    (codex_dir / codex_instruct.MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    external_rewrite = (
+        'model = "ccswitch-historical"\n'
+        'approval_policy = "never"\n'
+        'model_instructions_file = "./gpt-unrestricted.md" # external rewrite\n'
+    )
+    config.write_text(external_rewrite, encoding="utf-8")
+
+    result = _run(
+        "--codex-dir",
+        codex_dir,
+        "--uninstall",
+        "--yes",
+        "--lang",
+        "en",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+    assert config.read_text(encoding="utf-8") == (
+        'model = "ccswitch-historical"\n'
+        'approval_policy = "never"\n'
+        'model_instructions_file = "./historical.md"\n'
+    )
+    assert not md.exists()
+
+
+def test_ccswitch_rewrite_preserves_unrelated_config_and_restores_old_reference(
+    tmp_path,
+):
+    original = (
+        'model_instructions_file = "./previous.md"\n'
+        'model = "gpt-5.6"\n'
+    )
+    codex_dir = _make_codex_dir(tmp_path, config=original)
+    _deploy(codex_dir)
+    rewritten = (
+        'model = "ccswitch-model"\n'
+        'approval_policy = "never"\n'
+        'model_instructions_file = "./gpt-unrestricted.md" # kept by CCSwitch\n'
+    )
+    (codex_dir / "config.toml").write_text(rewritten, encoding="utf-8")
+
+    status = _run("--codex-dir", codex_dir, "--status")
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "卸载就绪度: ready" in status.stdout
+    assert "可部署性: ready" in status.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == (
+        'model = "ccswitch-model"\n'
+        'approval_policy = "never"\n'
+        'model_instructions_file = "./previous.md"\n'
+    )
+    assert not (codex_dir / "gpt-unrestricted.md").exists()
+
+
+def test_stacked_manifests_keep_semantic_config_ownership_after_rewrite(tmp_path):
+    codex_dir = _make_codex_dir(
+        tmp_path,
+        config=(
+            'model_instructions_file = "./previous.md"\n'
+            'model = "before"\n'
+        ),
+    )
+    _deploy(codex_dir)
+    rewritten = (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'external = true\n'
+    )
+    (codex_dir / "config.toml").write_text(rewritten, encoding="utf-8")
+
+    _deploy(codex_dir)
+    first_uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+    second_uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert first_uninstall.returncode == 0, first_uninstall.stdout + first_uninstall.stderr
+    assert second_uninstall.returncode == 0, second_uninstall.stdout + second_uninstall.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./previous.md"\n'
+        'external = true\n'
+    )
+
+
+def test_ccswitch_rewrite_preserves_unrelated_config_when_old_reference_absent(
+    tmp_path,
+):
+    codex_dir = _make_codex_dir(tmp_path, config='model = "gpt-5.6"\n')
+    _deploy(codex_dir)
+    rewritten = (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'sandbox_mode = "workspace-write"\n'
+    )
+    (codex_dir / "config.toml").write_text(rewritten, encoding="utf-8")
+
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == (
+        'model = "ccswitch-model"\n'
+        'sandbox_mode = "workspace-write"\n'
+    )
+
+
+def test_ccswitch_rewrite_of_unchanged_owned_reference_is_not_touched(tmp_path):
+    codex_dir = _make_codex_dir(
+        tmp_path,
+        config='model_instructions_file = "./gpt-unrestricted.md"\n',
+    )
+    _deploy(codex_dir)
+    manifest = json.loads(
+        (codex_dir / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["config"]["changed"] is False
+    rewritten = (
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'notice = "external"\n'
+    )
+    (codex_dir / "config.toml").write_text(rewritten, encoding="utf-8")
+
+    status = _run("--codex-dir", codex_dir, "--status")
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == rewritten
+    assert not (codex_dir / "gpt-unrestricted.md").exists()
+
+
+def test_exact_manifest_config_with_missing_owned_reference_still_blocks(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    manifest_path = codex_dir / codex_instruct.MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    missing_reference = 'model = "externally-published"\n'
+    config.write_text(missing_reference, encoding="utf-8")
+    fingerprint = codex_instruct._fingerprint_regular_file(config)
+    manifest["config"]["after"] = codex_instruct._portable_fingerprint(fingerprint)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert result.returncode == 1
+    assert "model_instructions_file" in result.stdout
+    assert config.read_text(encoding="utf-8") == missing_reference
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+
+
+def test_english_uninstall_target_field_error_has_no_chinese(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text(
+        'model_instructions_file = "./gpt-unrestricted.md"\ninvalid toml\n',
+        encoding="utf-8",
+    )
+
+    result = _run(
+        "--codex-dir",
+        codex_dir,
+        "--uninstall",
+        "--yes",
+        "--lang",
+        "en",
+    )
+
+    assert result.returncode == 1
+    assert "config.toml drifted and has target-field ambiguity" in result.stdout
+    assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+
+
+def test_uninstall_accepts_same_config_bytes_with_changed_mtime(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    deployed_bytes = config.read_bytes()
+    current_mtime = config.stat().st_mtime_ns
+    os.utime(config, ns=(config.stat().st_atime_ns, current_mtime + 10_000_000))
+    assert config.read_bytes() == deployed_bytes
+
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert config.read_text(encoding="utf-8") == 'model = "gpt-5.6"\n'
+
+
+@pytest.mark.parametrize(
+    "current_config",
+    [
+        'model = "ccswitch-model"\n',
+        'model_instructions_file = "./other.md"\nmodel = "ccswitch-model"\n',
+    ],
+)
+def test_config_target_reference_drift_is_field_specific_blocker(
+    tmp_path,
+    current_config,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text(current_config, encoding="utf-8")
+    before = _snapshot_files(codex_dir)
+
+    status = _run("--codex-dir", codex_dir, "--status")
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert status.returncode == 1
+    assert result.returncode == 1
+    assert "model_instructions_file" in status.stdout
+    assert "model_instructions_file" in result.stdout
+    assert _snapshot_files(codex_dir) == before
+
+
+@pytest.mark.parametrize(
+    "current_config",
+    [
+        'model_instructions_file = "./gpt-unrestricted.md"\ninvalid toml\n',
+        (
+            'model_instructions_file = "./gpt-unrestricted.md"\n'
+            '"model_instructions_file" = "./gpt-unrestricted.md"\n'
+        ),
+    ],
+)
+def test_invalid_or_ambiguous_drifted_config_blocks_uninstall(
+    tmp_path,
+    current_config,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text(current_config, encoding="utf-8")
+    before = _snapshot_files(codex_dir)
+
+    result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert result.returncode == 1
+    assert "config.toml" in result.stdout
+    assert _snapshot_files(codex_dir) == before
+
+
+def test_config_merge_cas_rejects_race_without_overwriting_external_content(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    config.write_text(
+        'model = "ccswitch-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n',
+        encoding="utf-8",
+    )
+    external = (
+        'model = "concurrent-model"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'concurrent = true\n'
+    )
+    real_atomic_write = codex_instruct.atomic_write_text
+
+    def race_before_merge(path, content, **kwargs):
+        if Path(path) == config:
+            config.write_text(external, encoding="utf-8")
+        return real_atomic_write(path, content, **kwargs)
+
+    monkeypatch.setattr(codex_instruct, "atomic_write_text", race_before_merge)
+
+    with pytest.raises(SystemExit) as caught:
+        codex_instruct.uninstall([str(codex_dir)], yes=True)
+
+    assert caught.value.code == 1
+    assert config.read_text(encoding="utf-8") == external
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
 
 
 def test_uninstall_restores_hooks_existing_disabled_and_legacy(tmp_path):

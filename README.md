@@ -66,7 +66,7 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 | 路径 | 会发生什么 |
 | --- | --- |
 | `<codex-dir>/gpt-unrestricted.md`（或自定义 `--name`） | 新建，或先备份再替换 |
-| `<codex-dir>/config.toml` | 只改 `model_instructions_file` 这一项，值不变就不动 |
+| `<codex-dir>/config.toml` | 只拥有并修改顶层 `model_instructions_file`；外部工具重写其他字段不会阻塞 status/uninstall，卸载会保留这些字段 |
 | `<codex-dir>/hooks.json` | 默认整体隔离为 `hooks.json.disabled`（先备份） |
 | `<codex-dir>/.codex-keysmith-manifest.json` | 记录这次部署改了什么，供后续卸载用 |
 
@@ -83,7 +83,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang zh-CN        #
 python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  # 确认卸载
 ```
 
-卸载每次只撤销最新一层部署；部署过多次的话，重复运行逐层撤销。
+卸载每次只撤销最新一层部署；部署过多次的话，重复运行逐层撤销。config 的长期所有权只覆盖顶层 `model_instructions_file`：CCSwitch 等工具重写其他字段时，只要该字段仍引用本层 MD，status 和卸载仍可继续；卸载只恢复/移除部署前的该字段语句并保留其余当前内容。目标字段缺失、改指其他路径、存在歧义或使用扫描器不支持的语句结构仍会 fail closed。
 
 ### 出问题了怎么办
 

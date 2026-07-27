@@ -113,6 +113,7 @@ def test_repository_version_metadata_is_release_state_neutral():
     script = (REPO_ROOT / "codex-instruct.py").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    english_readme = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
@@ -120,19 +121,11 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert "Source version v0.1.1" in readme
     assert "v0.1.1 local candidate" not in readme
     assert "This candidate has no tag" not in readme
-    chinese_candidate = readme.split("### v0.1.1 源码与候选构建", 1)[1].split(
-        "\n## English\n",
-        1,
-    )[0]
-    english_candidate = readme.split("### v0.1.1 source and candidate builds", 1)[1]
-    assert "codex-instruct-v0.1.0.py" in readme.split(
-        "### v0.1.1 源码与候选构建",
-        1,
-    )[0]
-    assert "codex-instruct-v0.1.0.py" not in chinese_candidate
-    assert "codex-instruct-v0.1.0.py" not in english_candidate
-    assert "python3 codex-instruct.py --codex-dir" in chinese_candidate
-    assert "python3 codex-instruct.py --codex-dir" in english_candidate
+    for quick_start in (readme, english_readme):
+        assert "codex-instruct-vX.Y.Z.py" in quick_start
+        assert "codex-instruct-v0.1.0.py" not in quick_start
+        assert "--codex-dir ~/.codex --status" in quick_start
+        assert "--codex-dir ~/.codex --dry-run" in quick_start
 
 
 def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():

@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Schema-1 manifest config ownership is now interpreted as semantic ownership of the top-level `model_instructions_file`, fixing CCSwitch-style rewrites of unrelated `config.toml` fields blocking status, deploy, or uninstall. Uninstall preserves unrelated live content while restoring/removing only the pre-deployment instruction statement, fails closed when that reference is missing/different or the target field is ambiguous/uses unsupported structure, and keeps full-file fingerprints for CAS, durable snapshots, rollback, concurrency, and recovery. Merged config publication uses one immutable SHA-only uninstall after-state without weakening any other resource.
 - Release recovery now keeps an existing immutable signed tag, reruns every blocking job against its exact peeled commit, and stages draft assets through the numeric Release ID and returned upload URL instead of querying an unpublished draft by tag.
 
 ## [0.1.1] - 2026-07-22
