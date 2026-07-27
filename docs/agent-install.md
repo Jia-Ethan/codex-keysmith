@@ -13,14 +13,3 @@ English version:
 ```text
 Install the latest codex-keysmith Release. Only download assets from the GitHub Releases page, verify SHA256SUMS first, and never pipe curl into python. Run --version, --status, and --dry-run; report the target .codex directory, bundled-prompt source and SHA-256, global behavior scope, the MD/config/hooks/legacy/manifest plan, and backup paths. If status finds a durable journal, only preview --recover and wait for my confirmation before adding --yes. Start a new Codex session to verify after deployment. Do not delete any backup or transaction journal, and do not modify the Codex binary, network, running processes, or credentials.
 ```
-
-## 友链 / Community
-
-本项目接受 LINUX DO 社区佬友监督与反馈: [LINUX DO](https://linux.do)
-
-同系列项目 / Same series:
-
-- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) - Codex CLI instruction-file deployment for local configuration.
-- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) - Claude Code `CLAUDE.md` import-block installer for local instruction files.
-- [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) - Grok Build `AGENTS.md` installer with compat/hook isolation.
-- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) - ZCode `AGENTS.md` installer for local instructions.
