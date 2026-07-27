@@ -92,6 +92,17 @@ Uninstall removes only the newest layer each run; repeat it to peel back earlier
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md); do not paste credentials, complete configuration, or private paths into a public issue.
 
+### Community
+
+This project accepts monitoring and feedback from the LINUX DO community: [LINUX DO](https://linux.do)
+
+Same series:
+
+- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) - Codex CLI instruction-file deployment for local configuration.
+- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) - Claude Code `CLAUDE.md` import-block installer for local instruction files.
+- [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) - Grok Build `AGENTS.md` installer with compat/hook isolation.
+- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) - ZCode `AGENTS.md` installer for local instructions.
+
 ---
 
-简体中文版: [`README.md`](README.md)。Agent install prompt and sibling projects: [`docs/agent-install.md`](docs/agent-install.md).
+简体中文版: [`README.md`](README.md)。Agent install prompt: [`docs/agent-install.md`](docs/agent-install.md).
