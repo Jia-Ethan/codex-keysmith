@@ -59,6 +59,17 @@ Omitting `--codex-dir` processes every auto-discovered directory; only do this f
 
 Full field list, transaction directories, and edge cases: [`docs/reference.md`](docs/reference.md).
 
+### Using CCSwitch profiles as an activation switch
+
+When CCSwitch stores and replaces the complete Codex `config.toml` for each provider, two provider copies can hold separate Keysmith On / Off snapshots:
+
+1. First inspect CCSwitch's Codex **Common Config Snippet**. It must not contain `model_instructions_file`, and the On / Off copies must not use “Apply Common Config” to share that field; otherwise the effective Off live config is merged back into On.
+2. Select the copy that should be **On**, then deploy Keysmith. If only the prompt should switch and hooks must not become a global side effect, deploy with `--skip-hooks-isolation`.
+3. Switch to an **Off** copy whose top-level config has no `model_instructions_file`, then verify with `--status`. On should report `Config activation: active` and Off should report `inactive-by-config`; if Off is still active, remove the field from both the provider config and Common Config Snippet. Off is not structural damage, but deploy and uninstall remain blocked; switch back to On before either write operation.
+4. After uninstall, switch away from the cleaned On copy in CCSwitch normal mode, check for an “outgoing provider backfill failed” warning, then inspect that copy's stored config and confirm the field is gone. One completed switch alone does not prove that backfill succeeded.
+
+This workflow was checked against CCSwitch v3.18.0 (`ff3bc242`) normal provider switching and backfill. In that version, proxy-takeover hot switching may also rebuild live config from a provider's effective configuration, but restore backups, Common Config merging, and proxy-field overrides are involved, so Keysmith does not treat it as a stable compatibility contract. Config switching affects only new sessions and never switches `hooks.json` / `hooks.json.disabled` with it.
+
 ### Undo
 
 ```bash
@@ -70,7 +81,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en        # pr
 python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en  # confirm
 ```
 
-Uninstall removes only the newest layer each run; repeat it to peel back earlier deployments. Long-lived config ownership covers only the top-level `model_instructions_file`: rewrites by CCSwitch or similar tools remain compatible while that field still references this layer's Markdown. Uninstall restores or removes only the pre-deployment field statement and preserves all other live content. A missing/different target reference, target-field ambiguity, or unsupported statement structure still fails closed.
+Uninstall removes only the newest layer each run; repeat it to peel back earlier deployments. Long-lived config ownership covers only the top-level `model_instructions_file`: rewrites by CCSwitch or similar tools remain compatible while that field still references this layer's Markdown. Uninstall restores or removes only the pre-deployment field statement and preserves all other live content. A missing field is reported by read-only status as `inactive-by-config`, while deploy/uninstall still fail closed until an active profile restores the managed reference. A different target, target-field ambiguity, or unsupported statement structure remains a conflict.
 
 ### If something goes wrong
 

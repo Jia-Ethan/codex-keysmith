@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Read-only status now distinguishes `active`, `inactive-by-config`, `conflict`, and `not-installed` activation states. A CCSwitch profile whose effective live `config.toml` omits the managed `model_instructions_file` is reported as an installed but inactive configuration instead of structural damage; status exits successfully while deploy/uninstall remain fail-closed until the managed reference returns. Documentation now covers the two-provider On/Off workflow, Common Config reinjection, backfill verification, proxy-takeover boundary, new-session behavior, global hook isolation, and stored-profile cleanup after uninstall.
+
+### Changed
+
+- Release bundles now include `README.en.md`, `docs/reference.md`, `docs/agent-install.md`, and the README preview image, so bilingual quick-start, reference, and local media links remain available offline.
+
 ## [0.1.2] - 2026-07-27
 
 This patch release fixes schema-1 config ownership around external `config.toml` rewrites and includes the release-recovery hardening merged after v0.1.1. Formal release status is established only by the immutable signed `v0.1.2` annotated tag, its peeled commit, the GitHub Release, and matching asset checksums.

@@ -72,6 +72,17 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 完整字段、临时事务目录和边界条件见 [`docs/reference.md`](docs/reference.md)。
 
+### 与 CCSwitch 配置切换配合
+
+当 CCSwitch 以 Provider 为单位保存并整体写回 Codex `config.toml` 时，可以让两个 Provider 副本分别保存 Keysmith 的 On / Off 配置：
+
+1. 先检查 CCSwitch 的 Codex **通用配置片段**：其中不能包含 `model_instructions_file`，On / Off 两个副本也不要借助「应用通用配置」共享该字段，否则 Off 的有效 live config 仍会被合并成 On。
+2. 选择准备作为 **On** 的副本，再部署 Keysmith；若只想切换提示词、不想让 hooks 状态成为全局副作用，部署时使用 `--skip-hooks-isolation`。
+3. 切到不含顶层 `model_instructions_file` 的 **Off** 副本，再运行 `--status` 验证。On 应显示 `配置激活状态: active`，Off 应显示 `inactive-by-config`；若 Off 仍是 active，先从 Provider 配置和通用配置片段中移除该字段。Off 不是损坏，但部署和卸载仍保持 blocked；先切回 On 副本再执行写操作。
+4. 卸载后在 CCSwitch 普通模式下切离刚清理的 On 副本，检查是否出现“旧供应商配置回填失败”提示，再查看该副本保存的 config，确认字段已消失；单次切换本身不能证明回填成功。
+
+这条流程按 CCSwitch v3.18.0（`ff3bc242`）的普通 Provider 切换与回填行为核对。代理接管热切换在该版本也可能从目标 Provider 的有效配置重建 live config，但还叠加 restore backup、通用配置合并和代理字段覆盖，Keysmith 不把它作为稳定兼容契约。配置切换只影响新会话，也不会随之切换 `hooks.json` / `hooks.json.disabled`。
+
 ### 撤销
 
 ```bash
@@ -83,7 +94,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang zh-CN        #
 python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  # 确认卸载
 ```
 
-卸载每次只撤销最新一层部署；部署过多次的话，重复运行逐层撤销。config 的长期所有权只覆盖顶层 `model_instructions_file`：CCSwitch 等工具重写其他字段时，只要该字段仍引用本层 MD，status 和卸载仍可继续；卸载只恢复/移除部署前的该字段语句并保留其余当前内容。目标字段缺失、改指其他路径、存在歧义或使用扫描器不支持的语句结构仍会 fail closed。
+卸载每次只撤销最新一层部署；部署过多次的话，重复运行逐层撤销。config 的长期所有权只覆盖顶层 `model_instructions_file`：CCSwitch 等工具重写其他字段时，只要该字段仍引用本层 MD，status 和卸载仍可继续；卸载只恢复/移除部署前的该字段语句并保留其余当前内容。字段缺失时，只读 status 会识别为 `inactive-by-config`，但 deploy/uninstall 仍会 fail closed，直到切回引用本层 MD 的配置；字段改指其他路径、存在歧义或使用扫描器不支持的语句结构仍属于冲突。
 
 ### 出问题了怎么办
 
