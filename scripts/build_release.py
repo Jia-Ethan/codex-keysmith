@@ -20,11 +20,15 @@ ARCHIVE_FILES = (
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "README.en.md",
     "README.md",
     "SECURITY.md",
     "VERSION",
     "codex-instruct.py",
+    "docs/agent-install.md",
+    "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
+    "docs/reference.md",
     "examples/gpt-unrestricted.md",
 )
 MIT_MARKERS = (

@@ -2950,6 +2950,9 @@ class DirectoryPlan:
     manifest_fingerprint: Optional[FileFingerprint] = None
     legacy_fingerprint: Optional[FileFingerprint] = None
     legacy_action: str = "none"
+    activation_state: str = "not-installed"
+    inactive_config_blocker: Optional[str] = None
+    manifest_hooks_isolated: bool = False
     blockers: Optional[List[str]] = None
     uninstall_blockers: Optional[List[str]] = None
     warnings: Optional[List[str]] = None
@@ -3246,34 +3249,65 @@ def inspect_directory(
 
     if current.exists and not current.regular:
         plan.blockers.append(
-            f"目标 {current.path.name} 是 {current.kind}，不是普通文件: {current.path}"
+            _localized(
+                f"目标 {current.path.name} 是 {current.kind}，不是普通文件: {current.path}",
+                f"target {current.path.name} is a {current.kind}, not a regular file: {current.path}",
+            )
         )
     elif current.regular:
         try:
             plan.current_fingerprint = _fingerprint_regular_file(current.path)
         except OSError as exc:
-            plan.blockers.append(f"目标文件无法安全读取: {exc}")
+            plan.blockers.append(
+                _localized(
+                    f"目标文件无法安全读取: {exc}",
+                    f"target file cannot be read safely: {current.path} ({type(exc).__name__})",
+                )
+            )
 
+    if manifest.exists:
+        plan.activation_state = "conflict"
     if manifest.exists and not manifest.regular:
         plan.blockers.append(
-            f"部署清单是 {manifest.kind}，不是普通文件: {manifest.path}"
+            _localized(
+                f"部署清单是 {manifest.kind}，不是普通文件: {manifest.path}",
+                f"deployment manifest is a {manifest.kind}, not a regular file: {manifest.path}",
+            )
         )
     elif manifest.regular:
         try:
             _manifest, plan.manifest_fingerprint = _load_manifest(manifest.path)
         except (OSError, ValueError, UnicodeDecodeError) as exc:
-            plan.blockers.append(f"部署清单无效: {exc}")
+            plan.blockers.append(
+                _localized(
+                    f"部署清单无效: {exc}",
+                    f"deployment manifest is invalid: {manifest.path} ({type(exc).__name__})",
+                )
+            )
         else:
             ownership_plan = inspect_uninstall_directory(
                 codex_dir,
                 inspect_hooks=not (skip_hooks_isolation or status_mode),
                 inspect_hook_backups=status_mode or not skip_hooks_isolation,
             )
-            plan.uninstall_blockers.extend(ownership_plan.blockers)
-            plan.blockers.extend(
-                f"现有部署清单所有权冲突: {blocker}"
-                for blocker in ownership_plan.blockers
+            plan.activation_state = ownership_plan.activation_state
+            plan.manifest_hooks_isolated = bool(
+                ownership_plan.manifest
+                and ownership_plan.manifest["hooks"]["isolated"]
             )
+            plan.uninstall_blockers.extend(ownership_plan.blockers)
+            ownership_prefix = _localized(
+                "现有部署清单所有权冲突: ",
+                "existing deployment manifest ownership conflict: ",
+            )
+            for blocker in ownership_plan.blockers:
+                prefixed = f"{ownership_prefix}{blocker}"
+                plan.blockers.append(prefixed)
+                if (
+                    ownership_plan.activation_state == "inactive"
+                    and blocker == ownership_plan.activation_blocker
+                ):
+                    plan.inactive_config_blocker = prefixed
 
     if not skip_hooks_isolation:
         for label, node in (("hooks.json", hooks), ("hooks.json.disabled", disabled)):
@@ -5532,6 +5566,8 @@ class UninstallPlan:
     current_fingerprints: Optional[Dict[Path, FileFingerprint]] = None
     merged_config_content: Optional[str] = None
     hooks_state: str = "unchanged"
+    activation_state: str = "not-installed"
+    activation_blocker: Optional[str] = None
     blockers: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
@@ -5593,23 +5629,44 @@ def _preflight_manifest_path(
     path: Path,
     expected: Optional[Dict[str, Any]],
     label: str,
+    english_label: str,
 ) -> None:
     node = _classify_node(path)
     if expected is None:
         if node.exists:
-            plan.blockers.append(f"{label} 应不存在，但当前为 {node.kind}: {path}")
+            plan.blockers.append(
+                _localized(
+                    f"{label} 应不存在，但当前为 {node.kind}: {path}",
+                    f"{english_label} should be absent but is a {node.kind}: {path}",
+                )
+            )
         return
     if not node.regular:
-        plan.blockers.append(f"{label} 应为普通文件，但当前为 {node.kind}: {path}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 应为普通文件，但当前为 {node.kind}: {path}",
+                f"{english_label} must be a regular file but is a {node.kind}: {path}",
+            )
+        )
         return
     try:
         fingerprint = _fingerprint_regular_file(path)
     except OSError as exc:
-        plan.blockers.append(f"{label} 无法安全读取: {exc}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 无法安全读取: {exc}",
+                f"{english_label} cannot be read safely: {path} ({type(exc).__name__})",
+            )
+        )
         return
     plan.current_fingerprints[path] = fingerprint
     if not _portable_matches(path, expected):
-        plan.blockers.append(f"{label} 已漂移，拒绝卸载: {path}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 已漂移，拒绝卸载: {path}",
+                f"{english_label} drifted; refusing uninstall: {path}",
+            )
+        )
 
 
 def _fingerprint_matches_portable(
@@ -5705,23 +5762,30 @@ def _preflight_uninstall_config(
         and fingerprint.sha256 == config["after"]["sha256"]
     )
     owned_reference = f'./{md["path"]}'
+    if analysis.instruction_statement is None:
+        plan.activation_state = "inactive"
+        plan.activation_blocker = _localized(
+            "config.toml 顶层 model_instructions_file 所有权冲突: "
+            f"当前字段缺失，预期仍引用 {owned_reference}",
+            "top-level config.toml model_instructions_file ownership conflict: "
+            "the current field is missing; "
+            f"expected it to still reference {owned_reference}",
+        )
+        plan.blockers.append(plan.activation_blocker)
+        return
     if analysis.instruction_reference != owned_reference:
-        current_state = (
-            "缺失"
-            if analysis.instruction_statement is None
-            else "指向其他路径"
+        plan.activation_state = "conflict"
+        plan.activation_blocker = _localized(
+            "config.toml 顶层 model_instructions_file 所有权冲突: "
+            f"当前字段指向其他路径，预期仍引用 {owned_reference}",
+            "top-level config.toml model_instructions_file ownership conflict: "
+            "the current field is set to another path; "
+            f"expected it to still reference {owned_reference}",
         )
-        plan.blockers.append(
-            _localized(
-                "config.toml 顶层 model_instructions_file 所有权冲突: "
-                f"当前字段{current_state}，预期仍引用 {owned_reference}",
-                "top-level config.toml model_instructions_file ownership conflict: "
-                f"the current field is {'missing' if analysis.instruction_statement is None else 'set to another path'}; "
-                f"expected it to still reference {owned_reference}",
-            )
-        )
+        plan.blockers.append(plan.activation_blocker)
         return
 
+    plan.activation_state = "active"
     if exact_after_content or not config["changed"]:
         return
 
@@ -5775,27 +5839,53 @@ def _preflight_backup(
     name: Optional[str],
     expected: Optional[Dict[str, Any]],
     label: str,
+    english_label: str,
 ) -> None:
     if expected is None:
         if name is not None:
-            plan.blockers.append(f"{label} 不应包含备份路径")
+            plan.blockers.append(
+                _localized(
+                    f"{label} 不应包含备份路径",
+                    f"{english_label} should not contain a backup path",
+                )
+            )
         return
     if name is None:
-        plan.blockers.append(f"{label} 缺少备份路径")
+        plan.blockers.append(
+            _localized(
+                f"{label} 缺少备份路径",
+                f"{english_label} is missing its backup path",
+            )
+        )
         return
     path = plan.codex_dir / name
     node = _classify_node(path)
     if not node.regular:
-        plan.blockers.append(f"{label} 备份是 {node.kind}: {path}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 备份是 {node.kind}: {path}",
+                f"{english_label} backup is a {node.kind}: {path}",
+            )
+        )
         return
     try:
         fingerprint = _fingerprint_regular_file(path)
     except OSError as exc:
-        plan.blockers.append(f"{label} 备份无法安全读取: {exc}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 备份无法安全读取: {exc}",
+                f"{english_label} backup cannot be read safely: {path} ({type(exc).__name__})",
+            )
+        )
         return
     plan.current_fingerprints[path] = fingerprint
     if not _fingerprint_matches_portable(fingerprint, expected):
-        plan.blockers.append(f"{label} 备份内容或时间戳不匹配: {path}")
+        plan.blockers.append(
+            _localized(
+                f"{label} 备份内容或时间戳不匹配: {path}",
+                f"{english_label} backup content or timestamp does not match: {path}",
+            )
+        )
 
 
 def inspect_uninstall_directory(
@@ -5817,17 +5907,28 @@ def inspect_uninstall_directory(
     if not manifest_node.exists:
         return plan
     if not manifest_node.regular:
+        plan.activation_state = "conflict"
         plan.blockers.append(
-            f"部署清单是 {manifest_node.kind}，不是普通文件: {manifest_path}"
+            _localized(
+                f"部署清单是 {manifest_node.kind}，不是普通文件: {manifest_path}",
+                f"deployment manifest is a {manifest_node.kind}, not a regular file: {manifest_path}",
+            )
         )
         return plan
     try:
         manifest, fingerprint = _load_manifest(manifest_path)
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        plan.blockers.append(f"部署清单无法安全读取: {exc}")
+        plan.activation_state = "conflict"
+        plan.blockers.append(
+            _localized(
+                f"部署清单无法安全读取: {exc}",
+                f"deployment manifest cannot be read safely: {manifest_path} ({type(exc).__name__})",
+            )
+        )
         return plan
     plan.manifest = manifest
     plan.manifest_fingerprint = fingerprint
+    plan.activation_state = "conflict"
     plan.current_fingerprints[manifest_path] = fingerprint
 
     config = manifest["config"]
@@ -5836,7 +5937,19 @@ def inspect_uninstall_directory(
     legacy = manifest["legacy"]
     previous = manifest["previous_manifest"]
     _preflight_uninstall_config(plan, config, md)
-    _preflight_manifest_path(plan, codex_dir / md["path"], md["after"], "提示词文件")
+    md_blocker_count = len(plan.blockers)
+    _preflight_manifest_path(
+        plan,
+        codex_dir / md["path"],
+        md["after"],
+        "提示词文件",
+        "managed prompt",
+    )
+    if len(plan.blockers) != md_blocker_count:
+        # Config activation is only meaningful while the manifest-owned
+        # Markdown itself is healthy. Keep all writes fail-closed and avoid
+        # reporting a missing or drifted prompt as active/inactive-by-config.
+        plan.activation_state = "conflict"
     hooks_path = codex_dir / "hooks.json"
     disabled_path = codex_dir / "hooks.json.disabled"
     if hooks["isolated"] and inspect_hooks:
@@ -5860,12 +5973,17 @@ def inspect_uninstall_directory(
             plan.hooks_state = "restored-needs-disabled"
         else:
             _preflight_manifest_path(
-                plan, hooks_path, hooks["active_after"], "hooks.json"
+                plan,
+                hooks_path,
+                hooks["active_after"],
+                "hooks.json",
+                "hooks.json",
             )
             _preflight_manifest_path(
                 plan,
                 disabled_path,
                 hooks["disabled_after"],
+                "hooks.json.disabled",
                 "hooks.json.disabled",
             )
         for path in (hooks_path, disabled_path):
@@ -5874,7 +5992,11 @@ def inspect_uninstall_directory(
                 plan.current_fingerprints[path] = fingerprint
     if legacy["action"] == "archive":
         _preflight_manifest_path(
-            plan, codex_dir / legacy["path"], legacy["after"], "旧版提示词"
+            plan,
+            codex_dir / legacy["path"],
+            legacy["after"],
+            "旧版提示词",
+            "legacy prompt",
         )
 
     config_backup = codex_dir / config["backup"] if config["backup"] else None
@@ -5884,13 +6006,21 @@ def inspect_uninstall_directory(
             config["backup"],
             config["before"] if config["changed"] else None,
             "config.toml",
+            "config.toml",
         )
-    _preflight_backup(plan, md["backup"], md["before"], "提示词文件")
+    _preflight_backup(
+        plan,
+        md["backup"],
+        md["before"],
+        "提示词文件",
+        "managed prompt",
+    )
     if inspect_hook_backups:
         _preflight_backup(
             plan,
             hooks["backup"],
             hooks["active_before"] if hooks["isolated"] else None,
+            "hooks.json",
             "hooks.json",
         )
         _preflight_backup(
@@ -5898,19 +6028,30 @@ def inspect_uninstall_directory(
             hooks["previous_disabled_backup"],
             hooks["disabled_before"] if hooks["isolated"] else None,
             "原 hooks.json.disabled",
+            "original hooks.json.disabled",
         )
     _preflight_backup(
         plan,
         legacy["archive"],
         legacy["before"] if legacy["action"] == "archive" else None,
         "旧版提示词归档",
+        "legacy prompt archive",
     )
     _preflight_backup(
         plan,
         previous["backup"],
         previous["before"],
         "上一份部署清单",
+        "previous deployment manifest",
     )
+    if plan.activation_state in {"active", "inactive"}:
+        non_activation_blockers = [
+            blocker
+            for blocker in plan.blockers
+            if blocker != plan.activation_blocker
+        ]
+        if non_activation_blockers:
+            plan.activation_state = "conflict"
     return plan
 
 
@@ -9390,7 +9531,11 @@ def _uninstall_locked(codex_dirs: List[str], yes: bool) -> None:
     _print(f"[卸载] 检查 {len(plans)} 个 Codex 配置目录:")
     for plan in plans:
         if plan.manifest is None:
-            _print(f"  [跳过] 未找到部署清单: {plan.codex_dir / MANIFEST_FILENAME}")
+            if plan.blockers:
+                for blocker in plan.blockers:
+                    _print(f"  [阻塞] {plan.codex_dir}: {blocker}")
+            else:
+                _print(f"  [跳过] 未找到部署清单: {plan.codex_dir / MANIFEST_FILENAME}")
             continue
         manifest = plan.manifest
         _print(
@@ -10183,6 +10328,7 @@ def show_status(codex_dirs: List[str]) -> None:
         sys.exit(1)
 
     invalid_count = 0
+    inactive_count = 0
     _print(f"[状态] 找到 {len(codex_dirs)} 个 Codex 配置目录（只读检查）:")
     for directory in codex_dirs:
         codex_root = Path(directory)
@@ -10202,16 +10348,29 @@ def show_status(codex_dirs: List[str]) -> None:
                 )
             )
             continue
-        status_errors = list(plan.blockers)
-        ownership_prefix = "现有部署清单所有权冲突: "
-        for label, node in (
-            ("当前提示词", plan.current),
-            ("旧版提示词", plan.legacy),
-            ("hooks.json", plan.hooks),
-            ("hooks.json.disabled", plan.disabled),
+        status_errors = [
+            blocker
+            for blocker in plan.blockers
+            if blocker != plan.inactive_config_blocker
+        ]
+        inactive_by_config = plan.inactive_config_blocker is not None
+        if inactive_by_config:
+            inactive_count += 1
+        ownership_prefix = _localized(
+            "现有部署清单所有权冲突: ",
+            "existing deployment manifest ownership conflict: ",
+        )
+        for label, english_label, node in (
+            ("当前提示词", "current prompt", plan.current),
+            ("旧版提示词", "legacy prompt", plan.legacy),
+            ("hooks.json", "hooks.json", plan.hooks),
+            ("hooks.json.disabled", "hooks.json.disabled", plan.disabled),
         ):
             if node.exists and not node.regular:
-                message = f"{label} 是 {node.kind}，需要人工处理: {node.path}"
+                message = _localized(
+                    f"{label} 是 {node.kind}，需要人工处理: {node.path}",
+                    f"{english_label} is a {node.kind} and requires manual review: {node.path}",
+                )
                 if message not in status_errors:
                     status_errors.append(message)
         _print(f"\n── 状态目录: {codex_root} ──")
@@ -10225,6 +10384,33 @@ def show_status(codex_dirs: List[str]) -> None:
             "    model_instructions_file: "
             f"{plan.config_reference if plan.config_reference is not None else '<未设置或无法识别>'}"
         )
+        activation_labels = {
+            "active": _localized("active（当前配置已加载受管提示词）", "active (the current config loads the managed prompt)"),
+            "inactive": _localized("inactive-by-config（已安装，当前配置未加载受管提示词）", "inactive-by-config (installed, but the current config does not load the managed prompt)"),
+            "conflict": _localized("conflict", "conflict"),
+            "not-installed": _localized("not-installed", "not-installed"),
+        }
+        _print(
+            _localized("    配置激活状态: ", "    Config activation: ")
+            + activation_labels[plan.activation_state]
+        )
+        if inactive_by_config:
+            _print(
+                _localized(
+                    "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致；"
+                    "切回引用受管 MD 的配置后可继续部署或卸载。",
+                    "    [Notice] This matches a normal-mode CCSwitch profile without the field; "
+                    "switch back to a profile that references the managed Markdown before deploy or uninstall.",
+                )
+            )
+            if plan.manifest_hooks_isolated:
+                _print(
+                    _localized(
+                        "    [提示] hooks 隔离不随 config.toml 配置切换；请按下方 hooks 状态单独管理。",
+                        "    [Notice] Hook isolation does not follow config.toml profile switches; "
+                        "manage the hook state shown below separately.",
+                    )
+                )
         if plan.residue:
             _print("    事务残留: " + ", ".join(str(path) for path in plan.residue))
         else:
@@ -10261,10 +10447,18 @@ def show_status(codex_dirs: List[str]) -> None:
             + ("blocked" if structural_errors else "healthy")
         )
         if plan.manifest.regular:
-            _print(
-                "    卸载就绪度: "
-                + ("blocked" if plan.uninstall_blockers else "ready")
-            )
+            if inactive_by_config:
+                _print(
+                    _localized(
+                        "    卸载就绪度: blocked（先切回 active 配置）",
+                        "    Uninstall readiness: blocked (switch back to an active profile first)",
+                    )
+                )
+            else:
+                _print(
+                    "    卸载就绪度: "
+                    + ("blocked" if plan.uninstall_blockers else "ready")
+                )
         else:
             _print("    卸载就绪度: not-applicable")
         if status_errors:
@@ -10272,21 +10466,40 @@ def show_status(codex_dirs: List[str]) -> None:
             for error in status_errors:
                 _print(f"    [错误] {error}")
             _print("    可部署性: blocked")
+        elif inactive_by_config:
+            _print(
+                _localized(
+                    "    可部署性: blocked（先切回 active 配置）",
+                    "    Deployability: blocked (switch back to an active profile first)",
+                )
+            )
         else:
             _print("    可部署性: ready")
 
     if invalid_count:
         _print(f"\n[错误] {invalid_count} 个目录存在冲突或异常节点。")
         sys.exit(1)
-    _print(
-        _localized(
-            "\n[完成] 状态检查未发现阻塞问题；未读取或解析 live active/disabled hooks，"
-            "已读取并哈希 manifest 引用的 backup 恢复证据；未修改任何文件。",
-            "\n[Done] Status found no blockers; live active/disabled hooks were not read "
-            "or parsed, manifest-referenced backup recovery evidence was read and hashed, "
-            "and no files were changed.",
+    if inactive_count:
+        _print(
+            _localized(
+                f"\n[完成] 状态检查识别到 {inactive_count} 个 inactive-by-config 目录，"
+                "未发现其他阻塞问题；未读取或解析 live active/disabled hooks，"
+                "已读取并哈希 manifest 引用的 backup 恢复证据；未修改任何文件。",
+                f"\n[Done] Status recognized {inactive_count} inactive-by-config location(s) "
+                "and found no other blockers; live active/disabled hooks were not read or parsed, "
+                "manifest-referenced backup recovery evidence was read and hashed, and no files were changed.",
+            )
         )
-    )
+    else:
+        _print(
+            _localized(
+                "\n[完成] 状态检查未发现阻塞问题；未读取或解析 live active/disabled hooks，"
+                "已读取并哈希 manifest 引用的 backup 恢复证据；未修改任何文件。",
+                "\n[Done] Status found no blockers; live active/disabled hooks were not read "
+                "or parsed, manifest-referenced backup recovery evidence was read and hashed, "
+                "and no files were changed.",
+            )
+        )
 
 
 def _deploy_locked(args, codex_dirs: Optional[List[str]] = None) -> None:

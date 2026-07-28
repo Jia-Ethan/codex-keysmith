@@ -158,7 +158,7 @@ manifest 始终拥有本轮 MD 生命周期；config 的长期所有权仅是顶
 
 `--uninstall` 默认预览；`--uninstall --yes` 撤销最新一层 manifest-owned 状态：
 
-1. 所有目标目录先验证 manifest schema、MD、config 顶层 `model_instructions_file` 所有权、必要备份和上一层 manifest；config 与 manifest after 字节相同时走原路径（mtime 单独变化不构成长期漂移）；字节漂移但目标字段不存在歧义或不支持结构且仍引用 `./<manifest md.path>` 时允许继续；内置零依赖扫描器不声称验证无关 TOML 值或跨表键冲突的完整语法；
+1. 所有目标目录先验证 manifest schema、MD、config 顶层 `model_instructions_file` 所有权、必要备份和上一层 manifest；config 与 manifest after 字节相同时走原路径（mtime 单独变化不构成长期漂移）；字节漂移但目标字段不存在歧义或不支持结构且仍引用 `./<manifest md.path>` 时允许继续；只读 status 可把字段缺失分类为 `inactive-by-config`，但该状态不授权卸载，必须先切回 active config；内置零依赖扫描器不声称验证无关 TOML 值或跨表键冲突的完整语法；
 2. 只有 `hooks.isolated=true` 时才验证/恢复 active、disabled 和 hooks 备份；
 3. 只有 `legacy.action=archive` 时才验证/恢复 legacy 和归档；
 4. 任一目录有冲突时，全部目录在写入前停止；
@@ -187,7 +187,7 @@ manifest 始终拥有本轮 MD 生命周期；config 的长期所有权仅是顶
 
 The transaction layer exposes every target before writes, never follows symlinks, preserves concurrent nodes, persists rollback intent before the first deploy or uninstall mutation, and fails closed whenever ownership is uncertain. Only hooks actually isolated and legacy content actually archived enter manifest ownership. Deployment, interrupted-transaction recovery, and uninstall complete a full final fingerprint sweep before deleting their recovery evidence.
 
-Neither `--status` nor a `--skip-hooks-isolation` plan opens or parses `hooks.json` or `hooks.json.disabled`. Status may safely read config and manifest, but durable journal content is opened only by explicit `--recover`.
+Neither `--status` nor a `--skip-hooks-isolation` plan opens or parses `hooks.json` or `hooks.json.disabled`. Status may safely read config and manifest, but durable journal content is opened only by explicit `--recover`. With a valid manifest/Markdown and an absent top-level target field, status reports `inactive-by-config` without authorizing deploy or uninstall; a different target remains a conflict.
 
 ### Preflight and read-only status
 
@@ -243,7 +243,7 @@ Deploy recovery processes participants in reverse order and resources as `manife
 
 ### Manifest-based uninstall
 
-Uninstall validates manifest, Markdown, semantic top-level `model_instructions_file` ownership, required backups, and the previous manifest for every directory before writes. If live config bytes drift but the conservative scanner finds no target-field ambiguity or unsupported structure and the field still references `./<manifest md.path>`, unrelated rewrites are accepted. The zero-dependency scanner does not claim complete validation of unrelated TOML values or cross-table key conflicts. For `config.changed=true`, uninstall merges only the verified pre-deployment field statement into live content (or removes it if originally absent); for `changed=false`, it leaves config untouched. A missing/different target field, target-field ambiguity/unsupported structure, or abnormal node fails closed. Hook paths are inspected only when `isolated=true`; legacy is inspected only for `action=archive`. Any blocker stops all directories.
+Uninstall validates manifest, Markdown, semantic top-level `model_instructions_file` ownership, required backups, and the previous manifest for every directory before writes. If live config bytes drift but the conservative scanner finds no target-field ambiguity or unsupported structure and the field still references `./<manifest md.path>`, unrelated rewrites are accepted. Read-only status may classify an absent target field as `inactive-by-config`, but that state does not authorize uninstall; an active config must be restored first. The zero-dependency scanner does not claim complete validation of unrelated TOML values or cross-table key conflicts. For `config.changed=true`, uninstall merges only the verified pre-deployment field statement into live content (or removes it if originally absent); for `changed=false`, it leaves config untouched. A different target field, target-field ambiguity/unsupported structure, or abnormal node fails closed. Hook paths are inspected only when `isolated=true`; legacy is inspected only for `action=archive`. Any blocker stops all directories.
 
 Confirmed uninstall publishes an immutable multi-directory durable intent and private before-state snapshots before its first mutation. The journal snapshots the complete live config. A merged config after-state has one immutable SHA-only allowance because atomic publication creates a new mtime; other resources retain exact portable after-state rules. Config merge uses the existing atomic CAS write path, so a post-preflight race is rejected and reverse recovery restores the complete live-before snapshot. Uninstall then restores Markdown and only the actually managed hooks/legacy state, archives the current manifest at the exact journal-selected path, and restores the previous layer. It performs a complete final sweep across all participants, persists `committed`, and uses re-enterable cleanup before removing journal evidence. Each run removes one layer; absent manifest is a successful no-op, and pre-v0.1.0 unmanaged state is never guessed.
 
