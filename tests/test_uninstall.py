@@ -430,6 +430,252 @@ def test_ccswitch_rewrite_preserves_unrelated_config_and_restores_old_reference(
     assert not (codex_dir / "gpt-unrestricted.md").exists()
 
 
+def test_ccswitch_missing_reference_is_reported_as_inactive_but_remains_write_blocked(
+    tmp_path,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = (
+        'model = "ccswitch-off"\n'
+        'approval_policy = "on-request"\n'
+    )
+    config.write_text(inactive_config, encoding="utf-8")
+    before = _snapshot_files(codex_dir)
+
+    direct_plan = codex_instruct.inspect_directory(
+        codex_dir,
+        skip_hooks_isolation=True,
+        status_mode=True,
+    )
+    status = _run("--codex-dir", codex_dir, "--status")
+    deploy = _run("--codex-dir", codex_dir, "--yes")
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert direct_plan.activation_state == "inactive"
+    assert direct_plan.inactive_config_blocker is not None
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "配置激活状态: inactive-by-config" in status.stdout
+    assert "结构健康: healthy" in status.stdout
+    assert "卸载就绪度: blocked（先切回 active 配置）" in status.stdout
+    assert "可部署性: blocked（先切回 active 配置）" in status.stdout
+    assert "hooks 隔离不随 config.toml 配置切换" in status.stdout
+    assert deploy.returncode == 1
+    assert uninstall.returncode == 1
+    assert _snapshot_files(codex_dir) == before
+
+
+def test_ccswitch_inactive_profile_can_switch_back_to_managed_active_profile(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    config.write_text('model = "ccswitch-off"\n', encoding="utf-8")
+
+    inactive = _run("--codex-dir", codex_dir, "--status")
+
+    config.write_text(
+        'model = "ccswitch-on"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n',
+        encoding="utf-8",
+    )
+    active = _run("--codex-dir", codex_dir, "--status")
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert inactive.returncode == 0, inactive.stdout + inactive.stderr
+    assert "配置激活状态: inactive-by-config" in inactive.stdout
+    assert active.returncode == 0, active.stdout + active.stderr
+    assert "配置激活状态: active" in active.stdout
+    assert "卸载就绪度: ready" in active.stdout
+    assert "可部署性: ready" in active.stdout
+    assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
+    assert config.read_text(encoding="utf-8") == 'model = "ccswitch-on"\n'
+
+
+def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localized(
+    tmp_path,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text(
+        'model = "ccswitch-off"\n',
+        encoding="utf-8",
+    )
+
+    status = _run("--codex-dir", codex_dir, "--status", "--lang", "en")
+    preview = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
+    deploy = _run("--codex-dir", codex_dir, "--yes", "--lang", "en")
+
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "Config activation: inactive-by-config" in status.stdout
+    assert "Uninstall readiness: blocked (switch back to an active profile first)" in status.stdout
+    assert "Deployability: blocked (switch back to an active profile first)" in status.stdout
+    assert "Hook isolation does not follow config.toml profile switches" in status.stdout
+    assert preview.returncode == 1
+    assert deploy.returncode == 1
+    assert "existing deployment manifest ownership conflict" in preview.stdout
+    assert "existing deployment manifest ownership conflict" in deploy.stdout
+    for result in (status, preview, deploy):
+        assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+
+
+@pytest.mark.parametrize("config_active", [False, True], ids=["field-missing", "field-active"])
+@pytest.mark.parametrize("md_damage", ["missing", "drifted", "directory"])
+def test_managed_markdown_damage_forces_activation_conflict_and_blocks_writes(
+    tmp_path,
+    config_active,
+    md_damage,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    if not config_active:
+        config.write_text('model = "ccswitch-off"\n', encoding="utf-8")
+    md = codex_dir / codex_instruct.DEFAULT_MD_FILENAME
+    if md_damage == "missing":
+        md.unlink()
+    elif md_damage == "drifted":
+        md.write_text("drifted prompt\n", encoding="utf-8")
+    else:
+        md.unlink()
+        md.mkdir()
+    before_names = sorted(path.name for path in codex_dir.iterdir())
+    before_config = config.read_bytes()
+
+    status = _run("--codex-dir", codex_dir, "--status", "--lang", "en")
+    preview = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
+    deploy = _run("--codex-dir", codex_dir, "--yes", "--lang", "en")
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes", "--lang", "en")
+
+    assert status.returncode == 1
+    assert preview.returncode == 1
+    assert deploy.returncode == 1
+    assert uninstall.returncode == 1
+    assert "Config activation: conflict" in status.stdout
+    assert "Config activation: active" not in status.stdout
+    assert "Config activation: inactive-by-config" not in status.stdout
+    for result in (status, preview, deploy, uninstall):
+        assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+    assert sorted(path.name for path in codex_dir.iterdir()) == before_names
+    assert config.read_bytes() == before_config
+    if md_damage == "missing":
+        assert not md.exists()
+    elif md_damage == "drifted":
+        assert md.read_text(encoding="utf-8") == "drifted prompt\n"
+    else:
+        assert md.is_dir()
+
+
+@pytest.mark.parametrize("config_active", [False, True], ids=["field-missing", "field-active"])
+@pytest.mark.parametrize("evidence_kind", ["prompt-backup", "hooks-backup"])
+def test_damaged_manifest_recovery_evidence_forces_activation_conflict(
+    tmp_path,
+    config_active,
+    evidence_kind,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    if evidence_kind == "hooks-backup":
+        (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    else:
+        (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).write_text(
+            "pre-deployment prompt\n",
+            encoding="utf-8",
+        )
+    _deploy(codex_dir)
+    if not config_active:
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+    manifest = json.loads(
+        (codex_dir / codex_instruct.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    backup_name = (
+        manifest["md"]["backup"]
+        if evidence_kind == "prompt-backup"
+        else manifest["hooks"]["backup"]
+    )
+    assert backup_name is not None
+    evidence = codex_dir / backup_name
+    evidence.write_text("drifted evidence\n", encoding="utf-8")
+
+    status = _run("--codex-dir", codex_dir, "--status")
+    deploy = _run("--codex-dir", codex_dir, "--yes")
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert status.returncode == 1
+    assert deploy.returncode == 1
+    assert uninstall.returncode == 1
+    assert "配置激活状态: conflict" in status.stdout
+    assert "配置激活状态: active" not in status.stdout
+    assert "配置激活状态: inactive-by-config" not in status.stdout
+    assert evidence.read_text(encoding="utf-8") == "drifted evidence\n"
+
+
+def test_ccswitch_common_config_reinjection_keeps_effective_off_profile_active(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    # This is the effective live result when an Off provider omits the field but
+    # CCSwitch's shared Codex Common Config Snippet adds it back during merge.
+    (codex_dir / "config.toml").write_text(
+        'model = "ccswitch-off"\n'
+        'model_instructions_file = "./gpt-unrestricted.md"\n',
+        encoding="utf-8",
+    )
+
+    status = _run("--codex-dir", codex_dir, "--status")
+
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "配置激活状态: active" in status.stdout
+    assert "inactive-by-config" not in status.stdout
+
+
+def test_abnormal_or_invalid_manifest_is_activation_conflict(tmp_path):
+    for name, make_manifest in (
+        (
+            "directory-manifest",
+            lambda path: path.mkdir(),
+        ),
+        (
+            "invalid-manifest",
+            lambda path: path.write_text("{not json", encoding="utf-8"),
+        ),
+    ):
+        codex_dir = _make_codex_dir(tmp_path, name=name)
+        make_manifest(codex_dir / codex_instruct.MANIFEST_FILENAME)
+
+        before_names = sorted(path.name for path in codex_dir.iterdir())
+        before_config = (codex_dir / "config.toml").read_bytes()
+        status = _run("--codex-dir", codex_dir, "--status", "--lang", "en")
+        preview = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
+        deploy = _run("--codex-dir", codex_dir, "--yes", "--lang", "en")
+        uninstall = _run(
+            "--codex-dir",
+            codex_dir,
+            "--uninstall",
+            "--yes",
+            "--lang",
+            "en",
+        )
+
+        assert status.returncode == 1
+        assert preview.returncode == 1
+        assert deploy.returncode == 1
+        assert uninstall.returncode == 1
+        assert "Config activation: conflict" in status.stdout
+        assert "Config activation: not-installed" not in status.stdout
+        assert "Uninstall readiness: blocked" in status.stdout
+        assert "Uninstall readiness: ready" not in status.stdout
+        assert "Uninstall readiness: not-applicable" not in status.stdout
+        assert "Deployment manifest not found" not in uninstall.stdout
+        assert "[Blocked]" in uninstall.stdout
+        for result in (status, preview, deploy, uninstall):
+            assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+        assert sorted(path.name for path in codex_dir.iterdir()) == before_names
+        assert (codex_dir / "config.toml").read_bytes() == before_config
+
+
 def test_stacked_manifests_keep_semantic_config_ownership_after_rewrite(tmp_path):
     codex_dir = _make_codex_dir(
         tmp_path,
@@ -563,19 +809,15 @@ def test_uninstall_accepts_same_config_bytes_with_changed_mtime(tmp_path):
     assert config.read_text(encoding="utf-8") == 'model = "gpt-5.6"\n'
 
 
-@pytest.mark.parametrize(
-    "current_config",
-    [
-        'model = "ccswitch-model"\n',
-        'model_instructions_file = "./other.md"\nmodel = "ccswitch-model"\n',
-    ],
-)
-def test_config_target_reference_drift_is_field_specific_blocker(
+def test_config_target_reference_to_other_path_remains_field_specific_blocker(
     tmp_path,
-    current_config,
 ):
     codex_dir = _make_codex_dir(tmp_path)
     _deploy(codex_dir)
+    current_config = (
+        'model_instructions_file = "./other.md"\n'
+        'model = "ccswitch-model"\n'
+    )
     (codex_dir / "config.toml").write_text(current_config, encoding="utf-8")
     before = _snapshot_files(codex_dir)
 
@@ -584,6 +826,7 @@ def test_config_target_reference_drift_is_field_specific_blocker(
 
     assert status.returncode == 1
     assert result.returncode == 1
+    assert "配置激活状态: conflict" in status.stdout
     assert "model_instructions_file" in status.stdout
     assert "model_instructions_file" in result.stdout
     assert _snapshot_files(codex_dir) == before

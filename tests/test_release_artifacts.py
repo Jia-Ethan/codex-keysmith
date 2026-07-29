@@ -2,6 +2,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
+import re
 import subprocess
 import sys
 import tarfile
@@ -13,24 +15,33 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.1.2"
-VERSION = "0.1.2"
+TAG = "v0.1.3"
+VERSION = "0.1.3"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "LICENSE",
+    "README.en.md",
     "README.md",
+    "SECURITY.md",
     "VERSION",
     "codex-instruct.py",
-    "docs/releases/v0.1.2.md",
+    "docs/agent-install.md",
+    "docs/assets/readme/codex-keysmith-preview.png",
+    "docs/hooks-transactions.md",
+    "docs/reference.md",
+    "docs/releases/v0.1.3.md",
     "examples/gpt-unrestricted.md",
 }
 WINDOWS_POLICY_FILES = (
     "README.md",
+    "README.en.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/hooks-transactions.md",
-    "docs/releases/v0.1.2.md",
+    "docs/reference.md",
+    "docs/releases/v0.1.3.md",
 )
 
 
@@ -117,9 +128,9 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-07-27".format(VERSION) in changelog
-    assert "Source version v0.1.2" in readme
-    assert "v0.1.2 local candidate" not in readme
+    assert "## [{}] - 2026-07-29".format(VERSION) in changelog
+    assert "Source version v0.1.3" in readme
+    assert "v0.1.3 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
@@ -144,6 +155,35 @@ def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
         values.append(value)
     assert len(set(values)) == 1
     assert values[0] == "EXPLICIT_BETA"
+
+
+def test_release_markdown_relative_links_stay_inside_bundle(release_builder):
+    archive_files = set(release_builder._archive_files(TAG))
+    markdown_link_pattern = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+    html_link_pattern = re.compile(
+        r"<(?:a|img)\b[^>]*\b(?:href|src)=[\"']([^\"']+)[\"']",
+        re.IGNORECASE,
+    )
+
+    for relative_path in sorted(archive_files):
+        if not relative_path.endswith(".md"):
+            continue
+        content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        raw_targets = markdown_link_pattern.findall(content)
+        raw_targets.extend(html_link_pattern.findall(content))
+        for raw_target in raw_targets:
+            target = raw_target.strip().split("#", 1)[0]
+            if (
+                not target
+                or "://" in target
+                or target.startswith(("mailto:", "#", "<"))
+            ):
+                continue
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(relative_path), target)
+            )
+            assert not resolved.startswith("../"), (relative_path, raw_target)
+            assert resolved in archive_files, (relative_path, raw_target, resolved)
 
 
 def test_release_build_is_reproducible_and_contains_required_files(

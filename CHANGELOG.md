@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-29
+
+This patch release turns the CCSwitch configuration behavior reported in Issue #9 into an explicit, read-only activation-state contract without relaxing deployment or uninstall ownership checks. Manifest and journal schemas remain at version 1, so existing v0.1.0-v0.1.2 deployments require no migration. Windows fresh deployment remains `EXPLICIT_BETA`.
+
+### Added
+
+- Read-only status now distinguishes `active`, `inactive-by-config`, `conflict`, and `not-installed` activation states. A CCSwitch profile whose effective live `config.toml` omits the managed `model_instructions_file` is reported as an installed but inactive configuration instead of structural damage; status exits successfully while deploy/uninstall remain fail-closed until the managed reference returns. Documentation covers the two-provider On/Off workflow, Common Config reinjection, backfill verification, proxy-takeover boundary, new-session behavior, global hook isolation, and stored-profile cleanup after uninstall.
+
+### Changed
+
+- Release bundles now include `README.en.md`, `docs/reference.md`, `docs/agent-install.md`, and the README preview image, so bilingual quick-start, reference, and local media links remain available offline.
+
+### Fixed
+
+- Activation reporting now requires the manifest-owned Markdown and all required restoration evidence to remain healthy. Missing, abnormal, drifted, or invalid managed resources are reported as `conflict`; abnormal manifests and managed-path failures have fully localized diagnostics, and invalid manifests are no longer mislabeled as absent during uninstall.
+
 ## [0.1.2] - 2026-07-27
 
 This patch release fixes schema-1 config ownership around external `config.toml` rewrites and includes the release-recovery hardening merged after v0.1.1. Formal release status is established only by the immutable signed `v0.1.2` annotated tag, its peeled commit, the GitHub Release, and matching asset checksums.
@@ -102,7 +118,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.0
