@@ -162,7 +162,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -10446,7 +10446,7 @@ def show_status(codex_dirs: List[str]) -> None:
             "    结构健康: "
             + ("blocked" if structural_errors else "healthy")
         )
-        if plan.manifest.regular:
+        if plan.manifest.exists:
             if inactive_by_config:
                 _print(
                     _localized(
@@ -10457,7 +10457,11 @@ def show_status(codex_dirs: List[str]) -> None:
             else:
                 _print(
                     "    卸载就绪度: "
-                    + ("blocked" if plan.uninstall_blockers else "ready")
+                    + (
+                        "blocked"
+                        if plan.uninstall_blockers or plan.activation_state == "conflict"
+                        else "ready"
+                    )
                 )
         else:
             _print("    卸载就绪度: not-applicable")

@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 # 命令参考与内部机制 / Command reference and internals
 
