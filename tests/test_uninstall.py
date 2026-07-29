@@ -665,6 +665,9 @@ def test_abnormal_or_invalid_manifest_is_activation_conflict(tmp_path):
         assert uninstall.returncode == 1
         assert "Config activation: conflict" in status.stdout
         assert "Config activation: not-installed" not in status.stdout
+        assert "Uninstall readiness: blocked" in status.stdout
+        assert "Uninstall readiness: ready" not in status.stdout
+        assert "Uninstall readiness: not-applicable" not in status.stdout
         assert "Deployment manifest not found" not in uninstall.stdout
         assert "[Blocked]" in uninstall.stdout
         for result in (status, preview, deploy, uninstall):

@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 MD033 MD041 -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 <h1 align="center">codex-keysmith</h1>
 
