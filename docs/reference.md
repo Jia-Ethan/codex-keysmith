@@ -1,4 +1,5 @@
 <!-- markdownlint-disable MD013 -->
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
 # 命令参考与内部机制 / Command reference and internals
 
@@ -27,6 +28,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     hooks.json.disabled: regular file (<codex-dir>/hooks.json.disabled)
     部署清单: regular file (<codex-dir>/.codex-keysmith-manifest.json)
     model_instructions_file: ./gpt-unrestricted.md
+    配置激活状态: active（当前配置已加载受管提示词）
     事务残留: none
     旧版迁移: 无需处理
     hooks 恢复: 可执行 <restore-command>
@@ -35,7 +37,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     可部署性: ready
 ```
 
-`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要 hooks backup 缺失、异常或漂移时，卸载就绪度和可部署性都为 `blocked`，返回 1。它还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
+`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，但 deploy/uninstall 明确 blocked，必须先由 CCSwitch 或其他配置管理器切回引用受管 MD 的 active 配置。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
 
 ### 会修改哪些文件
 
@@ -50,7 +52,20 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
 | `<codex-dir>/.codex-keysmith-transaction-<id>/` | 保存 deploy/uninstall journal、固定名称 pending 文件、不可变 `intent.json` 和 before snapshots；deploy 另有 manifest companion，终态使用 `committed` / `recovered` 与可重入 cleanup marker 清理 |
 | `<codex-dir>/.keysmith-*` | 单步骤临时目录；正常完成后清理，异常残留会阻止后续写入 |
 
-受管理节点必须是普通文件。符号链接、悬空链接、目录、FIFO、socket 或无效 UTF-8 会 fail closed。config 的长期 manifest 所有权是语义化的顶层 `model_instructions_file`，不是整份 `config.toml`：只要当前值仍为 `./<manifest md.path>`，CCSwitch 等外部工具重写无关字段不会阻塞 status/uninstall；若本层部署曾修改该字段，卸载从已验证的整文件备份提取部署前语句并合并进当前 config（部署前无该语句则只删除当前语句），保留其他 live 内容；若本层 `config.changed=false`，卸载不写 config。目标字段缺失、指向其他路径、重复、歧义或扫描器不支持的语句结构仍会 fail closed。内置零依赖扫描器不声称完整验证无关 TOML 值语法或跨表键冲突。完整文件指纹继续用于预检读取、CAS、journal before snapshot、回滚、并发拒绝和崩溃恢复；合并后的 config 在 immutable uninstall intent 中固定唯一 SHA-256 after 状态。只有本次确实隔离的 hooks 和确实归档的 legacy 才进入 manifest 所有权；未隔离 hooks 与未受管理 legacy 不会被 uninstall 验证或改写。显式 `--skip-hooks-isolation` 时，hooks 节点完全排除在计划、manifest 和读写边界之外，但仍可能继续影响模型行为。
+受管理节点必须是普通文件。符号链接、悬空链接、目录、FIFO、socket 或无效 UTF-8 会 fail closed。config 的长期 manifest 所有权是语义化的顶层 `model_instructions_file`，不是整份 `config.toml`：只要当前值仍为 `./<manifest md.path>`，CCSwitch 等外部工具重写无关字段不会阻塞 status/uninstall；若本层部署曾修改该字段，卸载从已验证的整文件备份提取部署前语句并合并进当前 config（部署前无该语句则只删除当前语句），保留其他 live 内容；若本层 `config.changed=false`，卸载不写 config。目标字段缺失可被只读 status 识别为 `inactive-by-config`，但不会授权 deploy/uninstall 写入；指向其他路径、重复、歧义或扫描器不支持的语句结构仍会 fail closed。内置零依赖扫描器不声称完整验证无关 TOML 值语法或跨表键冲突。完整文件指纹继续用于预检读取、CAS、journal before snapshot、回滚、并发拒绝和崩溃恢复；合并后的 config 在 immutable uninstall intent 中固定唯一 SHA-256 after 状态。只有本次确实隔离的 hooks 和确实归档的 legacy 才进入 manifest 所有权；未隔离 hooks 与未受管理 legacy 不会被 uninstall 验证或改写。显式 `--skip-hooks-isolation` 时，hooks 节点完全排除在计划、manifest 和读写边界之外，但仍可能继续影响模型行为。
+
+### CCSwitch 配置隔离状态机
+
+CCSwitch 普通模式会在切走时把 live Codex config 回填到当前 Provider，再把目标 Provider 保存的完整 config 写入 live。由此可维护两个同源副本：On 副本含 `model_instructions_file = "./<manifest md.path>"`，Off 副本不含该顶层字段。Keysmith 的只读状态分类为：
+
+| 状态 | 条件 | status | deploy / uninstall |
+| --- | --- | --- | --- |
+| `active` | 字段精确引用当前 manifest-owned MD | 成功 | 按正常预检继续 |
+| `inactive-by-config` | manifest/MD 存在且完整，但字段缺失 | 成功并提示当前配置未加载提示词 | blocked；先切回 On 副本 |
+| `conflict` | 字段改指其他路径，或目标语句重复/歧义/不支持 | 失败 | fail closed |
+| `not-installed` | 无 manifest | 正常未安装状态 | 可部署；卸载为 no-op |
+
+这不是 manifest profile schema，也不把任意缺字段写成持久化的“已授权暂停”；它只让 status 准确解释外部配置切换，同时保留所有写操作的旧有所有权边界。CCSwitch v3.18.0（`ff3bc242`）会在写入 Provider 前合并启用的 Codex 通用配置片段，因此该片段不得包含 `model_instructions_file`；否则 Off Provider 的有效 live config 仍会是 active。普通模式切离时，live config 读取失败可让 backfill 被跳过，数据库保存失败也只产生 warning，所以卸载后必须检查切换提示与 Provider 保存内容，不能把一次切换当成回填成功证明。该版本代理接管热切换也可能按目标 Provider 的有效配置重建 live config，但还涉及 restore backup、通用配置合并和代理字段覆盖，Keysmith 不将其视为稳定契约。默认 hook isolation 是 `.codex` 目录级全局状态，不会跟随 Provider config 切换；需要纯提示词 On/Off 时，在首次部署使用 `--skip-hooks-isolation`。任何切换只对新 Codex 会话生效。
 
 ### 内部工作流程
 
@@ -132,7 +147,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 
 卸载仅处理 `.codex-keysmith-manifest.json` 明确拥有的最新一层：
 
-- 先验证当前 MD、config 顶层 `model_instructions_file` 语义所有权、实际隔离的 hooks、实际归档的 legacy、全部必要备份和 manifest 的预期存在状态；config 字节仍匹配 manifest after 时沿用普通路径，只有 mtime 改变但字节相同也可继续；
+- 先验证当前 MD、config 顶层 `model_instructions_file` 语义所有权、实际隔离的 hooks、实际归档的 legacy、全部必要备份和 manifest 的预期存在状态；config 字节仍匹配 manifest after 时沿用普通路径，只有 mtime 改变但字节相同也可继续；`inactive-by-config` 不授权卸载，必须先切回 active 配置；
 - 任一路径漂移、备份缺失、manifest 无效或节点异常时，所有目录都在写入前停止；
 - 首次修改前为全部参与目录发布 immutable durable intent、精确资源定义和 before snapshots；硬中断后由 `--recover` 反向恢复；
 - 恢复该层部署前的 config 与 MD；仅当 manifest 记录了真实隔离/归档时，才恢复 hooks、旧 disabled hooks 或 legacy；
@@ -202,7 +217,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 - `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
 - macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`。Windows 逐 journal phase 的硬中断证据仍属 P1，因此该实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
 - journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；
-- `model_instructions_file` 是全局配置，没有 profile 隔离；hooks 只能整份隔离；
+- `model_instructions_file` 对单份 live config 仍是全局项；CCSwitch 的 Provider 有效 config 可切换其存在状态，但通用配置合并可能重新注入它，Keysmith 不管理 CCSwitch 数据库、回填结果或代理接管热切换；hooks 只能整份隔离且不随 config 快照切换；
 - 内置提示词不保证任何模型或版本采用完全相同的行为。
 
 完整状态机见 [`hooks-transactions.md`](hooks-transactions.md)。
@@ -286,7 +301,7 @@ codex-keysmith/
 python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 ```
 
-`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence; a missing, abnormal, or drifted required hook backup makes uninstall readiness and deployability `blocked` and exits 1. It also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
+`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence; missing, abnormal, or drifted managed Markdown or required hook backups produce `conflict`, make uninstall readiness and deployability `blocked`, and exit 1. If the manifest and managed Markdown remain intact while the current config has no top-level `model_instructions_file`, status reports `inactive-by-config`: it exits 0 and keeps structural health `healthy`, while deploy/uninstall remain blocked until CCSwitch or another config manager restores an active profile that references the managed Markdown. A present field that targets another path remains a `conflict` and exits 1. Status also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
 
 ### Files changed by a confirmed deployment
 
@@ -301,7 +316,11 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 | `<codex-dir>/.codex-keysmith-transaction-<id>/` | Holds deploy/uninstall journals, fixed-name pending files, immutable `intent.json`, and before-state snapshots |
 | `<codex-dir>/.keysmith-*` | Per-step temporary directories; normal completion removes them, and residue blocks later writes |
 
-Managed targets must be regular files. Symlinks, dangling links, directories, FIFOs, sockets, and invalid UTF-8 fail closed. Long-lived config ownership is semantic ownership of the top-level `model_instructions_file`, not ownership of all `config.toml` bytes. CCSwitch-style rewrites of unrelated fields remain compatible while the field still equals `./<manifest md.path>`. If deployment changed that field, uninstall extracts the original statement from the verified full-file backup and merges only that statement into the live config (or removes it when originally absent), preserving all other live content; with `config.changed=false`, uninstall does not write config. Missing/different target references, duplicate or ambiguous target fields, unsupported statement structure, and abnormal nodes fail closed. The built-in zero-dependency scanner does not claim complete validation of unrelated TOML value syntax or cross-table key conflicts. Full-file fingerprints remain operation-time CAS, journal snapshot, rollback, concurrency, and crash-recovery evidence; a merged uninstall after-state is fixed by one SHA-256 in immutable intent. With `--skip-hooks-isolation`, hook paths are completely outside planning, manifest ownership, and the read/write boundary, but active hooks can continue to affect model behavior.
+Managed targets must be regular files. Symlinks, dangling links, directories, FIFOs, sockets, and invalid UTF-8 fail closed. Long-lived config ownership is semantic ownership of the top-level `model_instructions_file`, not ownership of all `config.toml` bytes. CCSwitch-style rewrites of unrelated fields remain compatible while the field still equals `./<manifest md.path>`. If deployment changed that field, uninstall extracts the original statement from the verified full-file backup and merges only that statement into the live config (or removes it when originally absent), preserving all other live content; with `config.changed=false`, uninstall does not write config. Read-only status can classify a missing target field as `inactive-by-config`, but that state never authorizes deploy/uninstall writes. A different target, duplicate or ambiguous target fields, unsupported statement structure, and abnormal nodes fail closed. The built-in zero-dependency scanner does not claim complete validation of unrelated TOML value syntax or cross-table key conflicts. Full-file fingerprints remain operation-time CAS, journal snapshot, rollback, concurrency, and crash-recovery evidence; a merged uninstall after-state is fixed by one SHA-256 in immutable intent. With `--skip-hooks-isolation`, hook paths are completely outside planning, manifest ownership, and the read/write boundary, but active hooks can continue to affect model behavior.
+
+### CCSwitch profile-isolation state machine
+
+In normal mode, CCSwitch backfills the live Codex config into the outgoing provider and writes the target provider's effective config to live. Two copies can therefore hold an On snapshot with `model_instructions_file = "./<manifest md.path>"` and an Off snapshot without that top-level field. Keysmith reports `active`, `inactive-by-config`, `conflict`, or `not-installed` using the same conditions documented in the Chinese table above. `inactive-by-config` is status-only recognition, not a persistent manifest suspension grant: write operations remain fail closed until the On snapshot is selected again. In CCSwitch v3.18.0 (`ff3bc242`), an enabled Codex Common Config Snippet is merged before live write, so that snippet must not contain `model_instructions_file`; otherwise the effective Off profile remains active. Backfill can be skipped after a live-read failure or return only a warning after a database-save failure, so verify the stored provider after uninstall. Proxy-takeover hot switching in that version may also rebuild live config from the target provider's effective config, but restore backups, common-config merging, and proxy overrides make it an unsupported compatibility boundary. Whole-file hook isolation is directory-global and does not follow provider config switches; use `--skip-hooks-isolation` at deployment for prompt-only switching. Changes apply only to newly started Codex sessions.
 
 ### Custom prompt and CLI language
 
@@ -337,7 +356,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en        # pr
 python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en  # remove one layer
 ```
 
-Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`. Unrelated live `config.toml` rewrites are preserved when the top-level `model_instructions_file` still references the manifest-owned Markdown. A missing/different target reference, target-field ambiguity or unsupported statement structure, managed-resource drift, missing backups, invalid manifests, or abnormal nodes stops every selected directory before writes. An absent manifest is a successful no-op.
+Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`. Unrelated live `config.toml` rewrites are preserved when the top-level `model_instructions_file` still references the manifest-owned Markdown. `inactive-by-config` remains uninstall-blocked until an active profile is restored. A different target reference, target-field ambiguity or unsupported statement structure, managed-resource drift, missing backups, invalid manifests, or abnormal nodes stops every selected directory before writes. An absent manifest is a successful no-op.
 
 ### Upgrade and rollback
 
@@ -376,7 +395,7 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 - `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first mutation; a later status detects it and fails closed until explicit `--recover`.
 - Windows P0 backend calls `FlushFileBuffers` on managed handles; the per-journal-phase hard-interruption matrix remains P1, so it is not a formal support claim.
 - Journal, intent, companion, manifest, and cleanup-claim evidence is not cryptographic authentication against coordinated same-user tampering.
-- `model_instructions_file` is global, not profile-scoped; hook isolation is whole-file only.
+- `model_instructions_file` remains global within one live config. CCSwitch can switch its presence through effective provider configs, but Common Config merging can reintroduce it; Keysmith does not manage the CCSwitch database, backfill outcome, or proxy-takeover hot switching. Hook isolation is whole-file and does not follow those configs.
 
 Full state model: [`hooks-transactions.md`](hooks-transactions.md).
 

@@ -157,10 +157,12 @@ jobs:
           cmp "$notes" "$notes_blob"
           policy_files=(
             README.md
+            README.en.md
             CHANGELOG.md
             CONTRIBUTING.md
             SECURITY.md
             docs/hooks-transactions.md
+            docs/reference.md
             "$notes"
           )
           policy=""
