@@ -1,35 +1,21 @@
-// lib/store.js — 跨视图共享状态（CLI 检测结果、status 快照、操作锁）
+// lib/store.js — 跨视图共享状态（React 迁移版，useSyncExternalStore 兼容）
+// 保存：CLI 检测结果、status 快照、操作锁、当前视图
 
-let cliInfo = { path: null, version: "", pythonVersion: "", checked: false };
-let lastStatus = null;
-let operationInProgress = false;
+let state = {
+  cliInfo: { path: null, version: "", pythonVersion: "", checked: false },
+  lastStatus: null,
+  operationInProgress: false,
+  view: "dashboard",
+};
+
 const listeners = new Set();
 
-export function getCliInfo() {
-  return { ...cliInfo };
+function emit() {
+  listeners.forEach((fn) => fn());
 }
 
-export function setCliInfo(patch) {
-  cliInfo = { ...cliInfo, ...patch };
-  notify();
-}
-
-export function getLastStatus() {
-  return lastStatus;
-}
-
-export function setLastStatus(status) {
-  lastStatus = status;
-  notify();
-}
-
-export function isOperationInProgress() {
-  return operationInProgress;
-}
-
-export function setOperationInProgress(v) {
-  operationInProgress = v;
-  notify();
+export function getState() {
+  return state;
 }
 
 export function subscribe(fn) {
@@ -37,6 +23,29 @@ export function subscribe(fn) {
   return () => listeners.delete(fn);
 }
 
-function notify() {
-  listeners.forEach((fn) => fn());
+export function setCliInfo(patch) {
+  state = { ...state, cliInfo: { ...state.cliInfo, ...patch } };
+  emit();
+}
+
+export function setLastStatus(lastStatus) {
+  state = { ...state, lastStatus };
+  emit();
+}
+
+export function setOperationInProgress(operationInProgress) {
+  state = { ...state, operationInProgress };
+  emit();
+}
+
+/** 供非 React 环境（窗口关闭拦截）同步读取操作锁 */
+export function isOperationInProgressRef() {
+  return state.operationInProgress;
+}
+
+export function setView(view) {
+  // 离开 manage 时失效快照（与原逻辑一致）
+  const lastStatus = view === "manage" ? state.lastStatus : null;
+  state = { ...state, view, lastStatus };
+  emit();
 }
