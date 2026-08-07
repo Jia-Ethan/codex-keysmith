@@ -4,3 +4,4 @@ src-tauri/target
 src-tauri/gen/schemas
 .DS_Store
 *.log
+src-tauri/icons/old-backup/
