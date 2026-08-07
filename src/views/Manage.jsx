@@ -92,6 +92,7 @@ export function Manage() {
             cliArgs={["--recover"]}
             dirs={dirs}
             danger
+            recoverPreview // --recover 不带 --yes 即预览
             enabled={hasResidue}
             highlight={hasResidue}
             extraBadge={hasResidue ? t("manage.recoverAvailable") : null}
@@ -108,7 +109,7 @@ export function Manage() {
  * 流程：选目录 → 预览（gate 校验通过才解锁执行）→ 确认 → 执行。
  * 预览绑定当时的目录选择；之后改动目录则预览作废（previewStale）。
  */
-function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes, enabled = true, highlight, extraBadge, delay }) {
+function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes, recoverPreview, enabled = true, highlight, extraBadge, delay }) {
   const [dirSel, setDirSel] = React.useState(ALL_DIRS);
   const [preview, setPreview] = React.useState(null); // { dirKey, gate, parsed, output }
   const [previewing, setPreviewing] = React.useState(false);
@@ -134,6 +135,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
     setResult(null);
     try {
       const effectiveDir = dirKey || getSettings().defaultCodexDir || "";
+      // recoverPreview：--recover 不带 --yes 就是预览；其余操作默认即预览
       const output = await cliRun([...buildArgs(effectiveDir), "--lang", "en"]);
       const parsed = parseUninstallPreview(output.stdout);
       const gate = gatePreview(output, parsed);
@@ -157,6 +159,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
     setResult(null);
     try {
       const args = buildArgs();
+      // --restore-hooks 与 --yes 互斥（noYes）；其余（含 --recover）追加 --yes
       const output = noYes
         ? await cliRun([...args, "--lang", "en"], 120_000)
         : await cliExecute(args);

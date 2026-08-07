@@ -253,6 +253,21 @@ describe("gatePreview（问题 1：门禁不可绕过）", () => {
     expect(gate.detail).toContain("path separators");
   });
 
+  it("错误写在 stdout（--name 校验失败的真实行为）也阻断并展示", () => {
+    // 实测：python3 codex-instruct.py --dry-run --name "bad/name" --lang en
+    // exit=1，stdout="[Error] --name 只能是文件名，不能包含路径分隔符"，stderr 为空
+    const output = {
+      stdout: "[Error] --name 只能是文件名，不能包含路径分隔符\n",
+      stderr: "",
+      exit_code: 1,
+      timed_out: false,
+    };
+    const gate = gatePreview(output, parseDryRun(output.stdout));
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe("exit");
+    expect(gate.detail).toContain("路径分隔符");
+  });
+
   it("超时 → 阻断", () => {
     const gate = gatePreview(
       { stdout: DRY_RUN_OK, stderr: "", exit_code: -1, timed_out: true },

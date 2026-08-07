@@ -197,10 +197,12 @@ export function gatePreview(output, parsed) {
     return { ok: false, reason: "timeout", detail: output.stderr || output.stdout };
   }
   if (output.exit_code !== 0) {
+    // 部分错误路径只写 stdout（如 --name 校验失败），两处都要带上
     return {
       ok: false,
       reason: "exit",
-      detail: output.stderr || output.stdout || `exit code ${output.exit_code}`,
+      detail: [output.stderr, output.stdout].filter((s) => s?.trim()).join("\n")
+        || `exit code ${output.exit_code}`,
     };
   }
   if (!output.stdout.trim()) {

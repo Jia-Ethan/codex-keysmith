@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：M1–M3 已交付并验证（2026-08-07），可构建出 .dmg；M4 sidecar 打包待做
+> 状态：前端已迁移 React + shadcn/ui + Tailwind 4 + Motion（2026-08-07，v0.2.0）；M4 sidecar 打包待做
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -25,11 +25,15 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 │  Tauri 2 App (macOS .app)                  │
 │                                             │
 │  ┌───────────────────────────┐              │
-│  │  Web 前端 (vanilla JS)    │              │
+│  │  Web 前端 (React 19)      │              │
 │  │  - 视图：Dashboard /      │              │
 │  │    Deploy / Manage /      │              │
-│  │    Settings               │              │
+│  │    Settings（src/views/） │              │
+│  │  - shadcn/ui 风格组件 +   │              │
+│  │    Tailwind 4 + Motion    │              │
+│  │  - react-i18next + sonner │              │
 │  │  - parser.js 解析 CLI 文本│              │
+│  │    + gatePreview 门禁     │              │
 │  └──────────┬────────────────┘              │
 │             │ invoke()                      │
 │  ┌──────────▼────────────────┐              │
@@ -304,14 +308,22 @@ async fn python_version() -> Result<String, String>;
 
 ## 10. 交接说明（给接手 Agent）
 
-**起点：** 本仓库 `/Users/ethan/ZCodeProject/codex-keysmith-gui`（若在 GitHub 新建仓库则迁移过去）。
+**起点：** 本仓库 `/Users/ethan/ZCodeProject/codex-keysmith-gui`（git 已初始化，回滚点 `2ae3f0a` 为 vanilla JS 基线）。
 
-**已交付（2026-08-07）：**
+**已交付（2026-08-07，v0.2.0）：**
 
-- `src-tauri/`：Tauri 2 工程，`cargo check` 与 `npm run tauri build` 均通过，产出 `codex-keysmith_0.1.0_aarch64.dmg`
-- `src/`：完整前端（四视图 + i18n + 双主题 + 玻璃态设计系统）
-- `package.json`：`npm run tauri dev` / `npm run tauri build` 脚本
+- `src-tauri/`：Tauri 2 工程，命令契约未变（`cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `python_version`）
+- `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
+- `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 15 个 vitest 用例（真实 CLI 输出样本）
 - 本 SPEC.md：解析规范与设计决策
+
+**React 迁移期修复的问题（原 vanilla 版缺陷，均已在真机验证）：**
+
+1. **dry-run 门禁可绕过**：新增 `gatePreview(output, parsed)`，非零退出 / 超时 / 空 stdout / blockers 一律 `ok:false` 并携带 stderr（含错误只写 stdout 的情况，如 `--name` 校验失败）；Deploy 步骤 2 与管理页预览都走此门禁，不放行到确认步骤。
+2. **异常节点静默丢弃**：`FILE_LINE_RE` 放开类型白名单，`symbolic link` / `FIFO` / `socket` / `other node` / `directory` 统一归一化为 `other`，节点保留在 `nodes` 中并进入 `abnormalNodes[]` + `warnings[]`，Dashboard 显眼警告块展示。
+3. **管理操作无强制预览**：卸载 / 恢复 hooks / 恢复中断事务全部「预览 → 确认 → 执行」；预览绑定当时的目录选择，改目录后预览作废（previewStale）。`--restore-hooks` 与 `--yes` 互斥不变（`noYes`）；`--recover` 预览不带 `--yes`、执行带 `--yes`。
+4. **dmg 无 CLI 死路**：Dashboard / Settings 空状态给出 GitHub 获取步骤，README 补齐前置依赖说明。sidecar 打包仍属 M4。
+5. **可访问性**：恢复文字选中（可复制路径/报错）；`--text-muted` 提到 #5f5e57（浅）/#9a9a9a（深）保证 4.5:1；侧边栏 hover + focus-within + 显式开关三重展开；reduced-motion 保留 spinner/focus 等功能性动效，只去掉装饰性动画（motion 的 `useReducedMotion` + CSS `@media`）。
 
 **踩坑实录（开发期实测，已修）：**
 
