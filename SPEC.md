@@ -308,7 +308,7 @@ async fn python_version() -> Result<String, String>;
 
 ## 10. 交接说明（给接手 Agent）
 
-**起点：** 本仓库 `/Users/ethan/ZCodeProject/codex-keysmith-gui`（git 已初始化，回滚点 `2ae3f0a` 为 vanilla JS 基线）。
+**起点：** 本仓库 `/Users/ethan/ZCodeProject/codex-keysmith-gui`（git 已初始化，回滚点 `2ae3f0a` 为迁移前基线）。
 
 **已交付（2026-08-07，v0.2.0）：**
 
