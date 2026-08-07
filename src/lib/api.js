@@ -1,9 +1,9 @@
 // lib/api.js — 前端到 Rust 命令的薄封装 + 组合操作
-// Rust 侧实现见 src-tauri/src/cli_runner.rs
+// Rust 侧实现见 src-tauri/src/cli_runner.rs（契约未变）
 
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings } from "./settings.js";
-import { parseStatus, parseDryRun } from "./parser.js";
+import { parseStatus, parseDryRun, gatePreview } from "./parser.js";
 
 /** 执行 CLI 命令，返回 { stdout, stderr, exit_code, timed_out } */
 export function cliRun(args, timeoutMs = 30_000) {
@@ -52,18 +52,31 @@ export async function fetchStatus() {
   return parsed;
 }
 
-/** 解析后的 dry-run 预览 */
+/**
+ * dry-run 预览 + 门禁（问题 1 修复）：
+ * 非零退出 / 超时 / 空输出 / blockers 一律 gate.ok=false，视图层据此阻断。
+ */
 export async function fetchDryRun(deployArgs) {
   const output = await cliRun([...deployArgs, "--dry-run", "--lang", "en"]);
   const parsed = parseDryRun(output.stdout);
   parsed.exitCode = output.exit_code;
   parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.gate = gatePreview(output, parsed);
   return parsed;
 }
 
 /** 执行写操作（部署/卸载/恢复），追加 --yes */
 export function cliExecute(args, timeoutMs = 120_000) {
   return cliRun([...args, "--yes", "--lang", "en"], timeoutMs);
+}
+
+/** 是否在 Tauri 环境外（纯浏览器预览） */
+export function isTauriMissing(err) {
+  return (
+    !window.__TAURI_INTERNALS__ ||
+    (err && typeof err.message === "string" && err.message.includes("__TAURI"))
+  );
 }
 
 export class CliError extends Error {
