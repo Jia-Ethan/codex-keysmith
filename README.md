@@ -15,6 +15,7 @@
 <p align="center">
   <a href="#简体中文">简体中文</a> ·
   <a href="README.en.md">English</a> ·
+  <a href="#桌面客户端beta">桌面客户端 beta</a> ·
   <a href="docs/reference.md">Reference</a> ·
   <a href="docs/agent-install.md">智能体安装 / Agent install</a> ·
   <a href="SECURITY.md">Security</a> ·
@@ -23,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.1.3" src="https://img.shields.io/badge/source-v0.1.3-0099CC">
+  <img alt="Source version v0.2.0" src="https://img.shields.io/badge/source-v0.2.0-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -38,6 +39,20 @@
 
 > [!WARNING]
 > 不要在 Windows 上使用已发布的 `v0.1.0`；它有已知的清理缺陷（详见「兼容性与限制」）。v0.1.1 及后续版本已提供原生恢复后端；Windows fresh deployment 仍标记为 beta。
+
+### 桌面客户端（beta）
+
+仓库现已包含 [`gui/` 桌面客户端源码](https://github.com/Jia-Ethan/codex-keysmith/tree/main/gui)。它基于 Tauri 2 + React，复用现有 Python CLI 的预览、部署、恢复和卸载逻辑，不在 GUI 中重写文件事务。
+
+```bash
+cd gui
+npm install
+npm run tauri dev
+```
+
+- 当前统一源码版本为 `0.2.0`。macOS 候选构建已包含 CLI sidecar 并产出 `.app` / `.dmg`；正式签名、公证和发布仍待凭据与发布流程完成。
+- Windows GUI 仍是 beta 边界：源码已配置原生 Windows NSIS 构建，但 Windows 原生产物仍待 CI 验证，当前也没有正式发布的 Windows 安装包。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`，不构成正式 Windows 支持承诺。
+- 正式打包流程会把 PyInstaller CLI sidecar 放入应用包，不要求最终用户另装 Python；开发模式和手动高级配置仍可回退到外部 `codex-instruct.py`。具体开发与构建说明见 `gui/README.md`。
 
 ### 快速开始（macOS / Linux）
 
@@ -109,6 +124,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 - 推荐 Python 3.10–3.14；已验证 Codex CLI `codex-cli 0.144.1`。
 - macOS / Linux 是主要支持范围。
 - **Windows**：已发布的 `v0.1.0` 存在已知缺陷（`os.utime` 失败后触发第二个 `PermissionError`，会留下无法用旧脚本恢复的 journal）。v0.1.1 及后续版本已重写 Windows 文件系统后端并标记 `EXPLICIT_BETA`，可以试用，但还不是正式支持；如果 v0.1.0 留下了 journal，用最新已校验 Release 脚本按 `--status` → `--recover` 预览 → `--recover --yes` → `--status` 的顺序恢复，不要手工删除任何证据。
+- **Windows GUI**：当前为构建级 beta，已配置 NSIS 安装包，但原生产物仍待 CI 验证且尚未正式发布，也不扩大上述 CLI 的 `EXPLICIT_BETA` 支持边界。
 - 单文件 CLI，没有 `pip install` 或自动更新；备份和卸载归档不会自动清理。
 - 完整限制清单、事务保证、维护者验证步骤见 [`docs/reference.md`](docs/reference.md)。
 
