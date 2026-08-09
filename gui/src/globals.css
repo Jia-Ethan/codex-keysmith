@@ -1,0 +1,375 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+
+/* ============================================
+   codex-keysmith GUI — 双模式 Design System
+   token 沿用 ethanpier.com（浅色 clay / 深色 tech blue）
+   ============================================ */
+
+:root {
+  /* ---- Light: 暖纸张 clay ---- */
+  --bg-primary: #faf9f5;
+  --bg-secondary: #f0eee6;
+  --bg-card: #f0eee6;
+  --bg-elevated: #e8e6dc;
+
+  --text-primary: #141413;
+  --text-secondary: #3d3d3a;
+  --text-muted: #5f5e57;      /* 4.5:1+ on bg-primary */
+
+  --accent: #d97757;
+  --accent-hover: #c6613f;
+  --accent-soft: rgba(217, 119, 87, 0.16);
+  --accent-soft-block: rgba(217, 119, 87, 0.1);
+
+  --border: #dedcd1;
+  --border-hover: #d1cfc5;
+
+  --glow-color: rgba(217, 119, 87, 0.12);
+  --shadow-card: 0 2px 8px rgba(20, 20, 19, 0.06);
+  --shadow-card-hover: 0 8px 24px rgba(20, 20, 19, 0.1);
+  --gradient-brand: linear-gradient(135deg, #d97757 0%, #c6613f 50%, #d4a27f 100%);
+
+  --ok: #15803d;        /* 4.5:1 on light */
+  --warn: #a16207;
+  --danger: #b91c1c;
+  --ok-soft: rgba(21, 128, 61, 0.12);
+  --warn-soft: rgba(161, 98, 7, 0.12);
+  --danger-soft: rgba(185, 28, 28, 0.1);
+
+  --font-sans: "Geist Sans", "SF Pro Display", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "Geist Mono", "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+.dark {
+  /* ---- Dark: 深空 tech blue ---- */
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #161616;
+  --bg-card: #1a1a1a;
+  --bg-elevated: #252525;
+
+  --text-primary: #f5f5f5;
+  --text-secondary: #c2c2c2;  /* 4.5:1+ on bg-card */
+  --text-muted: #9a9a9a;      /* 4.5:1+ on bg-primary */
+
+  --accent: #6a9bcc;
+  --accent-hover: #8ab4dd;
+  --accent-soft: rgba(106, 155, 204, 0.18);
+  --accent-soft-block: rgba(106, 155, 204, 0.12);
+
+  --border: #333333;
+  --border-hover: #4a4a4a;
+
+  --glow-color: rgba(106, 155, 204, 0.25);
+  --shadow-card: 0 0 0 transparent;
+  --shadow-card-hover: 0 0 24px var(--glow-color);
+  --gradient-brand: linear-gradient(135deg, #6a9bcc 0%, #8b7fcc 50%, #a78bfa 100%);
+
+  --ok: #4ade80;
+  --warn: #facc15;
+  --danger: #f87171;
+  --ok-soft: rgba(74, 222, 128, 0.12);
+  --warn-soft: rgba(250, 204, 21, 0.12);
+  --danger-soft: rgba(248, 113, 113, 0.12);
+}
+
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-card);
+  --color-card-foreground: var(--text-primary);
+  --color-elevated: var(--bg-elevated);
+  --color-muted: var(--bg-secondary);
+  --color-muted-foreground: var(--text-muted);
+  --color-secondary-foreground: var(--text-secondary);
+  --color-accent: var(--accent);
+  --color-accent-foreground: #ffffff;
+  --color-accent-hover: var(--accent-hover);
+  --color-border: var(--border);
+  --color-border-hover: var(--border-hover);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-ring: var(--accent);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.4s ease, color 0.4s ease;
+  overflow: hidden; /* app 壳内滚动 */
+  /* 文字选中保持可用（可访问性要求：可复制路径/报错） */
+  user-select: text;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+/* 焦点可见：键盘导航可访问性 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ===== 环境背景层（Ambient Background）===== */
+.ambient-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ambient-glow {
+  position: absolute;
+  border-radius: 50%;
+  will-change: transform, opacity;
+}
+
+.ambient-glow-1 {
+  width: 65vmax;
+  height: 65vmax;
+  top: -25vmax;
+  right: -18vmax;
+  background: radial-gradient(circle, var(--accent-soft) 0%, transparent 65%);
+  animation: ambient-drift-1 65s ease-in-out infinite alternate;
+}
+
+.ambient-glow-2 {
+  width: 55vmax;
+  height: 55vmax;
+  bottom: -22vmax;
+  left: -14vmax;
+  background: radial-gradient(circle, var(--accent-soft) 0%, transparent 65%);
+  animation: ambient-drift-2 85s ease-in-out infinite alternate;
+}
+
+.ambient-glow-3 {
+  width: 45vmax;
+  height: 45vmax;
+  top: 35%;
+  left: 30%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--text-muted) 8%, transparent) 0%,
+    transparent 60%
+  );
+  animation: ambient-drift-3 100s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-drift-1 {
+  0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+  50%  { transform: translate3d(-9vmax, 7vmax, 0) scale(1.1); opacity: 0.82; }
+  100% { transform: translate3d(-13vmax, 10vmax, 0) scale(0.96); opacity: 1; }
+}
+
+@keyframes ambient-drift-2 {
+  0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+  45%  { transform: translate3d(7vmax, -8vmax, 0) scale(0.95); opacity: 0.86; }
+  100% { transform: translate3d(12vmax, -12vmax, 0) scale(1.12); opacity: 1; }
+}
+
+@keyframes ambient-drift-3 {
+  0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+  55%  { transform: translate3d(5vmax, 6vmax, 0) scale(1.12); opacity: 0.88; }
+  100% { transform: translate3d(10vmax, 8vmax, 0) scale(0.97); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-glow {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+/* ===== 玻璃卡片系统 ===== */
+.card-glass {
+  position: relative;
+  background-color: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 1px 2px rgba(20, 20, 19, 0.05),
+    0 8px 24px rgba(20, 20, 19, 0.06);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--text-primary) 4.5%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.dark .card-glass {
+  background-color: rgba(26, 26, 26, 0.5);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 8px 24px rgba(0, 0, 0, 0.3);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--text-primary) 5%, transparent) 1px,
+    transparent 1px
+  );
+}
+
+.card-glass-hover:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 2px 4px rgba(20, 20, 19, 0.06),
+    0 16px 40px rgba(20, 20, 19, 0.1);
+}
+
+.dark .card-glass-hover:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.5),
+    0 16px 40px rgba(0, 0, 0, 0.4),
+    0 0 24px var(--glow-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-glass,
+  .card-glass-hover:hover {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* ===== 主按钮发光（深色 glow / 浅色纯色）===== */
+.btn-glow {
+  transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease;
+}
+
+.btn-glow:hover:not(:disabled) {
+  transform: scale(1.02);
+}
+
+.dark .btn-glow:hover:not(:disabled) {
+  box-shadow: 0 0 20px var(--glow-color);
+}
+
+/* ===== 状态脉冲点 ===== */
+.pulse-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  opacity: 0;
+  animation: pulse-ring 2.4s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(0.6); opacity: 0.7; }
+  70%  { transform: scale(1.4); opacity: 0; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot::after {
+    animation: none;
+  }
+}
+
+/* ===== Loading spinner（功能性动效，reduced-motion 下保留）===== */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-hover);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== 日志/输出块 ===== */
+.log-block {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-hover);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ===== 按压形变（微交互；reduced-motion 下去掉）===== */
+@media (prefers-reduced-motion: no-preference) {
+  button:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+}
+
+/* ===== shadcn token 桥接（Radix 组件消费）===== */
+.radius {
+  border-radius: 10px;
+}
