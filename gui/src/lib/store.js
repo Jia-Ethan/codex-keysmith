@@ -2,7 +2,7 @@
 // 保存：CLI 检测结果、status 快照、操作锁、当前视图
 
 let state = {
-  cliInfo: { path: null, version: "", pythonVersion: "", checked: false },
+  cliInfo: { path: null, version: "", runtime: "", checked: false },
   lastStatus: null,
   operationInProgress: false,
   view: "dashboard",

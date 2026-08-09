@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "codex-keysmith",
-  "version": "0.2.0",
+  "version": "../package.json",
   "identifier": "com.jia-ethan.codex-keysmith-gui",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -17,19 +17,15 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "devtools": true
+        "devtools": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "app",
-      "dmg"
-    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

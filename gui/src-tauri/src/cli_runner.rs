@@ -1,25 +1,79 @@
-//! cli_runner — 包装 codex-instruct.py 的进程执行层
+//! Process boundary between the desktop client and codex-keysmith CLI.
 //!
-//! 设计约束（见 SPEC.md §3）：
-//! - Rust 只做进程执行与文件读取，不做业务解析（解析在前端 parser.js）
-//! - 参数以数组传入，绝不拼接 shell 字符串
-//! - 写操作全部由 CLI 完成，客户端永不直接修改 ~/.codex
+//! Packaged builds prefer the PyInstaller sidecar. Development and advanced
+//! users can still point the app at `codex-instruct.py` as a fallback.
 
 use serde::Serialize;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::{Child, Command};
 use tokio::time::{timeout, Duration};
 
 const MANIFEST_FILENAME: &str = ".codex-keysmith-manifest.json";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const PYTHON: &str = "python3";
-const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024; // 2 MB，防止异常输出撑爆内存
+const VERSION_TIMEOUT_MS: u64 = 5_000;
+const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const SIDECAR_BASENAME: &str = "codex-keysmith-cli";
+const SCRIPT_NAME: &str = "codex-instruct.py";
 
-const CANDIDATE_NAMES: &[&str] = &["codex-instruct.py", "codex-keysmith"];
+#[derive(Default)]
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CliRuntime {
+    Bundled,
+    Executable,
+    Python,
+}
+
+impl CliRuntime {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled",
+            Self::Executable => "executable",
+            Self::Python => "python",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CliInvocation {
+    path: PathBuf,
+    program: PathBuf,
+    prefix_args: Vec<OsString>,
+    runtime: CliRuntime,
+}
+
+impl CliInvocation {
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.prefix_args);
+        command
+    }
+}
 
 #[derive(Serialize)]
+pub struct CliDescriptor {
+    path: String,
+    runtime: &'static str,
+}
+
+impl From<&CliInvocation> for CliDescriptor {
+    fn from(invocation: &CliInvocation) -> Self {
+        Self {
+            path: invocation.path.to_string_lossy().into_owned(),
+            runtime: invocation.runtime.key(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct CliOutput {
     stdout: String,
     stderr: String,
@@ -27,84 +81,179 @@ pub struct CliOutput {
     timed_out: bool,
 }
 
-/// 执行 CLI：python3 <cli> <args...>
-/// cli_path 为 None 时按定位策略自动探测；为 Some 时只做 exists 校验。
 #[tauri::command]
 pub async fn cli_run(
     cli_path: Option<String>,
     args: Vec<String>,
     timeout_ms: Option<u64>,
 ) -> Result<CliOutput, String> {
-    let cli = match cli_path {
-        Some(p) if !p.trim().is_empty() => {
-            let path = PathBuf::from(&p);
-            if !path.is_file() {
-                return Err(format!("CLI 文件不存在: {p}"));
-            }
-            path
-        }
-        _ => locate_cli().await.ok_or_else(|| {
-            "未找到 codex-instruct.py。请在设置中指定 CLI 脚本路径。".to_string()
-        })?,
-    };
+    let invocation = resolve_invocation(cli_path.as_deref())?;
+    run_invocation(
+        &invocation,
+        &args,
+        Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
+    )
+    .await
+}
 
-    let limit = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-    let mut child = Command::new(PYTHON)
-        .arg(&cli)
-        .args(&args)
+async fn run_invocation(
+    invocation: &CliInvocation,
+    args: &[String],
+    limit: Duration,
+) -> Result<CliOutput, String> {
+    let mut command = invocation.command();
+    configure_process_tree(&mut command);
+    command.kill_on_drop(true);
+    let mut child = command
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("无法启动 python3: {e}"))?;
+        .map_err(|error| {
+            format!(
+                "无法启动 CLI（{}）: {error}",
+                invocation.path.to_string_lossy()
+            )
+        })?;
 
     let stdout_reader = child.stdout.take().expect("stdout pipe");
     let stderr_reader = child.stderr.take().expect("stderr pipe");
-
-    // 边跑边读，避免管道缓冲区占满导致死锁
     let read_task = tokio::spawn(async move {
-        let mut out_buf = Vec::new();
-        let mut err_buf = Vec::new();
-        let mut out_limited = stdout_reader.take(MAX_OUTPUT_BYTES as u64);
-        let mut err_limited = stderr_reader.take(MAX_OUTPUT_BYTES as u64);
-        let (o, e) = tokio::join!(
-            out_limited.read_to_end(&mut out_buf),
-            err_limited.read_to_end(&mut err_buf)
-        );
-        o.ok();
-        e.ok();
-        (out_buf, err_buf)
+        tokio::join!(read_capped(stdout_reader), read_capped(stderr_reader))
     });
 
     let exit = match timeout(limit, child.wait()).await {
         Ok(Ok(status)) => status.code().unwrap_or(-1),
-        Ok(Err(e)) => return Err(format!("等待 CLI 进程失败: {e}")),
+        Ok(Err(error)) => {
+            terminate_process_tree(&mut child).await;
+            let _ = read_task.await;
+            return Err(format!("等待 CLI 进程失败: {error}"));
+        }
         Err(_) => {
-            // 超时：杀进程并等待退出，防止僵尸进程
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let (o, e) = read_task.await.unwrap_or_default();
+            terminate_process_tree(&mut child).await;
+            let (stdout, stderr) = read_task.await.unwrap_or_default();
             return Ok(CliOutput {
-                stdout: String::from_utf8_lossy(&o).into_owned(),
-                stderr: String::from_utf8_lossy(&e).into_owned(),
+                stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
                 exit_code: -1,
                 timed_out: true,
             });
         }
     };
 
-    let (o, e) = read_task.await.unwrap_or_default();
+    let (stdout, stderr) = read_task
+        .await
+        .map_err(|error| format!("读取 CLI 输出任务失败: {error}"))?;
+    validate_captured_output(&stdout, &stderr)?;
     Ok(CliOutput {
-        stdout: String::from_utf8_lossy(&o).into_owned(),
-        stderr: String::from_utf8_lossy(&e).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
         exit_code: exit,
         timed_out: false,
     })
 }
 
-/// 读取指定 codex 目录的部署 manifest（结构化 JSON，SPEC.md §5.3）
-///
-/// 安全约束：只读取 <codex_dir>/.codex-keysmith-manifest.json，
-/// 文件名精确匹配，不做任意文件读取。
+#[cfg(unix)]
+fn configure_process_tree(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(windows)]
+fn configure_process_tree(command: &mut Command) {
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_process_tree(_command: &mut Command) {}
+
+#[cfg(unix)]
+async fn terminate_process_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        if let Ok(pid) = i32::try_from(pid) {
+            // The child is the leader of an isolated process group, so this
+            // also stops PyInstaller bootloader descendants.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(windows)]
+async fn terminate_process_tree(child: &mut Child) {
+    if let Some(pid) = child.id() {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn terminate_process_tree(child: &mut Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+fn validate_captured_output(
+    stdout: &CapturedOutput,
+    stderr: &CapturedOutput,
+) -> Result<(), String> {
+    let mut issues = Vec::new();
+    for (label, captured) in [("stdout", stdout), ("stderr", stderr)] {
+        if captured.truncated {
+            issues.push(format!("{label} 超过 {MAX_OUTPUT_BYTES} 字节上限"));
+        }
+        if let Some(error) = &captured.error {
+            issues.push(format!("读取 {label} 失败: {error}"));
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "CLI 输出不完整，已阻止继续操作: {}",
+            issues.join("; ")
+        ))
+    }
+}
+
+async fn read_capped<R>(mut reader: R) -> CapturedOutput
+where
+    R: AsyncRead + Unpin,
+{
+    let mut captured = CapturedOutput::default();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) => {
+                captured.error = Some(error.to_string());
+                break;
+            }
+        };
+        let remaining = MAX_OUTPUT_BYTES.saturating_sub(captured.bytes.len());
+        if remaining > 0 {
+            captured
+                .bytes
+                .extend_from_slice(&chunk[..read.min(remaining)]);
+        }
+        if read > remaining {
+            captured.truncated = true;
+        }
+    }
+    captured
+}
+
+/// Read only the deployment manifest at the exact supported filename.
 #[tauri::command]
 pub async fn read_manifest(codex_dir: String) -> Result<serde_json::Value, String> {
     let dir = PathBuf::from(&codex_dir);
@@ -113,98 +262,151 @@ pub async fn read_manifest(codex_dir: String) -> Result<serde_json::Value, Strin
     }
     let manifest_path = dir.join(MANIFEST_FILENAME);
     if !manifest_path.is_file() {
-        return Err(format!(
-            "未找到部署清单: {}",
-            manifest_path.display()
-        ));
+        return Err(format!("未找到部署清单: {}", manifest_path.display()));
     }
     let content = tokio::fs::read(&manifest_path)
         .await
-        .map_err(|e| format!("读取部署清单失败: {e}"))?;
-    serde_json::from_slice(&content).map_err(|e| format!("部署清单不是合法 JSON: {e}"))
+        .map_err(|error| format!("读取部署清单失败: {error}"))?;
+    serde_json::from_slice(&content).map_err(|error| format!("部署清单不是合法 JSON: {error}"))
 }
 
-/// 探测 CLI 脚本路径。返回 None 表示未找到。
 #[tauri::command]
-pub async fn detect_cli() -> Result<Option<String>, String> {
-    Ok(locate_cli().await.map(|p| p.to_string_lossy().into_owned()))
+pub async fn detect_cli() -> Result<Option<CliDescriptor>, String> {
+    Ok(locate_cli()?.as_ref().map(CliDescriptor::from))
 }
 
-/// 获取 CLI 版本（python3 <cli> --version 的 stdout）
 #[tauri::command]
-pub async fn cli_version(cli_path: String) -> Result<String, String> {
-    let path = PathBuf::from(&cli_path);
-    if !path.is_file() {
-        return Err(format!("CLI 文件不存在: {cli_path}"));
+pub async fn cli_version(cli_path: Option<String>) -> Result<String, String> {
+    let invocation = resolve_invocation(cli_path.as_deref())?;
+    let output = run_invocation(
+        &invocation,
+        &["--version".to_string()],
+        Duration::from_millis(VERSION_TIMEOUT_MS),
+    )
+    .await?;
+    if output.timed_out {
+        return Err("获取 CLI 版本超时".to_string());
     }
-    let output = Command::new(PYTHON)
-        .arg(&path)
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|e| format!("无法执行 CLI: {e}"))?;
-    if !output.status.success() {
+    if output.exit_code != 0 {
         return Err(format!(
             "获取版本失败 (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr)
+            output.exit_code, output.stderr
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout.trim().to_string())
 }
 
-/// 获取 Python 版本（python3 --version）
 #[tauri::command]
-pub async fn python_version() -> Result<String, String> {
-    let output = Command::new(PYTHON)
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|e| format!("无法执行 python3: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "python3 不可用 (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+pub async fn cli_runtime(cli_path: Option<String>) -> Result<String, String> {
+    Ok(resolve_invocation(cli_path.as_deref())?
+        .runtime
+        .key()
+        .to_string())
 }
 
-/// 定位 CLI 脚本：环境变量 > 候选路径 > PATH
-async fn locate_cli() -> Option<PathBuf> {
-    if let Ok(env_path) = std::env::var("CODEX_KEYSMITH_CLI") {
-        let p = PathBuf::from(env_path);
-        if p.is_file() {
-            return Some(p);
+fn resolve_invocation(cli_path: Option<&str>) -> Result<CliInvocation, String> {
+    if let Some(path) = cli_path.filter(|path| !path.trim().is_empty()) {
+        return invocation_for_path(PathBuf::from(path), false);
+    }
+    locate_cli()?.ok_or_else(|| {
+        "未找到内置 CLI 或 codex-instruct.py。请重新安装应用或在设置中指定脚本路径。".to_string()
+    })
+}
+
+fn locate_cli() -> Result<Option<CliInvocation>, String> {
+    if let Some(path) = bundled_sidecar_path().filter(|path| path.is_file()) {
+        return invocation_for_path(path, true).map(Some);
+    }
+
+    if let Ok(path) = std::env::var("CODEX_KEYSMITH_CLI") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return invocation_for_path(path, false).map(Some);
         }
     }
 
-    for candidate in candidate_paths() {
-        if candidate.is_file() {
-            return Some(candidate);
+    for path in fallback_candidate_paths() {
+        if path.is_file() {
+            return invocation_for_path(path, false).map(Some);
         }
     }
 
-    find_in_path().await
+    for name in path_candidate_names() {
+        if let Some(path) = find_program_in_path(name) {
+            return invocation_for_path(path, false).map(Some);
+        }
+    }
+    Ok(None)
 }
 
-fn candidate_paths() -> Vec<PathBuf> {
+fn invocation_for_path(path: PathBuf, bundled: bool) -> Result<CliInvocation, String> {
+    if !path.is_file() {
+        return Err(format!("CLI 文件不存在: {}", path.display()));
+    }
+
+    let runtime = runtime_for_path(&path, bundled);
+    if runtime == CliRuntime::Python {
+        let python = python_program().ok_or_else(|| {
+            "指定的是 Python 脚本，但系统中没有可用的 Python 解释器。".to_string()
+        })?;
+        return Ok(CliInvocation {
+            path: path.clone(),
+            program: python,
+            prefix_args: vec![path.into_os_string()],
+            runtime,
+        });
+    }
+
+    Ok(CliInvocation {
+        program: path.clone(),
+        path,
+        prefix_args: Vec::new(),
+        runtime,
+    })
+}
+
+fn runtime_for_path(path: &Path, bundled: bool) -> CliRuntime {
+    if bundled {
+        CliRuntime::Bundled
+    } else if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
+    {
+        CliRuntime::Python
+    } else {
+        CliRuntime::Executable
+    }
+}
+
+fn bundled_sidecar_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|directory| directory.join(sidecar_filename()))
+}
+
+#[cfg(windows)]
+fn sidecar_filename() -> String {
+    format!("{SIDECAR_BASENAME}.exe")
+}
+
+#[cfg(not(windows))]
+fn sidecar_filename() -> &'static str {
+    SIDECAR_BASENAME
+}
+
+fn fallback_candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-
-    // 可执行文件同目录（sidecar 未来放这里）
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in CANDIDATE_NAMES {
-                paths.push(dir.join(name));
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            for name in path_candidate_names() {
+                paths.push(directory.join(name));
             }
         }
     }
 
-    // 常见开发/安装位置
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        for name in CANDIDATE_NAMES {
+    if let Some(home) = home_directory() {
+        for name in path_candidate_names() {
             paths.push(home.join(".codex-keysmith-gui").join(name));
             paths.push(home.join("codex-keysmith").join(name));
             paths.push(home.join("ZCodeProject").join("codex-keysmith").join(name));
@@ -213,20 +415,139 @@ fn candidate_paths() -> Vec<PathBuf> {
         }
     }
 
-    paths.push(PathBuf::from("/usr/local/bin").join(CANDIDATE_NAMES[0]));
-    paths.push(PathBuf::from("/opt/homebrew/bin").join(CANDIDATE_NAMES[0]));
+    #[cfg(not(windows))]
+    for directory in ["/usr/local/bin", "/opt/homebrew/bin"] {
+        for name in path_candidate_names() {
+            paths.push(PathBuf::from(directory).join(name));
+        }
+    }
     paths
 }
 
-async fn find_in_path() -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        for name in CANDIDATE_NAMES {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+fn home_directory() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn path_candidate_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["codex-keysmith.exe", "codex-keysmith", SCRIPT_NAME]
+    }
+    #[cfg(not(windows))]
+    {
+        &["codex-keysmith", SCRIPT_NAME]
+    }
+}
+
+fn python_program() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CODEX_KEYSMITH_PYTHON") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
         }
     }
-    None
+
+    #[cfg(windows)]
+    let candidates = ["python.exe", "python3.exe"];
+    #[cfg(not(windows))]
+    let candidates = ["python3", "python"];
+
+    candidates
+        .iter()
+        .find_map(|candidate| find_program_in_path(candidate))
+}
+
+fn find_program_in_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_runtime_wins_over_file_extension() {
+        assert_eq!(
+            runtime_for_path(Path::new("codex-keysmith-cli.py"), true),
+            CliRuntime::Bundled
+        );
+    }
+
+    #[test]
+    fn python_scripts_are_fallback_invocations() {
+        assert_eq!(
+            runtime_for_path(Path::new("codex-instruct.PY"), false),
+            CliRuntime::Python
+        );
+    }
+
+    #[test]
+    fn native_binaries_run_directly() {
+        assert_eq!(
+            runtime_for_path(Path::new("codex-keysmith.exe"), false),
+            CliRuntime::Executable
+        );
+    }
+
+    #[test]
+    fn executable_candidates_precede_python_script() {
+        let candidates = path_candidate_names();
+        assert_eq!(candidates.last(), Some(&SCRIPT_NAME));
+        assert!(candidates[..candidates.len() - 1]
+            .iter()
+            .all(|candidate| !candidate.ends_with(".py")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_terminates_descendant_processes() {
+        let invocation = CliInvocation {
+            path: PathBuf::from("/bin/sh"),
+            program: PathBuf::from("/bin/sh"),
+            prefix_args: vec![
+                OsString::from("-c"),
+                OsString::from("sleep 60 & child=$!; echo $child; wait $child"),
+            ],
+            runtime: CliRuntime::Executable,
+        };
+
+        let output = run_invocation(&invocation, &[], Duration::from_millis(100))
+            .await
+            .expect("timeout result");
+        assert!(output.timed_out);
+        let descendant: i32 = output.stdout.trim().parse().expect("descendant pid");
+
+        for _ in 0..40 {
+            if unsafe { libc::kill(descendant, 0) } != 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("descendant process survived timeout");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_output_fails_closed() {
+        let invocation = CliInvocation {
+            path: PathBuf::from("/bin/sh"),
+            program: PathBuf::from("/bin/sh"),
+            prefix_args: vec![
+                OsString::from("-c"),
+                OsString::from("dd if=/dev/zero bs=1048576 count=3 2>/dev/null"),
+            ],
+            runtime: CliRuntime::Executable,
+        };
+
+        let error = run_invocation(&invocation, &[], Duration::from_secs(5))
+            .await
+            .expect_err("oversized output must fail closed");
+        assert!(error.contains("stdout"));
+        assert!(error.contains("输出不完整"));
+    }
 }

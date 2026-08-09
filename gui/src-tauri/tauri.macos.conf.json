@@ -1,0 +1,6 @@
+{
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "externalBin": ["binaries/codex-keysmith-cli"]
+  }
+}

@@ -10,7 +10,7 @@ import {
   setView,
   isOperationInProgressRef,
 } from "@/lib/store";
-import { detectCli, cliVersion, pythonVersion, isTauriMissing } from "@/lib/api";
+import { detectCli, cliVersion, isTauriMissing } from "@/lib/api";
 import { AmbientBg } from "@/components/AmbientBg";
 import { Sidebar } from "@/components/Sidebar";
 import { Dashboard } from "@/views/Dashboard";
@@ -52,19 +52,13 @@ export default function App() {
   React.useEffect(() => {
     (async () => {
       try {
-        const [path, pyVer] = await Promise.all([
-          detectCli(),
-          pythonVersion().catch(() => ""),
-        ]);
+        const detected = await detectCli();
+        const path = detected?.path || null;
         let version = "";
         if (path) {
-          try {
-            version = await cliVersion(path);
-          } catch {
-            /* 忽略 */
-          }
+          version = await cliVersion(path);
         }
-        setCliInfo({ path, version, pythonVersion: pyVer, checked: true });
+        setCliInfo({ path, version, runtime: detected?.runtime || "", checked: true });
       } catch (err) {
         if (isTauriMissing(err)) return; // 纯浏览器预览保持未检测态
         setCliInfo({ path: null, checked: true });

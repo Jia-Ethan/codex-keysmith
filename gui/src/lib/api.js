@@ -20,19 +20,19 @@ export function readManifest(codexDir) {
   return invoke("read_manifest", { codexDir });
 }
 
-/** 探测 CLI 脚本路径 */
+/** 探测 CLI，返回 { path, runtime } */
 export function detectCli() {
   return invoke("detect_cli");
 }
 
 /** 获取 CLI 版本 */
 export function cliVersion(cliPath) {
-  return invoke("cli_version", { cliPath });
+  return invoke("cli_version", { cliPath: cliPath || null });
 }
 
-/** 获取 Python 版本 */
-export function pythonVersion() {
-  return invoke("python_version");
+/** 获取运行时类型：bundled / executable / python */
+export function cliRuntime(cliPath) {
+  return invoke("cli_runtime", { cliPath: cliPath || null });
 }
 
 /** 解析后的 status（自动附加默认 --codex-dir） */
