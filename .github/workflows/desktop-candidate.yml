@@ -1,0 +1,445 @@
+name: Desktop Candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-candidate.yml"
+      - "VERSION"
+      - "codex-instruct.py"
+      - "examples/**"
+      - "gui/**"
+      - "requirements-quality.txt"
+      - "scripts/validate_desktop_candidate.py"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.14.0"
+  PYTHON_VERSION: "3.12.9"
+  PYINSTALLER_VERSION: "6.16.0"
+  RUST_VERSION: "1.88.0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  candidate:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon macOS / DMG
+            os: macos-15
+            platform: macos
+            architecture: arm64
+            target: aarch64-apple-darwin
+            bundle: dmg
+            artifact: codex-keysmith-desktop-macos-arm64
+            sidecar_suffix: ""
+            icon: gui/src-tauri/icons/icon.icns
+          - label: Windows x64 / NSIS
+            os: windows-2025
+            platform: windows
+            architecture: x86_64
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+            artifact: codex-keysmith-desktop-windows-x64
+            sidecar_suffix: .exe
+            icon: gui/src-tauri/icons/icon.ico
+
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Set up pinned Rust toolchain
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$TARGET_TRIPLE"
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+
+      - name: Install pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-quality.txt -r gui/requirements-build.txt
+          npm --prefix gui ci
+
+      - name: Validate configuration and versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+          python scripts/validate_desktop_candidate.py config --root .
+          python -m py_compile codex-instruct.py scripts/validate_desktop_candidate.py
+          test "$(tr -d '\r\n' < VERSION)" = "$(python codex-instruct.py --version | awk '{print $NF}')"
+          test "$(node --version)" = "v$NODE_VERSION"
+          python -c "import platform; assert platform.python_version() == '$PYTHON_VERSION'"
+          python -c "import PyInstaller; assert PyInstaller.__version__ == '$PYINSTALLER_VERSION'"
+          test "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION"
+
+      - name: Run CLI tests
+        shell: bash
+        run: python -m pytest -p no:cacheprovider -q tests
+
+      - name: Run GUI tests and production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix gui test
+          npm --prefix gui run build
+
+      - name: Run Rust tests
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: >-
+          cargo test
+          --manifest-path gui/src-tauri/Cargo.toml
+          --locked
+          --target "$TARGET_TRIPLE"
+
+      - name: Require Apple Silicon runner
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: test "$(uname -m)" = arm64
+
+      - name: Default to unsigned candidate
+        id: default_signing
+        shell: bash
+        run: echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+
+      - name: Select macOS signing mode
+        if: matrix.platform == 'macos' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        id: mac_signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          SIGNING_MODE=unsigned
+          configured=0
+          for value in "$APPLE_CERTIFICATE" "$APPLE_CERTIFICATE_PASSWORD" "$APPLE_SIGNING_IDENTITY"; do
+            if [ -n "$value" ]; then
+              configured=$((configured + 1))
+            fi
+          done
+          if [ "$configured" -ne 0 ] && [ "$configured" -ne 3 ]; then
+            echo "Apple signing credentials must be configured as a complete set." >&2
+            exit 1
+          fi
+          if [ "$configured" -eq 3 ]; then
+            SIGNING_MODE=signed
+          fi
+          echo "mode=$SIGNING_MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Select Windows signing mode
+        if: matrix.platform == 'windows' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        id: windows_signing
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+          if ($hasCertificate -xor $hasPassword) {
+            throw "Windows signing credentials must be configured as a complete set."
+          }
+          $mode = "unsigned"
+          if ($hasCertificate) {
+            $mode = "signed"
+            $pfx = Join-Path $env:RUNNER_TEMP "desktop-candidate.pfx"
+            [IO.File]::WriteAllBytes(
+              $pfx,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64)
+            )
+            $signScript = Join-Path $env:RUNNER_TEMP "sign-desktop-candidate.ps1"
+            @(
+              'param([Parameter(Mandatory = $true)][string]$Path)'
+              '$ErrorActionPreference = "Stop"'
+              '$kits = ${env:ProgramFiles(x86)}'
+              '$signtool = Get-ChildItem "$kits\Windows Kits\10\bin\*\x64\signtool.exe" |'
+              '  Sort-Object FullName -Descending | Select-Object -First 1'
+              'if ($null -eq $signtool) { throw "signtool.exe was not found" }'
+              '& $signtool.FullName sign /fd SHA256 /td SHA256 `'
+              '  /tr https://timestamp.digicert.com `'
+              '  /f $env:WINDOWS_CERTIFICATE_PATH `'
+              '  /p $env:WINDOWS_CERTIFICATE_PASSWORD $Path'
+              'if ($LASTEXITCODE -ne 0) { throw "signtool failed for $Path" }'
+            ) | Set-Content -LiteralPath $signScript -Encoding UTF8
+            "certificate_path=$pfx" >> $env:GITHUB_OUTPUT
+            "sign_script=$signScript" >> $env:GITHUB_OUTPUT
+          }
+          "mode=$mode" >> $env:GITHUB_OUTPUT
+
+      - name: Build pinned PyInstaller sidecar
+        id: sidecar
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+          SIDECAR_SUFFIX: ${{ matrix.sidecar_suffix }}
+        run: |
+          set -euo pipefail
+          npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"
+          source="gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}"
+          test -f "$source"
+          chmod +x "$source"
+          "$source" --version
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+
+      - name: Create candidate-only Tauri overlay
+        id: overlay
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          SIGNING_MODE: ${{ steps.mac_signing.outputs.mode || steps.windows_signing.outputs.mode || steps.default_signing.outputs.mode }}
+          WINDOWS_SIGN_SCRIPT: ${{ steps.windows_signing.outputs.sign_script }}
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/tauri-desktop-candidate.json"
+          python - "$config" <<'PY'
+          import json
+          import os
+          import sys
+
+          config = {}
+          if os.environ["PLATFORM"] == "windows" and os.environ["SIGNING_MODE"] == "signed":
+              config["bundle"] = {
+                  "windows": {
+                      "signCommand": {
+                          "cmd": "powershell",
+                          "args": [
+                              "-NoProfile",
+                              "-ExecutionPolicy",
+                              "Bypass",
+                              "-File",
+                              os.environ["WINDOWS_SIGN_SCRIPT"],
+                              "%1",
+                          ],
+                      }
+                  }
+              }
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              json.dump(config, handle, separators=(",", ":"))
+          PY
+          echo "path=$config" >> "$GITHUB_OUTPUT"
+
+      - name: Build DMG candidate
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          TARGET_TRIPLE: ${{ matrix.target }}
+          TAURI_CONFIG: ${{ steps.overlay.outputs.path }}
+        run: >-
+          npm --prefix gui run tauri -- build
+          --target "$TARGET_TRIPLE"
+          --bundles dmg
+          --config "$TAURI_CONFIG"
+
+      - name: Build NSIS candidate
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+          TAURI_CONFIG: ${{ steps.overlay.outputs.path }}
+          WINDOWS_CERTIFICATE_PATH: ${{ steps.windows_signing.outputs.certificate_path }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+        run: >-
+          npm --prefix gui run tauri -- build
+          --target "$TARGET_TRIPLE"
+          --bundles nsis
+          --config "$TAURI_CONFIG"
+
+      - name: Validate and stage macOS candidate
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ steps.mac_signing.outputs.mode || steps.default_signing.outputs.mode }}
+          SIDECAR_SOURCE: ${{ steps.sidecar.outputs.source }}
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          base="gui/src-tauri/target/$TARGET_TRIPLE/release/bundle"
+          app="$base/macos/codex-keysmith.app"
+          bundle_count="$(find "$base/dmg" -maxdepth 1 -type f -name '*.dmg' -print | wc -l)"
+          if [ "$bundle_count" -ne 1 ]; then
+            echo "Expected exactly one DMG candidate." >&2
+            exit 1
+          fi
+          bundle="$(find "$base/dmg" -maxdepth 1 -type f -name '*.dmg' -print)"
+          python scripts/validate_desktop_candidate.py candidate \
+            --root . \
+            --platform macos \
+            --architecture arm64 \
+            --target-triple "$TARGET_TRIPLE" \
+            --bundle-format dmg \
+            --bundle "$bundle" \
+            --app-bundle "$app" \
+            --app-executable "$app/Contents/MacOS/codex-keysmith-gui" \
+            --sidecar "$SIDECAR_SOURCE" \
+            --packaged-sidecar "$app/Contents/MacOS/codex-keysmith-cli" \
+            --icon gui/src-tauri/icons/icon.icns \
+            --source-commit "$GITHUB_SHA" \
+            --node-version "$NODE_VERSION" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --rust-version "$RUST_VERSION" \
+            --signing-mode "$SIGNING_MODE" \
+            --output-dir "$RUNNER_TEMP/desktop-candidate"
+
+      - name: Validate and stage Windows candidate
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          SIGNING_MODE: ${{ steps.windows_signing.outputs.mode || steps.default_signing.outputs.mode }}
+          SIDECAR_SOURCE: ${{ steps.sidecar.outputs.source }}
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "gui/src-tauri/target/$env:TARGET_TRIPLE/release"
+          $bundles = @(Get-ChildItem -LiteralPath "$base/bundle/nsis" -Filter "*.exe" -File)
+          if ($bundles.Count -ne 1) { throw "Expected exactly one NSIS candidate." }
+          $installDir = Join-Path $env:RUNNER_TEMP "desktop-candidate-install"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "desktop-sidecar-smoke"
+          $installed = $false
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          try {
+            $installer = Start-Process -FilePath $bundles[0].FullName `
+              -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+              throw "NSIS candidate installation failed with exit code $($installer.ExitCode)."
+            }
+            $installed = $true
+            $installedApps = @(
+              Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith*.exe" -File |
+                Where-Object { $_.Name -notin @("codex-keysmith-cli.exe") -and $_.Name -notlike "uninstall*" }
+            )
+            $installedSidecars = @(Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith-cli.exe" -File)
+            if ($installedApps.Count -ne 1 -or $installedSidecars.Count -ne 1) {
+              throw "Installed NSIS payload does not contain exactly one app and sidecar executable."
+            }
+            $codexDir = Join-Path $smokeRoot ".codex"
+            New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $codexDir "config.toml") `
+              -Value 'model = "gpt-5.5"' -Encoding UTF8
+            function Get-SmokeSnapshot([string]$Root) {
+              @(
+                Get-ChildItem -LiteralPath $Root -Recurse -Force |
+                  ForEach-Object {
+                    $relative = $_.FullName.Substring($Root.Length)
+                    if ($_.PSIsContainer) {
+                      "D|$relative"
+                    }
+                    else {
+                      "F|$relative|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+                    }
+                  } |
+                  Sort-Object
+              )
+            }
+            $beforeSmoke = Get-SmokeSnapshot $smokeRoot
+            $statusOutput = & $installedSidecars[0].FullName `
+              --codex-dir $codexDir --status --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar status smoke failed: $statusOutput" }
+            $dryRunOutput = & $installedSidecars[0].FullName `
+              --codex-dir $codexDir --dry-run --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar dry-run smoke failed: $dryRunOutput" }
+            $afterSmoke = Get-SmokeSnapshot $smokeRoot
+            if (Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke) {
+              throw "Frozen sidecar read-only smoke mutated the temporary Codex directory."
+            }
+            python scripts/validate_desktop_candidate.py candidate `
+              --root . `
+              --platform windows `
+              --architecture x86_64 `
+              --target-triple $env:TARGET_TRIPLE `
+              --bundle-format nsis `
+              --bundle $bundles[0].FullName `
+              --app-executable $installedApps[0].FullName `
+              --sidecar $env:SIDECAR_SOURCE `
+              --packaged-sidecar $installedSidecars[0].FullName `
+              --icon gui/src-tauri/icons/icon.ico `
+              --source-commit $env:GITHUB_SHA `
+              --node-version $env:NODE_VERSION `
+              --python-version $env:PYTHON_VERSION `
+              --pyinstaller-version $env:PYINSTALLER_VERSION `
+              --rust-version $env:RUST_VERSION `
+              --signing-mode $env:SIGNING_MODE `
+              --output-dir "$env:RUNNER_TEMP/desktop-candidate"
+          }
+          finally {
+            $cleanupError = $null
+            if ($installed) {
+              try {
+                $uninstallers = @(Get-ChildItem -LiteralPath $installDir -Recurse -Filter "uninstall*.exe" -File -ErrorAction SilentlyContinue)
+                if ($uninstallers.Count -ne 1) {
+                  throw "Installed NSIS candidate must contain exactly one uninstaller."
+                }
+                $uninstaller = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+                if ($uninstaller.ExitCode -ne 0) {
+                  throw "NSIS candidate uninstall failed with exit code $($uninstaller.ExitCode)."
+                }
+                $remainingPayload = @(
+                  Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith*.exe" -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notlike "uninstall*" }
+                )
+                if ($remainingPayload.Count -ne 0) {
+                  throw "NSIS candidate uninstall left app or sidecar executables behind."
+                }
+              }
+              catch {
+                $cleanupError = $_.Exception.Message
+              }
+            }
+            Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if ($null -ne $cleanupError) { throw $cleanupError }
+          }
+
+      - name: Re-verify staged manifest
+        shell: bash
+        run: >-
+          python scripts/validate_desktop_candidate.py verify-manifest
+          "$RUNNER_TEMP/desktop-candidate/build-manifest.json"
+
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-candidate
+          if-no-files-found: error
+          retention-days: 14
