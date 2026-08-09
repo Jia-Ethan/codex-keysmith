@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：前端已迁移 React + shadcn/ui + Tailwind 4 + Motion（2026-08-07，v0.2.0）；M4 sidecar 打包待做
+> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS 构建配置；正式签名、公证与发布 CI 待接入
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -14,9 +14,9 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
-| 平台范围 | **macOS 优先**，架构预留 Windows 扩展位 | 项目主战场是 macOS/Linux；Windows 部署本身仍是 beta |
+| 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **M1–M3 完整实现 + 可分发 dmg** | GUI 已能走通 状态/部署/管理 全流程 |
+| 本轮交付 | **M1–M3 完整实现 + 可构建安装包架构** | 未签名本地包不等于正式可分发版本；发布仍受签名、公证和验收门禁约束 |
 
 ## 3. 总体架构
 
@@ -60,12 +60,13 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 **CLI 路径定位策略（按优先级）：**
 
-1. 用户 Settings 里手动指定的路径
-2. 应用打包时嵌入的 sidecar（后续里程碑实现）
-3. 自动探测：应用同目录 → `~/.codex-keysmith-gui/` → `PATH` 中的 `codex-instruct.py` / `codex-keysmith`
-4. Settings 提供「重新定位」按钮
+1. Settings 中非空的手动路径覆盖（高级/开发用途）
+2. 自动模式优先使用与应用同目录的 PyInstaller sidecar
+3. `CODEX_KEYSMITH_CLI` 环境变量
+4. 常见目录/PATH 中的 `codex-keysmith` 可执行文件
+5. 最后回退到 `codex-instruct.py`；只有该模式依赖系统 Python
 
-**参数表（来自 `codex-instruct.py` argparse，v0.1.3）：**
+**参数表（来自 `codex-instruct.py` argparse，v0.2.0）：**
 
 | 参数 | 用途 | 客户端用法 |
 |---|---|---|
@@ -92,7 +93,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 ## 5. 真实输出样例与解析规范
 
-以下为 v0.1.3 在 macOS 上的真实输出，解析器必须能处理。
+以下为真实 CLI 输出样例，v0.2.0 GUI 解析器必须能处理。
 
 ### 5.1 `--status`（真实输出）
 
@@ -210,13 +211,13 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | manifest | `.codex-keysmith-manifest.json` |
 | manifest-intent | `manifest-intent.json` / `manifest-intent.pending.json` |
 | 隔离的 hooks | `hooks.json.disabled` |
-| 旧版提示词 | `gpt5.5-unrestricted.md`（`LEGACY_MD_FILENAME`，v0.1.3 仍沿用） |
+| 旧版提示词 | `gpt5.5-unrestricted.md`（`LEGACY_MD_FILENAME`，v0.2.0 仍沿用） |
 
 ## 6. 前端视图设计
 
 ### 6.1 Dashboard（默认页）
 
-- 顶部：CLI 版本、Python 版本、检测到的 .codex 目录数
+- 顶部：CLI 版本、运行时类型（内置 sidecar / 外部可执行文件 / 系统 Python）、检测到的 .codex 目录数
 - 状态卡片（每个目录一张）：
   - 激活状态徽章（active=绿 / inactive-by-config=黄 / not-installed=灰 / conflict=红）
   - 结构健康（healthy / blocked）
@@ -247,7 +248,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 ## 7. Rust 命令设计（tauri commands）
 
 ```rust
-// cli_runner.rs 模块（实际实现，含 Settings 手动路径覆写与 python_version）
+// cli_runner.rs 模块（实际实现，内置 sidecar 优先，Python 脚本回退）
 #[tauri::command]
 async fn cli_run(
     cli_path: Option<String>,   // Settings 手动指定；None 走自动探测
@@ -266,13 +267,13 @@ struct CliOutput {
 async fn read_manifest(codex_dir: String) -> Result<serde_json::Value, String>;
 
 #[tauri::command]
-async fn detect_cli() -> Result<Option<String>, String>;   // 按 §4 定位策略探测
+async fn detect_cli() -> Result<Option<CliDescriptor>, String>; // { path, runtime }
 
 #[tauri::command]
-async fn cli_version(cli_path: String) -> Result<String, String>;
+async fn cli_version(cli_path: Option<String>) -> Result<String, String>;
 
 #[tauri::command]
-async fn python_version() -> Result<String, String>;
+async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 ```
 
 另注册 `tauri-plugin-dialog`（文件/目录选择），capabilities 开通 `dialog:default` + `dialog:allow-open`。窗口 1200×800、最小 900×600。
@@ -282,7 +283,8 @@ async fn python_version() -> Result<String, String>;
 - 用 `tokio::process::Command` spawn，`--` 不适用（argparse 无歧义），参数直接数组传入，**绝不拼接 shell 字符串**
 - 超时 kill：`tokio::time::timeout` + `child.kill().await`
 - 输出按 UTF-8 解析，非法 UTF-8 替换为 `�`（`String::from_utf8_lossy`）
-- CLI 路径每次执行前 `exists()` 校验，失败返回友好错误
+- CLI 路径每次执行前做普通文件校验；`.py` 选择 Python 解释器，其他文件直接执行
+- stdout/stderr 超过 2 MiB 后继续排空管道但停止累积，避免子进程因输出上限死锁
 - `read_manifest` 限制只读 manifest 文件（路径必须位于 codex-dir 内且文件名精确匹配），防止任意文件读取
 
 ## 8. 安全与错误处理
@@ -303,16 +305,16 @@ async fn python_version() -> Result<String, String>;
 | **M1 状态展示** ✅ | Dashboard + `--status` 解析 + manifest 展示 | 真实机器上 status 各状态（active/inactive/not-installed/conflict）都能正确渲染 |
 | **M2 部署向导** ✅ | 3 步向导 + dry-run 解析 + 确认执行 | 完整走通「选文件→预览→部署→Dashboard 刷新」 |
 | **M3 管理操作** ✅ | 卸载 / 恢复 hooks / 恢复中断 | 与 CLI 逐层回滚语义一致；残留场景可恢复 |
-| **M4 打包分发** | sidecar 打包 CLI、图标、签名/公证、GitHub Release 流程 | 小白下载 .dmg 双击即用，无需 Python 环境（sidecar 自带 python 或要求系统 python3 并检测） |
-| M5 Windows 适配 | 处理路径/权限差异 | 架构已预留（所有路径走配置项，不做硬编码） |
+| **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
+| **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；正式发布前仍需 Authenticode 与真机生命周期验收 |
 
 ## 10. 交接说明（给接手 Agent）
 
-**起点：** 本仓库 `/Users/ethan/ZCodeProject/codex-keysmith-gui`（git 已初始化，回滚点 `2ae3f0a` 为迁移前基线）。
+**起点：** canonical 仓库内的 `gui/` 目录；CLI 源码固定取仓库根目录 `codex-instruct.py`，GUI 与 CLI 可绑定到同一提交。
 
 **已交付（2026-08-07，v0.2.0）：**
 
-- `src-tauri/`：Tauri 2 工程，命令契约未变（`cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `python_version`）
+- `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
 - `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
 - `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 15 个 vitest 用例（真实 CLI 输出样本）
 - 本 SPEC.md：解析规范与设计决策
@@ -322,7 +324,7 @@ async fn python_version() -> Result<String, String>;
 1. **dry-run 门禁可绕过**：新增 `gatePreview(output, parsed)`，非零退出 / 超时 / 空 stdout / blockers 一律 `ok:false` 并携带 stderr（含错误只写 stdout 的情况，如 `--name` 校验失败）；Deploy 步骤 2 与管理页预览都走此门禁，不放行到确认步骤。
 2. **异常节点静默丢弃**：`FILE_LINE_RE` 放开类型白名单，`symbolic link` / `FIFO` / `socket` / `other node` / `directory` 统一归一化为 `other`，节点保留在 `nodes` 中并进入 `abnormalNodes[]` + `warnings[]`，Dashboard 显眼警告块展示。
 3. **管理操作无强制预览**：卸载 / 恢复 hooks / 恢复中断事务全部「预览 → 确认 → 执行」；预览绑定当时的目录选择，改目录后预览作废（previewStale）。`--restore-hooks` 与 `--yes` 互斥不变（`noYes`）；`--recover` 预览不带 `--yes`、执行带 `--yes`。
-4. **dmg 无 CLI 死路**：Dashboard / Settings 空状态给出 GitHub 获取步骤，README 补齐前置依赖说明。sidecar 打包仍属 M4。
+4. **安装包无 CLI 死路**：正式 bundle 通过 `externalBin` 带入冻结 sidecar；sidecar 缺失时明确报错并保留 `.py` 高级回退。
 5. **可访问性**：恢复文字选中（可复制路径/报错）；`--text-muted` 提到 #5f5e57（浅）/#9a9a9a（深）保证 4.5:1；侧边栏 hover + focus-within + 显式开关三重展开；reduced-motion 保留 spinner/focus 等功能性动效，只去掉装饰性动画（motion 的 `useReducedMotion` + CSS `@media`）。
 
 **踩坑实录（开发期实测，已修）：**
@@ -332,10 +334,11 @@ async fn python_version() -> Result<String, String>;
 - `Hooks restore: available …` 是提示行不是状态，解析时映射为 `restorable`
 - kv 区可能出现 `[Error] config.toml …` 中文诊断行，需转成 warning 展示而非吞掉
 
-**后续工作（M4 打包分发）：**
+**后续工作（正式发布门禁）：**
 
-1. 把 `codex-instruct.py` 作为 Tauri resource 打进 .app，首次启动释放到 `~/.codex-keysmith-gui/`（探测位已预留），实现免 Python 环境双击即用
-2. 图标、签名/公证、GitHub Release 流程
+1. 在原生 Apple Silicon / Windows x64 runner 上构建对应 PyInstaller sidecar 与 Tauri bundle
+2. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
+3. 验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留后再创建 GitHub Release
 
 **长期约束（仍需遵守）：**
 
@@ -346,7 +349,7 @@ async fn python_version() -> Result<String, String>;
 
 ## 11. 参考
 
-- CLI 源码：`/Users/ethan/ZCodeProject/codex-keysmith/codex-instruct.py`（v0.1.3，单文件）
+- CLI 源码：仓库根目录 `codex-instruct.py`（v0.2.0，单文件）
 - 项目 README：部署流程、CCSwitch 集成、兼容性说明
 - issue #10：可视化客户端需求来源
 - 兄弟项目：claude-keysmith / grok-keysmith / zcode-keysmith（未来可能复用此客户端架构）

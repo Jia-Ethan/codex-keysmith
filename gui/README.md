@@ -1,98 +1,97 @@
 # codex-keysmith GUI 客户端
 
-面向小白的 codex-keysmith 可视化客户端。基于 **Tauri 2 + React + Tailwind 4 + shadcn/ui + Motion**，macOS 优先，通过包装现有 CLI（`codex-instruct.py`）实现全部功能——**不重实现部署逻辑**。
+面向普通用户的 codex-keysmith 可视化客户端。基于 **Tauri 2 + React + Tailwind 4 + shadcn/ui + Motion**，复用根目录 `codex-instruct.py` 的部署、回滚与恢复逻辑，不在 GUI 中重实现文件操作。
 
-> 技术方案与解析规范见 **[SPEC.md](./SPEC.md)**。
+> 技术方案与解析规范见 [SPEC.md](./SPEC.md)。
 
-## 前置依赖
+## 运行模式
 
-运行本应用需要两样东西：
+- **正式安装包**：优先运行 PyInstaller 冻结的内置 CLI sidecar，不依赖系统 Python。
+- **开发与高级覆盖**：内置 sidecar 不存在时，可从常见位置/PATH 探测 CLI 可执行文件，最后回退到用户指定的 `.py` 脚本；脚本模式才需要系统 Python。
+- 所有参数均由 Rust 以数组传给子进程，不经过 shell；GUI 永不直接修改 `.codex`。
 
-1. **`codex-instruct.py`** — 从 GitHub 获取：<https://github.com/Jia-Ethan/codex-keysmith>（仓库内单文件，下载即可）
-2. **系统 `python3`** — macOS 自带；可用 `python3 --version` 确认
-
-应用启动时会按以下顺序自动探测 CLI：Settings 手动指定 → 应用同目录 → `~/.codex-keysmith-gui/` → PATH。找不到时界面会给出获取指引，也可在「设置 → CLI 脚本路径」手动指定下载后的文件。
-
-## 快速开始
+## 本地开发
 
 ```bash
-npm install
+cd gui
+npm ci
 npm run tauri dev
 ```
 
-也可以显式指定 CLI 路径：
+开发模式可通过环境变量指定根 CLI：
 
 ```bash
-export CODEX_KEYSMITH_CLI=/path/to/codex-instruct.py
+export CODEX_KEYSMITH_CLI="$(pwd)/../codex-instruct.py"
 npm run tauri dev
 ```
 
-## 构建分发
+## Sidecar 与安装包
+
+PyInstaller 是构建期依赖，不进入 Node/Rust 运行时依赖：
 
 ```bash
+python3 -m venv src-tauri/target/sidecar-venv
+src-tauri/target/sidecar-venv/bin/python -m pip install -r requirements-build.txt
+PYTHON="$PWD/src-tauri/target/sidecar-venv/bin/python" npm run build:sidecar
 npm run tauri build
-# 产出：
-#   src-tauri/target/release/bundle/macos/codex-keysmith.app
-#   src-tauri/target/release/bundle/dmg/codex-keysmith_0.2.0_aarch64.dmg
 ```
 
-**注意**：当前 dmg 内不含 CLI 与 Python 运行时（sidecar 打包属于 M4）。分发给小白时，请一并告知上方「前置依赖」的两步获取方式。M4 完成后将双击即用、无外部依赖。
+`npm run build:sidecar` 只支持原生构建，并按当前主机生成 Tauri external binary：
 
-## 测试
+| 主机 | Sidecar | Tauri bundle |
+|---|---|---|
+| macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
+| Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
+
+Windows 安装器使用 WebView2 download bootstrapper、禁止降级；当前不生成 MSI。正式发布前还必须完成 Apple Developer ID 签名/公证和 Windows Authenticode 签名，本仓库不会把未签名本地构建描述为正式发行包。
+
+图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
 ```bash
-npm test        # parser 单元测试（样本来自 CLI v0.1.3 真实输出）
-npm run build   # 前端构建
+npm run tauri icon src-tauri/icons/source.png
 ```
+
+该命令会同步更新 `.icns`、`.ico`、Windows Square/Store 图标和其他平台尺寸，避免不同安装包使用旧图标。
+
+## 验证
+
+```bash
+npm test
+npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+```
+
+安装包验收还需验证目标架构、GUI/CLI 版本、sidecar `--version`、全流程临时目录测试、最终图标、签名和公证状态。
 
 ## 功能
 
-- **状态总览**：CLI/Python 版本、每个 .codex 目录的激活状态（active / inactive-by-config / not-installed / conflict）、hooks/事务残留/结构健康、manifest 部署详情；符号链接/FIFO/socket 等异常节点显眼警告，绝不静默丢弃
-- **部署向导**：3 步流程（选内容 → dry-run 预览 → 确认执行），`[Behavior notice]` 原样展示；**预览门禁不可绕过**——非零退出、超时、空输出、阻塞项一律阻断流程并展示 stderr
-- **管理**：卸载 / 恢复 hooks / 恢复中断事务，全部强制「先预览、确认后执行」；`--restore-hooks` 与 `--yes` 互斥的 CLI 约束已正确处理
-- **设置**：CLI 路径（自动探测 + 手动指定）、默认 .codex 目录、中英双语、深/浅/跟随系统主题
+- **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情。
+- **部署向导**：选择内容、dry-run 预览、确认执行；非零退出、超时、空输出和阻塞项全部阻断。
+- **管理**：卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。
+- **设置**：可选 CLI 路径覆盖、默认 `.codex` 目录、中英双语和主题。
 
 ## 目录结构
 
-```
-├── SPEC.md                    # 技术方案 + 交接文档（先读这个）
-├── index.html                 # 前端入口
-├── src/
-│   ├── main.jsx / App.jsx     # React 入口、主题、CLI 检测、窗口关闭拦截
-│   ├── globals.css            # 设计系统（双主题 token、玻璃卡片、环境光晕、reduced-motion）
-│   ├── i18n/                  # react-i18next 词典（zh-CN / en）
-│   ├── lib/
-│   │   ├── api.js             # invoke 封装 + fetchStatus / fetchDryRun（含门禁）
-│   │   ├── parser.js          # CLI 文本解析器 + gatePreview 门禁
-│   │   ├── parser.test.js     # vitest 单元测试（真实 CLI 输出样本）
-│   │   ├── settings.js        # localStorage 持久化
-│   │   ├── store.js           # 跨视图共享状态（useSyncExternalStore）
-│   │   └── utils.js           # cn()
-│   ├── components/
-│   │   ├── ui/                # shadcn/ui 风格组件（Radix 原语）
-│   │   ├── Sidebar.jsx        # 侧边栏（hover/focus 展开，键盘可达）
-│   │   ├── ConfirmDialog.jsx  # 确认对话框
-│   │   └── AmbientBg.jsx      # 环境光晕背景
-│   └── views/                 # Dashboard / Deploy / Manage / SettingsView
+```text
+gui/
+├── scripts/build-sidecar.mjs       # 原生 PyInstaller sidecar 构建与版本冒烟
+├── requirements-build.txt          # 固定的构建期 PyInstaller 版本
+├── src/                            # React 前端与解析器测试
 └── src-tauri/
-    ├── tauri.conf.json
-    ├── capabilities/default.json
-    └── src/
-        ├── main.rs / lib.rs
-        └── cli_runner.rs      # 进程执行层（契约未变）
+    ├── binaries/                   # 构建时生成，Git 忽略
+    ├── tauri.conf.json             # 公共配置、CSP、版本和图标
+    ├── tauri.macos.conf.json       # app + dmg
+    ├── tauri.windows.conf.json     # NSIS + WebView2
+    └── src/cli_runner.rs           # sidecar 优先、脚本回退的进程边界
 ```
-
-## 里程碑
-
-- **M1 状态展示** ✅ · **M2 部署向导** ✅ · **M3 管理操作** ✅
-- **前端 React 迁移** ✅（2026-08-07）：React + shadcn/ui + Motion + react-i18next + sonner；修复预览门禁绕过、异常节点静默丢弃、管理操作无强制预览、CLI 缺失死路、可访问性五项问题
-- **M4 打包分发**：sidecar、签名/公证、GitHub Release（待做）
 
 ## 核心约束
 
-1. 客户端**永不直接修改 `~/.codex`**，所有写操作走 CLI
-2. CLI 调用固定 `--lang en`，解析器只认英文输出
-3. `[Behavior notice]` 必须原样展示给用户
-4. 部署/卸载/恢复中断事务前必须先预览并通过门禁（非零退出/超时/空输出/阻塞项全部阻断）
-5. `--restore-hooks` 与 `--yes` 互斥（CLI argparse 约束），执行时不追加 `--yes`
-6. `--status` 在存在 conflict/异常节点时非零退出但 stdout 完整，按「有目录列表即成功」处理
+1. GUI 不直接写 `.codex`，所有写操作都由 CLI 完成。
+2. CLI 调用固定追加 `--lang en`，解析器只解析稳定英文输出。
+3. `[Behavior notice]` 必须在部署确认前原样展示。
+4. 部署、卸载和中断恢复必须先通过对应预览门禁。
+5. `--restore-hooks` 与 `--yes` 互斥，恢复 hooks 时不追加 `--yes`。
+6. `--status` 可在输出完整状态的同时返回非零退出码；只有缺少目录列表时才视为真正失败。

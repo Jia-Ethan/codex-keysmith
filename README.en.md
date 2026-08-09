@@ -10,6 +10,7 @@
 <p align="center">
   <a href="README.md">简体中文</a> ·
   <a href="#english">English</a> ·
+  <a href="#desktop-client-beta">Desktop client beta</a> ·
   <a href="docs/reference.md">Reference</a> ·
   <a href="docs/agent-install.md">Agent install</a> ·
   <a href="SECURITY.md">Security</a> ·
@@ -26,6 +27,20 @@
 
 > [!WARNING]
 > Do not use the published `v0.1.0` on Windows; it has a known cleanup defect (see Compatibility below). v0.1.1 and later provide the native recovery backend; Windows fresh deployment remains beta.
+
+### Desktop client (beta)
+
+The repository now includes the [`gui/` desktop client source](https://github.com/Jia-Ethan/codex-keysmith/tree/main/gui). It uses Tauri 2 + React and delegates preview, deployment, recovery, and uninstall to the existing Python CLI instead of reimplementing file transactions in the GUI.
+
+```bash
+cd gui
+npm install
+npm run tauri dev
+```
+
+- The unified source version is `0.2.0`. The macOS candidate build includes the CLI sidecar and produces `.app` / `.dmg`; formal signing, notarization, and publication still depend on the release credentials and workflow.
+- The Windows GUI remains a beta boundary: native Windows NSIS packaging is configured, but the native artifact still requires CI validation and no Windows installer has been formally published. The underlying Windows CLI fresh-deployment path also remains `EXPLICIT_BETA`, not a formal Windows support commitment.
+- Packaged builds include a PyInstaller CLI sidecar and do not require end users to install Python separately. Development mode and advanced manual configuration can still fall back to an external `codex-instruct.py`. See `gui/README.md` for development and build details.
 
 ### Quick start (macOS / Linux)
 
@@ -97,6 +112,7 @@ Uninstall removes only the newest layer each run; repeat it to peel back earlier
 - Recommended Python 3.10–3.14; verified against `codex-cli 0.144.1`.
 - macOS / Linux are the primary support range.
 - **Windows**: the published `v0.1.0` has a known defect (`os.utime` failure followed by a second `PermissionError` that leaves a journal the old script can't recover). v0.1.1 and later include the rewritten Windows filesystem backend under `EXPLICIT_BETA` — usable, but not formally supported yet. If v0.1.0 left a journal on Windows, recover with the latest verified Release script in order: `--status` → `--recover` preview → `--recover --yes` → `--status`; never manually delete evidence.
+- **Windows GUI**: currently build-level beta, with NSIS packaging configured but native artifact validation still pending in CI and no formal Windows release; it does not expand the CLI's `EXPLICIT_BETA` support boundary.
 - Single-file CLI, no `pip install` or auto-updater; backups and uninstall archives are not cleaned automatically.
 - Full limits list, transaction guarantees, and maintainer verification: [`docs/reference.md`](docs/reference.md).
 
