@@ -9,7 +9,7 @@ pub fn run() {
             cli_runner::read_manifest,
             cli_runner::detect_cli,
             cli_runner::cli_version,
-            cli_runner::python_version,
+            cli_runner::cli_runtime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

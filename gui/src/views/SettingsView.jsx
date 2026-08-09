@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
 import { ExternalLink } from "lucide-react";
-import { detectCli, cliVersion } from "@/lib/api";
+import { detectCli, cliRuntime, cliVersion } from "@/lib/api";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { setCliInfo } from "@/lib/store";
 import { useAppState } from "@/hooks/useAppState";
@@ -31,21 +31,20 @@ export function SettingsView() {
     async (manualPath) => {
       setCliStatus(null);
       try {
-        const path = manualPath || (await detectCli());
+        const detected = manualPath ? null : await detectCli();
+        const path = manualPath || detected?.path;
         if (!path) {
           setCliStatus({ ok: false, text: t("settings.notFound") });
           setCliInfo({ path: null, checked: true });
           return;
         }
-        let version = "";
-        try {
-          version = await cliVersion(path);
-        } catch {
-          /* 忽略 */
-        }
-        setCliInfo({ path, version, checked: true });
+        const version = await cliVersion(path);
+        let runtime = detected?.runtime || "";
+        if (!runtime) runtime = await cliRuntime(path);
+        setCliInfo({ path, version, runtime, checked: true });
         setCliStatus({ ok: true, text: `${path}${version ? ` (${version})` : ""}` });
       } catch {
+        setCliInfo({ path: null, checked: true });
         setCliStatus({ ok: false, text: t("settings.cliInvalid") });
       }
     },
@@ -57,7 +56,7 @@ export function SettingsView() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const browseCli = async () => {
-    const picked = await open({ filters: [{ name: "Python", extensions: ["py"] }] });
+    const picked = await open({ filters: [{ name: "CLI", extensions: ["py", "exe"] }] });
     if (picked) {
       setCliPathInput(picked);
       saveSettings({ cliPath: picked });
@@ -69,18 +68,18 @@ export function SettingsView() {
   const relocate = async () => {
     setCliStatus(null);
     const found = await detectCli();
-    if (found) {
+    if (found?.path) {
       saveSettings({ cliPath: "" });
       setCliPathInput("");
-      let version = "";
       try {
-        version = await cliVersion(found);
+        const version = await cliVersion(found.path);
+        setCliInfo({ path: found.path, version, runtime: found.runtime, checked: true });
+        setCliStatus({ ok: true, text: `${t("settings.relocated")}: ${found.path}${version ? ` (${version})` : ""}` });
+        toast.success(t("settings.relocated"));
       } catch {
-        /* 忽略 */
+        setCliInfo({ path: null, checked: true });
+        setCliStatus({ ok: false, text: t("settings.cliInvalid") });
       }
-      setCliInfo({ path: found, version, checked: true });
-      setCliStatus({ ok: true, text: `${t("settings.relocated")}: ${found}${version ? ` (${version})` : ""}` });
-      toast.success(t("settings.relocated"));
     } else {
       setCliInfo({ path: null, checked: true });
       setCliStatus({ ok: false, text: t("settings.notFound") });

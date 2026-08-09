@@ -43,6 +43,58 @@ def test_normalize_md_name_rejects_paths_and_empty_names():
             raise AssertionError(f"expected invalid name to fail: {name!r}")
 
 
+def test_format_restore_command_keeps_source_script_path(tmp_path, monkeypatch):
+    executable = tmp_path / "Python Runtime" / "python3"
+    codex_dir = tmp_path / "Codex Config"
+    monkeypatch.setattr(codex_instruct.sys, "executable", str(executable))
+    monkeypatch.delattr(codex_instruct.sys, "frozen", raising=False)
+
+    command = codex_instruct._format_restore_command(codex_dir)
+
+    assert codex_instruct.shlex.split(command) == [
+        str(executable),
+        str(MODULE_PATH.resolve()),
+        "--codex-dir",
+        str(codex_dir),
+        "--restore-hooks",
+    ]
+
+
+def test_format_restore_command_uses_frozen_executable_directly(tmp_path, monkeypatch):
+    executable = tmp_path / "Codex Keysmith.app" / "Contents" / "MacOS" / "codex-keysmith"
+    codex_dir = tmp_path / "Codex Config"
+    monkeypatch.setattr(codex_instruct.sys, "executable", str(executable))
+    monkeypatch.setattr(codex_instruct.sys, "frozen", True, raising=False)
+
+    command = codex_instruct._format_restore_command(codex_dir)
+
+    assert codex_instruct.shlex.split(command) == [
+        str(executable),
+        "--codex-dir",
+        str(codex_dir),
+        "--restore-hooks",
+    ]
+
+
+def test_format_restore_command_quotes_frozen_windows_arguments(tmp_path, monkeypatch):
+    executable = r"C:\Program Files\codex-keysmith\codex-keysmith.exe"
+    codex_dir = Path(r"C:\Users\Test User\.codex")
+    monkeypatch.setattr(codex_instruct.sys, "executable", executable)
+    monkeypatch.setattr(codex_instruct.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(codex_instruct, "os", types.SimpleNamespace(name="nt"))
+
+    command = codex_instruct._format_restore_command(codex_dir)
+
+    assert command == subprocess.list2cmdline(
+        [
+            executable,
+            "--codex-dir",
+            str(codex_dir),
+            "--restore-hooks",
+        ]
+    )
+
+
 def test_codex_dir_expands_user_and_requires_config(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     codex_dir = fake_home / ".codex"

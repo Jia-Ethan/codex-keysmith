@@ -78,7 +78,7 @@ export function Dashboard() {
               ) : status ? (
                 t("dash.summary", {
                   cliVer: cliInfo.version || "",
-                  pyVer: cliInfo.pythonVersion || "",
+                  runtime: cliInfo.runtime ? t(`runtime.${cliInfo.runtime}`) : "",
                   count: status.directories.length,
                 })
               ) : (

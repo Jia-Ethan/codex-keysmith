@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "externalBin": ["binaries/codex-keysmith-cli"],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

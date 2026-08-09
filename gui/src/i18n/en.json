@@ -11,13 +11,13 @@
   "dash": {
     "title": "Dashboard",
     "loading": "Detecting CLI and Codex config directories…",
-    "noCli": "codex-instruct.py not found. Open Settings to specify the CLI path, or follow the steps below to get it.",
+    "noCli": "The bundled CLI was not found. Reinstall the app or select codex-instruct.py in Settings.",
     "noCliAction": "Open Settings",
     "getCliTitle": "How to get the CLI",
     "getCliStep1": "1. Download codex-instruct.py from GitHub:",
     "getCliStep2": "2. Point to the downloaded file in Settings.",
     "getCliLink": "github.com/Jia-Ethan/codex-keysmith",
-    "summary": "CLI {{cliVer}} · {{pyVer}} · {{count}} Codex config location(s) detected",
+    "summary": "CLI {{cliVer}} · {{runtime}} · {{count}} Codex config location(s) detected",
     "noDirs": "No Codex configuration directory found.",
     "error": "Failed to fetch status",
     "refresh": "Refresh",
@@ -129,8 +129,8 @@
   },
   "settings": {
     "title": "Settings",
-    "cliPath": "CLI script path",
-    "cliPathHint": "Leave empty = auto-detect (app dir → ~/.codex-keysmith-gui/ → common paths → PATH)",
+    "cliPath": "CLI path override",
+    "cliPathHint": "Leave empty to prefer the bundled CLI",
     "browse": "Browse…",
     "relocate": "Re-locate",
     "relocated": "Located",
@@ -145,8 +145,13 @@
     "about": "About",
     "aboutDesc": "codex-keysmith GUI client — a visual wrapper for codex-instruct.py",
     "saved": "Saved",
-    "cliInvalid": "The specified CLI file does not exist",
+    "cliInvalid": "The selected CLI file does not exist or cannot be executed",
     "getCli": "No CLI yet? Get it from GitHub:"
+  },
+  "runtime": {
+    "bundled": "bundled runtime",
+    "executable": "external executable",
+    "python": "system Python"
   },
   "common": {
     "cancel": "Cancel",

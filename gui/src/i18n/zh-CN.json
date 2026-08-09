@@ -11,13 +11,13 @@
   "dash": {
     "title": "状态总览",
     "loading": "正在检测 CLI 与 Codex 配置目录…",
-    "noCli": "未找到 codex-instruct.py。请前往「设置」指定 CLI 脚本路径，或按下方步骤获取 CLI。",
+    "noCli": "未找到内置 CLI。请重新安装应用，或前往「设置」指定 codex-instruct.py。",
     "noCliAction": "打开设置",
     "getCliTitle": "如何获取 CLI",
     "getCliStep1": "1. 从 GitHub 下载 codex-instruct.py：",
     "getCliStep2": "2. 在「设置」中指定下载后的文件路径。",
     "getCliLink": "github.com/Jia-Ethan/codex-keysmith",
-    "summary": "CLI {{cliVer}} · {{pyVer}} · 检测到 {{count}} 个 Codex 配置目录",
+    "summary": "CLI {{cliVer}} · {{runtime}} · 检测到 {{count}} 个 Codex 配置目录",
     "noDirs": "未找到任何 Codex 配置目录。",
     "error": "状态获取失败",
     "refresh": "刷新",
@@ -129,8 +129,8 @@
   },
   "settings": {
     "title": "设置",
-    "cliPath": "CLI 脚本路径",
-    "cliPathHint": "留空 = 自动探测（应用目录 → ~/.codex-keysmith-gui/ → 常见路径 → PATH）",
+    "cliPath": "CLI 路径覆盖",
+    "cliPathHint": "留空 = 优先使用应用内置 CLI",
     "browse": "浏览…",
     "relocate": "重新定位",
     "relocated": "已定位",
@@ -145,8 +145,13 @@
     "about": "关于",
     "aboutDesc": "codex-keysmith GUI 客户端 — codex-instruct.py 的可视化包装",
     "saved": "已保存",
-    "cliInvalid": "指定的 CLI 文件不存在",
+    "cliInvalid": "指定的 CLI 文件不存在或不可执行",
     "getCli": "没有 CLI？从 GitHub 获取："
+  },
+  "runtime": {
+    "bundled": "内置运行时",
+    "executable": "外部可执行文件",
+    "python": "系统 Python"
   },
   "common": {
     "cancel": "取消",

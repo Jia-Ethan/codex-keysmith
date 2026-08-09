@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
+    "bundle": "npm run build:sidecar && tauri build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run"
