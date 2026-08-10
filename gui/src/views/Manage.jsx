@@ -6,7 +6,7 @@ import { cliRun, cliExecute, fetchStatus } from "@/lib/api";
 import { parseUninstallPreview, gatePreview } from "@/lib/parser";
 import { useAppState } from "@/hooks/useAppState";
 import { getSettings } from "@/lib/settings";
-import { setLastStatus, setOperationInProgress } from "@/lib/store";
+import { setLastStatus, setOperationInProgress, setView } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FadeIn } from "@/components/FadeIn";
@@ -42,7 +42,8 @@ export function Manage() {
       .catch(() => {});
   }, [cliInfo.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const noCli = cliInfo.checked && !cliInfo.path;
+  const cliChecking = !cliInfo.checked;
+  const cliUnavailable = cliInfo.checked && !cliInfo.path;
   const dirs = status?.directories ?? [];
   const hasResidue = dirs.some((d) => d.residue.length > 0);
 
@@ -53,13 +54,33 @@ export function Manage() {
         <p className="mt-1 text-sm text-muted-foreground">{t("manage.subtitle")}</p>
       </FadeIn>
 
-      {noCli && (
+      {cliChecking && (
         <FadeIn delay={0.1}>
-          <div className="card-glass mt-6 p-6 text-sm text-secondary-foreground">{t("dash.noCli")}</div>
+          <div className="card-glass mt-6 p-6 text-sm text-muted-foreground">
+            <span className="spinner mr-1.5" aria-hidden="true" />
+            {t("dash.loading")}
+          </div>
         </FadeIn>
       )}
 
-      {!noCli && (
+      {cliUnavailable && (
+        <FadeIn delay={0.1}>
+          <div
+            className={cn("card-glass mt-6 p-6 text-sm", cliInfo.error && "border-danger/40")}
+            role={cliInfo.error ? "alert" : undefined}
+          >
+            <div className={cliInfo.error ? "font-semibold text-danger" : "text-secondary-foreground"}>
+              {t(cliInfo.error ? "dash.cliCheckFailed" : "dash.noCli")}
+            </div>
+            {cliInfo.error && <pre className="log-block mt-3">{cliInfo.error}</pre>}
+            <Button className="mt-4" size="sm" onClick={() => setView("settings")}>
+              {t("dash.noCliAction")}
+            </Button>
+          </div>
+        </FadeIn>
+      )}
+
+      {cliInfo.checked && cliInfo.path && (
         <div className="mt-6 flex flex-col gap-4">
           <ActionCard
             opKey="uninstall"
