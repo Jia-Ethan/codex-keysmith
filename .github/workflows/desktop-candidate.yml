@@ -194,6 +194,18 @@ jobs:
           set -euo pipefail
           base="gui/src-tauri/target/$TARGET_TRIPLE/release/bundle"
           app="$base/macos/codex-keysmith.app"
+          executable_count="$(
+            find "$app/Contents/MacOS" -maxdepth 1 -type f \
+              ! -name 'codex-keysmith-cli' -print | wc -l
+          )"
+          if [ "$executable_count" -ne 1 ]; then
+            echo "Expected exactly one macOS GUI executable." >&2
+            exit 1
+          fi
+          app_executable="$(
+            find "$app/Contents/MacOS" -maxdepth 1 -type f \
+              ! -name 'codex-keysmith-cli' -print
+          )"
           bundle_count="$(find "$base/dmg" -maxdepth 1 -type f -name '*.dmg' -print | wc -l)"
           if [ "$bundle_count" -ne 1 ]; then
             echo "Expected exactly one DMG candidate." >&2
@@ -208,7 +220,7 @@ jobs:
             --bundle-format dmg \
             --bundle "$bundle" \
             --app-bundle "$app" \
-            --app-executable "$app/Contents/MacOS/codex-keysmith-gui" \
+            --app-executable "$app_executable" \
             --sidecar "$SIDECAR_SOURCE" \
             --packaged-sidecar "$app/Contents/MacOS/codex-keysmith-cli" \
             --icon gui/src-tauri/icons/icon.icns \

@@ -51,13 +51,17 @@ def test_format_restore_command_keeps_source_script_path(tmp_path, monkeypatch):
 
     command = codex_instruct._format_restore_command(codex_dir)
 
-    assert codex_instruct.shlex.split(command) == [
+    expected = [
         str(executable),
         str(MODULE_PATH.resolve()),
         "--codex-dir",
         str(codex_dir),
         "--restore-hooks",
     ]
+    if os.name == "nt":
+        assert command == subprocess.list2cmdline(expected)
+    else:
+        assert codex_instruct.shlex.split(command) == expected
 
 
 def test_format_restore_command_uses_frozen_executable_directly(tmp_path, monkeypatch):
