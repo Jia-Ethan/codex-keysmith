@@ -13,7 +13,7 @@ import pytest
 from scripts import package_desktop_prerelease as prerelease
 
 COMMIT = "a" * 40
-TAG = "desktop-v0.2.0-beta.1"
+TAG = "desktop-v0.2.0-beta.2"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -412,7 +412,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.en.md",
-        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.1.md",
+        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.2.md",
         REPO_ROOT / "CODE_SIGNING_POLICY.md",
         REPO_ROOT / "PRIVACY.md",
     ]

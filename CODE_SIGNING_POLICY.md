@@ -2,7 +2,9 @@
 
 ## Current desktop beta
 
-`desktop-v0.2.0-beta.1` publishes a Windows x64 NSIS installer without Authenticode signing. It is a public prerelease, not a formally signed Windows release. Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
+`desktop-v0.2.0-beta.2` publishes a Windows x64 NSIS installer without Authenticode signing. It is a public prerelease, not a formally signed Windows release. Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
+
+The signed `desktop-v0.2.0-beta.1` tag is retained as immutable evidence of an aborted publication attempt. Its draft was removed before asset upload, so it has no public Release or downloadable assets.
 
 The desktop candidate workflow is permanently unsigned and does not read Apple or Windows signing credentials. Pull requests receive only `contents: read`; the only `contents: write` permission belongs to the main-only manual prerelease publisher.
 

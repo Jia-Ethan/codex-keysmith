@@ -8,10 +8,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Desktop prerelease
 
-- Added the public `desktop-v0.2.0-beta.1` Windows x64 unsigned NSIS Pre-release with fixed setup, candidate ZIP, and `SHA256SUMS` assets. The application source remains `0.2.0`; the formal signed release keeps the `v0.2.0` tag.
+- Added the public `desktop-v0.2.0-beta.2` Windows x64 unsigned NSIS Pre-release with fixed setup, candidate ZIP, and `SHA256SUMS` assets. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. The application source remains `0.2.0`, and the formal signed release keeps the `v0.2.0` tag.
 - Added a main-only manual publisher that binds the signed annotated beta tag, current remote `main`, expected commit, Windows build manifest, draft Release, and final asset digests before publication. Pull requests remain read-only and the candidate workflow contains no signing secrets.
 - Added code-signing and privacy policies. The application does not proactively collect or upload user data; SignPath Foundation review remains pending and the current beta is not SignPath-signed.
 - Windows status is `Beta / unsigned / native-CI-validated`. The CI installs, exercises, and uninstalls the package in temporary directories, but no physical Windows device or SmartScreen experience has been accepted.
+
+### Fixed
+
+- GitHub draft Release updates now resend the complete tag, target commit, name, notes, draft state, prerelease state, and Latest Release policy. A partial PATCH had reset the draft tag to GitHub's internal `untagged-*` placeholder; the fail-closed assertion removed that draft before any asset upload or public publication.
 
 ## [0.2.0] - 2026-08-09
 

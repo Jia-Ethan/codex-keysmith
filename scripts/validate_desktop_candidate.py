@@ -228,6 +228,17 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         raise CandidateError(
             f"{path} is missing required prerelease publisher markers: {publish_missing}"
         )
+    release_state_markers = (
+        '"tag_name": tag',
+        '"target_commitish": commit',
+        '"body": Path(notes_path).read_text(encoding="utf-8")',
+        '"make_latest": "false"',
+    )
+    for marker in release_state_markers:
+        if publish_section.count(marker) < 3:
+            raise CandidateError(
+                f"{path} must preserve {marker} in create, normalize, and publish requests"
+            )
     required_markers = (
         "workflow_dispatch:",
         "release_tag:",
