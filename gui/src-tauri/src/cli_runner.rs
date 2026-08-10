@@ -13,7 +13,7 @@ use tokio::time::{timeout, Duration};
 
 const MANIFEST_FILENAME: &str = ".codex-keysmith-manifest.json";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const VERSION_TIMEOUT_MS: u64 = 5_000;
+const VERSION_TIMEOUT_MS: u64 = 15_000;
 const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const SIDECAR_BASENAME: &str = "codex-keysmith-cli";
 const SCRIPT_NAME: &str = "codex-instruct.py";
@@ -281,7 +281,7 @@ pub async fn cli_version(cli_path: Option<String>) -> Result<String, String> {
     let output = run_invocation(
         &invocation,
         &["--version".to_string()],
-        Duration::from_millis(VERSION_TIMEOUT_MS),
+        version_probe_timeout(),
     )
     .await?;
     if output.timed_out {
@@ -294,6 +294,10 @@ pub async fn cli_version(cli_path: Option<String>) -> Result<String, String> {
         ));
     }
     Ok(output.stdout.trim().to_string())
+}
+
+fn version_probe_timeout() -> Duration {
+    Duration::from_millis(VERSION_TIMEOUT_MS)
 }
 
 #[tauri::command]
@@ -501,6 +505,11 @@ mod tests {
         assert!(candidates[..candidates.len() - 1]
             .iter()
             .all(|candidate| !candidate.ends_with(".py")));
+    }
+
+    #[test]
+    fn version_probe_allows_for_sidecar_startup() {
+        assert_eq!(version_probe_timeout(), Duration::from_secs(15));
     }
 
     #[cfg(unix)]

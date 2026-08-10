@@ -2,7 +2,7 @@
 // Rust 侧实现见 src-tauri/src/cli_runner.rs（契约未变）
 
 import { invoke } from "@tauri-apps/api/core";
-import { getSettings } from "./settings.js";
+import { getSettings, normalizeCliPath } from "./settings.js";
 import { parseStatus, parseDryRun, gatePreview } from "./parser.js";
 
 /** 执行 CLI 命令，返回 { stdout, stderr, exit_code, timed_out } */
@@ -33,6 +33,31 @@ export function cliVersion(cliPath) {
 /** 获取运行时类型：bundled / executable / python */
 export function cliRuntime(cliPath) {
   return invoke("cli_runtime", { cliPath: cliPath || null });
+}
+
+/** 验证手动 CLI 路径；未指定时保留 Rust 侧的 sidecar 优先自动探测。 */
+export async function resolveCli(
+  cliPath,
+  {
+    detect = detectCli,
+    getRuntime = cliRuntime,
+    getVersion = cliVersion,
+  } = {},
+) {
+  const manualPath = normalizeCliPath(cliPath);
+  if (manualPath) {
+    const version = await getVersion(manualPath);
+    const runtime = await getRuntime(manualPath);
+    return { path: manualPath, version, runtime };
+  }
+
+  const detected = await detect();
+  const path = detected?.path || null;
+  return {
+    path,
+    version: path ? await getVersion(path) : "",
+    runtime: detected?.runtime || "",
+  };
 }
 
 /** 解析后的 status（自动附加默认 --codex-dir） */

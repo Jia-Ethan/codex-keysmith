@@ -12,6 +12,7 @@
     "title": "Dashboard",
     "loading": "Detecting CLI and Codex config directories…",
     "noCli": "The bundled CLI was not found. Reinstall the app or select codex-instruct.py in Settings.",
+    "cliCheckFailed": "CLI validation failed. Check the path or re-locate the CLI in Settings.",
     "noCliAction": "Open Settings",
     "getCliTitle": "How to get the CLI",
     "getCliStep1": "1. Download codex-instruct.py from GitHub:",

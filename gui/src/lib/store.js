@@ -2,11 +2,12 @@
 // 保存：CLI 检测结果、status 快照、操作锁、当前视图
 
 let state = {
-  cliInfo: { path: null, version: "", runtime: "", checked: false },
+  cliInfo: { path: null, version: "", runtime: "", error: null, checked: false },
   lastStatus: null,
   operationInProgress: false,
   view: "dashboard",
 };
+let cliCheckGeneration = 0;
 
 const listeners = new Set();
 
@@ -24,8 +25,25 @@ export function subscribe(fn) {
 }
 
 export function setCliInfo(patch) {
+  cliCheckGeneration += 1;
+  updateCliInfo(patch);
+}
+
+function updateCliInfo(patch) {
   state = { ...state, cliInfo: { ...state.cliInfo, ...patch } };
   emit();
+}
+
+export function beginCliCheck() {
+  const generation = ++cliCheckGeneration;
+  updateCliInfo({ path: null, version: "", runtime: "", error: null, checked: false });
+  return generation;
+}
+
+export function completeCliCheck(generation, patch) {
+  if (generation !== cliCheckGeneration) return false;
+  updateCliInfo(patch);
+  return true;
 }
 
 export function setLastStatus(lastStatus) {

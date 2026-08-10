@@ -34,7 +34,8 @@ export function Deploy() {
   const [deploying, setDeploying] = React.useState(false);
   const [result, setResult] = React.useState(null);
 
-  const noCli = cliInfo.checked && !cliInfo.path;
+  const cliChecking = !cliInfo.checked;
+  const cliUnavailable = cliInfo.checked && !cliInfo.path;
 
   const buildArgs = () => {
     const args = [];
@@ -142,9 +143,27 @@ export function Deploy() {
       </FadeIn>
 
       <div className="mt-6">
-        {noCli ? (
+        {cliChecking ? (
           <FadeIn delay={0.1}>
-            <div className="card-glass p-6 text-sm text-secondary-foreground">{t("dash.noCli")}</div>
+            <div className="card-glass p-6 text-sm text-muted-foreground">
+              <span className="spinner mr-1.5" aria-hidden="true" />
+              {t("dash.loading")}
+            </div>
+          </FadeIn>
+        ) : cliUnavailable ? (
+          <FadeIn delay={0.1}>
+            <div
+              className={cn("card-glass p-6 text-sm", cliInfo.error && "border-danger/40")}
+              role={cliInfo.error ? "alert" : undefined}
+            >
+              <div className={cliInfo.error ? "font-semibold text-danger" : "text-secondary-foreground"}>
+                {t(cliInfo.error ? "dash.cliCheckFailed" : "dash.noCli")}
+              </div>
+              {cliInfo.error && <pre className="log-block mt-3">{cliInfo.error}</pre>}
+              <Button className="mt-4" size="sm" onClick={() => setView("settings")}>
+                {t("dash.noCliAction")}
+              </Button>
+            </div>
           </FadeIn>
         ) : (
           <>

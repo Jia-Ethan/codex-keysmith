@@ -13,19 +13,35 @@ const defaults = {
 let cache = null;
 const listeners = new Set();
 
+export function normalizeCliPath(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSettings(settings) {
+  return { ...settings, cliPath: normalizeCliPath(settings.cliPath) };
+}
+
 export function getSettings() {
   if (!cache) {
+    let stored = {};
     try {
-      cache = { ...defaults, ...JSON.parse(localStorage.getItem(KEY) || "{}") };
-    } catch {
-      cache = { ...defaults };
+      const parsed = JSON.parse(localStorage.getItem(KEY) || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        stored = parsed;
+      }
+    } catch {}
+    cache = normalizeSettings({ ...defaults, ...stored });
+    if (stored.cliPath !== undefined && stored.cliPath !== cache.cliPath) {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(cache));
+      } catch {}
     }
   }
   return { ...cache };
 }
 
 export function saveSettings(patch) {
-  cache = { ...getSettings(), ...patch };
+  cache = normalizeSettings({ ...getSettings(), ...patch });
   localStorage.setItem(KEY, JSON.stringify(cache));
   listeners.forEach((fn) => fn(getSettings()));
   return getSettings();
