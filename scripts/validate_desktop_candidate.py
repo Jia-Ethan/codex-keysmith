@@ -259,6 +259,10 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
     missing = [marker for marker in required_markers if marker not in text]
     if missing:
         raise CandidateError(f"{path} is missing required workflow markers: {missing}")
+    if text.index("- name: Build pinned PyInstaller sidecar") > text.index(
+        "- name: Run Rust tests"
+    ):
+        raise CandidateError(f"{path} must build the real sidecar before Rust tests")
 
 
 def _sidecar_contract(root: Path, package: dict[str, Any]) -> str:
