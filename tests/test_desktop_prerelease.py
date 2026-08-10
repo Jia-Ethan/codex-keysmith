@@ -302,7 +302,7 @@ def test_prerelease_creation_validator_binds_numeric_id_and_unsigned_metadata(
     release_id = "400000001"
     draft_name = "codex-keysmith 0.2.0 Windows x64 unsigned Beta [run 123.1]"
     notes = tmp_path / "notes.md"
-    notes.write_text("unsigned beta notes\n", encoding="utf-8")
+    notes.write_bytes(b"unsigned beta notes\n")
     payload = {
         "id": int(release_id),
         "url": f"https://api.github.com/repos/{repo}/releases/{release_id}",
