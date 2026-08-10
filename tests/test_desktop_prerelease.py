@@ -13,7 +13,7 @@ import pytest
 from scripts import package_desktop_prerelease as prerelease
 
 COMMIT = "a" * 40
-TAG = "desktop-v0.2.0-beta.3"
+TAG = "desktop-v0.2.0-beta.4"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -555,7 +555,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.en.md",
-        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.3.md",
+        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.4.md",
         REPO_ROOT / "CODE_SIGNING_POLICY.md",
         REPO_ROOT / "PRIVACY.md",
     ]
@@ -589,14 +589,14 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
 
 
 def test_prerelease_release_notes_match_approved_compact_copy():
-    release_notes = (REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.3.md").read_text(
+    release_notes = (REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.4.md").read_text(
         encoding="utf-8"
     )
     expected = textwrap.dedent(
         """\
         # codex-keysmith v0.2.0 Desktop Beta
 
-        v0.2.0 在原有 CLI 基础上新增 macOS 和 Windows 桌面 GUI。
+        修复了桌面端启动后误报“未找到 CLI”的问题。
 
         ## 下载
 
@@ -604,15 +604,6 @@ def test_prerelease_release_notes_match_approved_compact_copy():
         - Windows x64：`codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`
         - 单文件 CLI：`codex-instruct-v0.2.0.py`
         - 文件校验：`SHA256SUMS`
-
-        ## 更新内容
-
-        - 新增 macOS 和 Windows 桌面客户端。
-        - 支持状态查看、变更预览、部署、恢复、hooks 恢复和卸载。
-        - 新增中英双语界面和图形化设置。
-        - 安装包内置独立 CLI，使用时无需额外安装 Python。
-        - GUI 与 CLI 共用同一套部署和恢复逻辑，现有 CLI 参数保持不变。
-        - 继续兼容 v0.1.x 部署，无需迁移。
         """
     )
     assert release_notes == expected
