@@ -32,7 +32,7 @@ on:
         type: string
       expected_commit:
         type: string
-      publish_windows_prerelease:
+      publish_desktop_prerelease:
         type: boolean
   pull_request:
 permissions:
@@ -65,17 +65,20 @@ jobs:
         with:
           retention-days: 14
 
-  publish-windows-prerelease:
+  publish-desktop-prerelease:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      inputs.publish_windows_prerelease == true
+      inputs.publish_desktop_prerelease == true
     needs:
       - candidate
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/download-artifact@0123456789012345678901234567890123456789
+        with:
+          name: codex-keysmith-desktop-macos-arm64-${{ github.sha }}
       - uses: actions/download-artifact@0123456789012345678901234567890123456789
         with:
           name: codex-keysmith-desktop-windows-x64-${{ github.sha }}
@@ -86,16 +89,26 @@ jobs:
           echo 'git/ref/heads/main git/ref/tags/${RELEASE_TAG}'
           echo '.verification.verified .verification.reason'
           echo 'package_desktop_prerelease.py assemble'
+          echo '--macos-candidate-dir "$RUNNER_TEMP/macos-candidate"'
+          echo '--windows-candidate-dir "$RUNNER_TEMP/windows-candidate"'
+          echo '--source-dir "$source_first"'
           echo '--expected-commit "$expected_commit"'
+          echo 'scripts/build_release.py "$source_tag"'
+          echo codex-keysmith-0.2.0-macos-arm64-unsigned.dmg
+          echo codex-keysmith-0.2.0-macos-arm64-unsigned-candidate.zip
           echo codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe
           echo codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip
+          echo codex-instruct-v0.2.0.py
+          echo codex-keysmith-v0.2.0.zip
+          echo codex-keysmith-v0.2.0.tar.gz
           echo '"draft": True "prerelease": True "make_latest": "false"'
           echo 'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"'
           echo 'gh api -X PATCH "$release_api"'
           echo 'gh api -X DELETE "$release_api"'
           echo 'Recovered numeric-ID ownership after a lost create response.'
+          echo 'release_author="github-actions[bot]"'
           echo 'Release ${tag} already exists; refusing to overwrite it.'
-          echo 'len(state["assets"]) == 3'
+          echo 'len(state["assets"]) == 8'
           echo '.assets[] | [.name, .digest, .state, (.size | tostring)]'
           echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
           echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
@@ -237,7 +250,7 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
             "outside the publisher job",
         ),
         (
-            lambda text: text.replace("inputs.publish_windows_prerelease == true", "true"),
+            lambda text: text.replace("inputs.publish_desktop_prerelease == true", "true"),
             "publisher markers",
         ),
         (
