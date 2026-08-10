@@ -184,9 +184,9 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
     for label, pattern in forbidden_patterns.items():
         if re.search(pattern, text, re.I | re.M):
             raise CandidateError(f"{path} contains forbidden {label}")
-    publish_marker = "\n  publish-windows-prerelease:\n"
+    publish_marker = "\n  publish-desktop-prerelease:\n"
     if publish_marker not in text:
-        raise CandidateError(f"{path} is missing the Windows prerelease publisher job")
+        raise CandidateError(f"{path} is missing the desktop prerelease publisher job")
     candidate_section, publish_section = text.split(publish_marker, 1)
     if "contents: write" in candidate_section:
         raise CandidateError(f"{path} grants write permission outside the publisher job")
@@ -195,11 +195,12 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
     publish_required = (
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
-        "inputs.publish_windows_prerelease == true",
+        "inputs.publish_desktop_prerelease == true",
         "needs:\n      - candidate",
         "runs-on: ubuntu-24.04",
         "permissions:\n      contents: write",
         "actions/download-artifact@",
+        "codex-keysmith-desktop-macos-arm64-${{ github.sha }}",
         "codex-keysmith-desktop-windows-x64-${{ github.sha }}",
         "verify-manifest-data",
         "desktop-v0\\.2\\.0-beta\\.[1-9][0-9]*",
@@ -209,9 +210,18 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         ".verification.verified",
         ".verification.reason",
         "package_desktop_prerelease.py assemble",
+        '--macos-candidate-dir "$RUNNER_TEMP/macos-candidate"',
+        '--windows-candidate-dir "$RUNNER_TEMP/windows-candidate"',
+        '--source-dir "$source_first"',
         '--expected-commit "$expected_commit"',
+        'scripts/build_release.py "$source_tag"',
+        "codex-keysmith-0.2.0-macos-arm64-unsigned.dmg",
+        "codex-keysmith-0.2.0-macos-arm64-unsigned-candidate.zip",
         "codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe",
         "codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip",
+        "codex-instruct-v0.2.0.py",
+        "codex-keysmith-v0.2.0.zip",
+        "codex-keysmith-v0.2.0.tar.gz",
         '"draft": True',
         '"prerelease": True',
         '"make_latest": "false"',
@@ -219,8 +229,9 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         'gh api -X PATCH "$release_api"',
         'gh api -X DELETE "$release_api"',
         "Recovered numeric-ID ownership after a lost create response.",
+        'release_author="github-actions[bot]"',
         "Release ${tag} already exists; refusing to overwrite it.",
-        "len(state[\"assets\"]) == 3",
+        "len(state[\"assets\"]) == 8",
         ".assets[] | [.name, .digest, .state, (.size | tostring)]",
     )
     publish_missing = [marker for marker in publish_required if marker not in publish_section]
@@ -243,7 +254,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "workflow_dispatch:",
         "release_tag:",
         "expected_commit:",
-        "publish_windows_prerelease:",
+        "publish_desktop_prerelease:",
         "pull_request:",
         "contents: read",
         "macos-15",
