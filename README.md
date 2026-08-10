@@ -51,7 +51,7 @@ npm run tauri dev
 ```
 
 - 当前统一源码版本为 `0.2.0`。macOS 候选构建已包含 CLI sidecar 并产出 `.app` / `.dmg`；本轮不公开新的 macOS 资产，正式签名、公证和发布仍待凭据与独立流程完成。
-- Windows x64 已提供公开的 unsigned Pre-release：[`desktop-v0.2.0-beta.1`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.1)。普通用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`；它是 **Beta / unsigned / native-CI-validated**，没有 Authenticode 签名，Windows 可能显示 Unknown publisher 或 SmartScreen 警告，也尚未经过实体 Windows 设备验收。
+- Windows x64 已提供公开的 unsigned Pre-release：[`desktop-v0.2.0-beta.2`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.2)。普通用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`；它是 **Beta / unsigned / native-CI-validated**，没有 Authenticode 签名，Windows 可能显示 Unknown publisher 或 SmartScreen 警告，也尚未经过实体 Windows 设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
 - 正式打包流程会把 PyInstaller CLI sidecar 放入应用包，不要求最终用户另装 Python；开发模式和手动高级配置仍可回退到外部 `codex-instruct.py`。具体开发与构建说明见 `gui/README.md`。
 - 当前应用不主动收集或上传用户数据；签名边界见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)，本地数据说明见 [`PRIVACY.md`](PRIVACY.md)。SignPath Foundation 申请仍在审核中，当前预发布资产并未使用 SignPath 签名。

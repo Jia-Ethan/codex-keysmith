@@ -97,6 +97,9 @@ jobs:
           echo 'Release ${tag} already exists; refusing to overwrite it.'
           echo 'len(state["assets"]) == 3'
           echo '.assets[] | [.name, .digest, .state, (.size | tostring)]'
+          echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
+          echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
+          echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
 """
 
 
@@ -244,6 +247,10 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
         (
             lambda text: text.replace('"prerelease": True', '"prerelease": False'),
             "publisher markers",
+        ),
+        (
+            lambda text: text.replace('"tag_name": tag', '"tag_name": omitted', 1),
+            "must preserve",
         ),
         (
             lambda text: text.replace(
