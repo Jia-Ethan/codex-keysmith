@@ -239,7 +239,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "windows-2025",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
-        "--bundles dmg",
+        "--bundles app,dmg",
         "--bundles nsis",
         'npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"',
         "gui/requirements-build.txt",

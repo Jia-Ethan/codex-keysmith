@@ -172,7 +172,7 @@ jobs:
         run: >-
           npm --prefix gui run tauri -- build
           --target "$TARGET_TRIPLE"
-          --bundles dmg
+          --bundles app,dmg
 
       - name: Build NSIS candidate
         if: matrix.platform == 'windows'

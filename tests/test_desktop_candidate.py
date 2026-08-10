@@ -52,7 +52,7 @@ jobs:
         run: echo built
       - name: Run Rust tests
         run: echo tested
-      - run: echo gui/requirements-build.txt --bundles dmg --bundles nsis --signing-mode unsigned
+      - run: echo gui/requirements-build.txt --bundles app,dmg --bundles nsis --signing-mode unsigned
       - run: echo gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}
       - run: echo Contents/MacOS/codex-keysmith-cli "codex-keysmith-cli.exe"
       - run: echo 'Expected exactly one macOS app bundle.'
