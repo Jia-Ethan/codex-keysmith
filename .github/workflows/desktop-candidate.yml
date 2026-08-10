@@ -11,8 +11,8 @@ on:
         description: Full main commit SHA expected for build and publication.
         required: false
         type: string
-      publish_windows_prerelease:
-        description: Publish the unsigned Windows x64 candidate as a public prerelease.
+      publish_desktop_prerelease:
+        description: Publish the unsigned macOS ARM64 and Windows x64 desktop candidates.
         required: false
         default: false
         type: boolean
@@ -20,13 +20,25 @@ on:
     paths:
       - ".github/workflows/desktop-candidate.yml"
       - "VERSION"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "LICENSE"
+      - "README.md"
+      - "README.en.md"
+      - "SECURITY.md"
       - "codex-instruct.py"
       - "examples/**"
       - "gui/**"
       - "requirements-quality.txt"
       - "CODE_SIGNING_POLICY.md"
       - "PRIVACY.md"
+      - "docs/agent-install.md"
+      - "docs/assets/readme/**"
+      - "docs/hooks-transactions.md"
+      - "docs/reference.md"
       - "docs/releases/desktop-v0.2.0-beta.*.md"
+      - "docs/releases/v0.2.0.md"
+      - "scripts/build_release.py"
       - "scripts/package_desktop_prerelease.py"
       - "scripts/validate_desktop_candidate.py"
       - "tests/**"
@@ -359,12 +371,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish-windows-prerelease:
-    name: Publish unsigned Windows x64 prerelease
+  publish-desktop-prerelease:
+    name: Publish unsigned desktop prerelease
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      inputs.publish_windows_prerelease == true
+      inputs.publish_desktop_prerelease == true
     needs:
       - candidate
     runs-on: ubuntu-24.04
@@ -384,6 +396,12 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download this run's macOS candidate
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: codex-keysmith-desktop-macos-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-candidate
 
       - name: Download this run's Windows candidate
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -464,15 +482,41 @@ jobs:
           git cat-file blob "${EXPECTED_COMMIT}:${notes}" > "$notes_blob"
           cmp "$notes" "$notes_blob"
           python scripts/validate_desktop_candidate.py verify-manifest-data \
+            "$RUNNER_TEMP/macos-candidate/build-manifest.json"
+          python scripts/validate_desktop_candidate.py verify-manifest-data \
             "$RUNNER_TEMP/windows-candidate/build-manifest.json"
+          source_first="${RUNNER_TEMP}/desktop-source-first"
+          source_second="${RUNNER_TEMP}/desktop-source-second"
+          source_tag="v$(tr -d '\r\n' < VERSION)"
+          python scripts/build_release.py "$source_tag" \
+            --output-dir "$source_first" \
+            --source-commit "$EXPECTED_COMMIT"
+          python scripts/build_release.py "$source_tag" \
+            --output-dir "$source_second" \
+            --source-commit "$EXPECTED_COMMIT"
+          diff -u "$source_first/SHA256SUMS" "$source_second/SHA256SUMS"
+          while read -r checksum asset; do
+            test -n "$checksum"
+            cmp "$source_first/$asset" "$source_second/$asset"
+          done < "$source_first/SHA256SUMS"
+          (cd "$source_first" && sha256sum --check SHA256SUMS)
+          version_output="$(python "$source_first/codex-instruct-${source_tag}.py" --version)"
+          expected_version_output="codex-instruct-${source_tag}.py $(tr -d '\r\n' < VERSION)"
+          if [ "$version_output" != "$expected_version_output" ]; then
+            echo "Standalone script reported an unexpected version: ${version_output}" >&2
+            exit 1
+          fi
           python scripts/package_desktop_prerelease.py assemble \
-            --candidate-dir "$RUNNER_TEMP/windows-candidate" \
-            --output-dir "$RUNNER_TEMP/windows-prerelease" \
+            --macos-candidate-dir "$RUNNER_TEMP/macos-candidate" \
+            --windows-candidate-dir "$RUNNER_TEMP/windows-candidate" \
+            --source-dir "$source_first" \
+            --output-dir "$RUNNER_TEMP/desktop-prerelease" \
             --release-tag "$RELEASE_TAG" \
             --expected-commit "$EXPECTED_COMMIT"
           python scripts/package_desktop_prerelease.py verify \
-            "$RUNNER_TEMP/windows-prerelease" \
-            --expected-commit "$EXPECTED_COMMIT"
+            "$RUNNER_TEMP/desktop-prerelease" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --source-dir "$source_first"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           {
             printf 'tag=%s\n' "$RELEASE_TAG"
@@ -489,7 +533,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          release_dir="${RUNNER_TEMP}/windows-prerelease"
+          release_dir="${RUNNER_TEMP}/desktop-prerelease"
           tag="${{ steps.source.outputs.tag }}"
           expected_commit="${{ steps.source.outputs.commit }}"
           expected_tag_object="${{ steps.source.outputs.tag_object }}"
@@ -498,6 +542,10 @@ jobs:
           release_id=""
           release_api=""
           release_created=false
+          create_attempted=false
+          create_started_at=""
+          draft_name=""
+          release_author="github-actions[bot]"
 
           verify_remote_main() {
             remote_main="$(
@@ -528,6 +576,77 @@ jobs:
               return 1
             fi
           }
+          get_latest_release_tag() {
+            local repo_owner="${GITHUB_REPOSITORY%%/*}"
+            local repo_name="${GITHUB_REPOSITORY#*/}"
+            gh api graphql \
+              -f query="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}" \
+              -F owner="$repo_owner" \
+              -F name="$repo_name" \
+              --jq '.data.repository.latestRelease.tagName // "__NO_LATEST_RELEASE__"'
+          }
+          owned_draft_validator="${RUNNER_TEMP}/validate-owned-desktop-draft.py"
+          cat > "$owned_draft_validator" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          source_path, output_path, notes_path, tag, commit, started_at, actor, draft_name = sys.argv[1:]
+          raw = json.loads(Path(source_path).read_text(encoding="utf-8"))
+          if isinstance(raw, dict):
+              releases = [raw]
+          elif isinstance(raw, list):
+              releases = []
+              for item in raw:
+                  if isinstance(item, dict):
+                      releases.append(item)
+                  elif isinstance(item, list) and all(isinstance(value, dict) for value in item):
+                      releases.extend(item)
+                  else:
+                      raise SystemExit("release recovery response has an unexpected shape")
+          else:
+              raise SystemExit("release recovery response has an unexpected shape")
+          expected_body = Path(notes_path).read_text(encoding="utf-8")
+          matches = [
+              release
+              for release in releases
+              if isinstance(release.get("id"), int)
+              and release.get("tag_name") == tag
+              and release.get("target_commitish") == commit
+              and release.get("name") == draft_name
+              and release.get("body") == expected_body
+              and release.get("draft") is True
+              and release.get("prerelease") is True
+              and release.get("assets") == []
+              and release.get("created_at", "") >= started_at
+              and release.get("author", {}).get("login") == actor
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  "expected exactly one owned empty draft after lost create response, got {}".format(
+                      len(matches)
+                  )
+              )
+          Path(output_path).write_text(
+              json.dumps(matches[0], ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          recover_owned_empty_draft() {
+            local output_path="$1"
+            local recovery_state="${RUNNER_TEMP}/desktop-prerelease-create-recovery.json"
+            for _attempt in {1..5}; do
+              if gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$recovery_state" \
+                && python "$owned_draft_validator" \
+                  "$recovery_state" "$output_path" "$notes_blob" "$tag" \
+                  "$expected_commit" "$create_started_at" "$release_author" "$draft_name"; then
+                return 0
+              fi
+              sleep "$_attempt"
+            done
+            return 1
+          }
           cleanup_failed_draft() {
             primary_status=$?
             trap - EXIT
@@ -545,6 +664,29 @@ jobs:
               else
                 echo "::warning::Owned Release ${release_id} is not a draft; cleanup skipped."
               fi
+            elif [ "$primary_status" -ne 0 ] && [ "$create_attempted" = true ]; then
+              set +e
+              cleanup_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-recovery.json"
+              if recover_owned_empty_draft "$cleanup_state"; then
+                recovered_id="$(jq -r '.id // empty' "$cleanup_state")"
+                recovered_api="repos/${GITHUB_REPOSITORY}/releases/${recovered_id}"
+                current_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-current.json"
+                verified_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-verified.json"
+                if [[ "$recovered_id" =~ ^[0-9]+$ ]] \
+                  && gh api "$recovered_api" > "$current_state" \
+                  && python "$owned_draft_validator" \
+                    "$current_state" "$verified_state" "$notes_blob" "$tag" \
+                    "$expected_commit" "$create_started_at" "$release_author" "$draft_name" \
+                  && [ "$(jq -r .id "$verified_state")" = "$recovered_id" ] \
+                  && gh api -X DELETE "$recovered_api" --silent; then
+                  echo "::warning::Removed the uniquely owned empty Draft after a lost create response."
+                else
+                  echo "::warning::Could not safely remove the uniquely owned Draft; primary failure preserved."
+                fi
+              else
+                echo "::warning::No unique owned empty Draft could be recovered for cleanup; primary failure preserved."
+              fi
+              set -e
             fi
             exit "$primary_status"
           }
@@ -559,12 +701,11 @@ jobs:
             echo "Release ${tag} already exists; refusing to overwrite it." >&2
             exit 1
           fi
-          latest_before="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name
-          )"
-          draft_name="codex-keysmith 0.2.0 Windows x64 unsigned Beta [run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}]"
+          latest_before="$(get_latest_release_tag)"
+          draft_name="codex-keysmith 0.2.0 Desktop Beta [run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}]"
           python scripts/package_desktop_prerelease.py verify "$release_dir" \
-            --expected-commit "$expected_commit"
+            --expected-commit "$expected_commit" \
+            --source-dir "$RUNNER_TEMP/desktop-source-first"
           verify_remote_main
           verify_remote_tag
           request="${RUNNER_TEMP}/desktop-prerelease-create.json"
@@ -591,6 +732,7 @@ jobs:
           created_state="${RUNNER_TEMP}/desktop-prerelease-created.json"
           create_error="${RUNNER_TEMP}/desktop-prerelease-create-error.txt"
           create_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          create_attempted=true
           set +e
           gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
             --input "$request" > "$created_state" 2> "$create_error"
@@ -598,56 +740,12 @@ jobs:
           set -e
           release_id="$(jq -r '.id // empty' "$created_state" 2>/dev/null || true)"
           if [ "$create_status" -ne 0 ] || [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
-            recovery_state="${RUNNER_TEMP}/desktop-prerelease-create-recovery.json"
-            recovery_ok=false
-            for _attempt in {1..3}; do
-              if gh api --paginate --slurp \
-                "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$recovery_state"; then
-                recovery_ok=true
-                break
-              fi
-              sleep 1
-            done
-            if [ "$recovery_ok" != true ]; then
+            adopted_state="${RUNNER_TEMP}/desktop-prerelease-adopted.json"
+            if ! recover_owned_empty_draft "$adopted_state"; then
               cat "$create_error" >&2
               echo "Could not recover ownership after the create response was lost." >&2
               exit 1
             fi
-            adopted_state="${RUNNER_TEMP}/desktop-prerelease-adopted.json"
-            python - "$recovery_state" "$adopted_state" "$notes_blob" "$tag" \
-              "$expected_commit" "$create_started_at" "$GITHUB_ACTOR" "$draft_name" <<'PY'
-          import json
-          from pathlib import Path
-          import sys
-
-          source_path, output_path, notes_path, tag, commit, started_at, actor, draft_name = sys.argv[1:]
-          pages = json.loads(Path(source_path).read_text(encoding="utf-8"))
-          releases = [release for page in pages for release in page]
-          expected_body = Path(notes_path).read_text(encoding="utf-8")
-          matches = [
-              release
-              for release in releases
-              if release.get("tag_name") == tag
-              and release.get("target_commitish") == commit
-              and release.get("name") == draft_name
-              and release.get("body") == expected_body
-              and release.get("draft") is True
-              and release.get("prerelease") is True
-              and release.get("assets") == []
-              and release.get("created_at", "") >= started_at
-              and release.get("author", {}).get("login") == actor
-          ]
-          if len(matches) != 1:
-              raise SystemExit(
-                  "expected exactly one owned empty draft after lost create response, got {}".format(
-                      len(matches)
-                  )
-              )
-          Path(output_path).write_text(
-              json.dumps(matches[0], ensure_ascii=False, separators=(",", ":")),
-              encoding="utf-8",
-          )
-          PY
             cp "$adopted_state" "$created_state"
             release_id="$(jq -r '.id // empty' "$created_state")"
             echo "::warning::Recovered numeric-ID ownership after a lost create response."
@@ -658,6 +756,7 @@ jobs:
           fi
           release_api="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           release_created=true
+          create_attempted=false
           empty_state="${RUNNER_TEMP}/desktop-prerelease-empty.json"
           gh api "$release_api" > "$empty_state"
           python - "$created_state" "$empty_state" "$notes_blob" "$tag" \
@@ -694,7 +793,7 @@ jobs:
           request = {
               "tag_name": tag,
               "target_commitish": commit,
-              "name": "codex-keysmith 0.2.0 Windows x64 unsigned Beta",
+              "name": "codex-keysmith 0.2.0 Desktop Beta",
               "body": Path(notes_path).read_text(encoding="utf-8"),
               "draft": True,
               "prerelease": True,
@@ -717,7 +816,7 @@ jobs:
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Windows x64 unsigned Beta"
+          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
           assert state["draft"] is True
           assert state["prerelease"] is True
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
@@ -725,8 +824,13 @@ jobs:
           PY
           upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets"
           assets=(
+            "$release_dir/codex-keysmith-0.2.0-macos-arm64-unsigned.dmg"
+            "$release_dir/codex-keysmith-0.2.0-macos-arm64-unsigned-candidate.zip"
             "$release_dir/codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe"
             "$release_dir/codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip"
+            "$release_dir/codex-instruct-v0.2.0.py"
+            "$release_dir/codex-keysmith-v0.2.0.zip"
+            "$release_dir/codex-keysmith-v0.2.0.tar.gz"
             "$release_dir/SHA256SUMS"
           )
           for asset_path in "${assets[@]}"; do
@@ -763,11 +867,11 @@ jobs:
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Windows x64 unsigned Beta"
+          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
           assert state["draft"] is True
           assert state["prerelease"] is True
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 3
+          assert len(state["assets"]) == 8
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$uploaded_state" | sort > "$actual"
@@ -777,7 +881,8 @@ jobs:
           git cat-file blob "${expected_commit}:${notes_path}" > "$tagged_notes"
           cmp "$notes_blob" "$tagged_notes"
           python scripts/package_desktop_prerelease.py verify "$release_dir" \
-            --expected-commit "$expected_commit"
+            --expected-commit "$expected_commit" \
+            --source-dir "$RUNNER_TEMP/desktop-source-first"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           verify_remote_main
           verify_remote_tag
@@ -792,7 +897,7 @@ jobs:
           request = {
               "tag_name": tag,
               "target_commitish": commit,
-              "name": "codex-keysmith 0.2.0 Windows x64 unsigned Beta",
+              "name": "codex-keysmith 0.2.0 Desktop Beta",
               "body": Path(notes_path).read_text(encoding="utf-8"),
               "draft": False,
               "prerelease": True,
@@ -847,19 +952,18 @@ jobs:
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Windows x64 unsigned Beta"
+          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
           assert state["draft"] is False
           assert state["prerelease"] is True
           assert state["published_at"]
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 3
+          assert len(state["assets"]) == 8
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$final_state" | sort > "$actual"
           diff -u "$expected" "$actual"
-          latest_after="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name
-          )"
+          verify_remote_tag
+          latest_after="$(get_latest_release_tag)"
           if [ "$latest_after" != "$latest_before" ]; then
             echo "Unsigned prerelease unexpectedly changed the repository's Latest Release." >&2
             exit 1
