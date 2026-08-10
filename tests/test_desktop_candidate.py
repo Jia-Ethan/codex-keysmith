@@ -27,6 +27,13 @@ def _workflow_text() -> str:
     return """\
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        type: string
+      expected_commit:
+        type: string
+      publish_windows_prerelease:
+        type: boolean
   pull_request:
 permissions:
   contents: read
@@ -39,10 +46,9 @@ jobs:
   candidate:
     runs-on: macos-15
     steps:
-      - run: SIGNING_MODE=unsigned github.event_name == 'workflow_dispatch' github.ref == 'refs/heads/main'
       - run: echo aarch64-apple-darwin x86_64-pc-windows-msvc windows-2025
       - run: npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"
-      - run: echo gui/requirements-build.txt --bundles dmg --bundles nsis
+      - run: echo gui/requirements-build.txt --bundles dmg --bundles nsis --signing-mode unsigned
       - run: echo gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}
       - run: echo Contents/MacOS/codex-keysmith-cli "codex-keysmith-cli.exe"
       - run: echo desktop-candidate-install 'Start-Process -FilePath $bundles[0].FullName'
@@ -50,6 +56,41 @@ jobs:
       - run: echo 'Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke'
       - run: echo 'Installed NSIS candidate must contain exactly one uninstaller.'
       - uses: actions/upload-artifact@0123456789012345678901234567890123456789
+        with:
+          retention-days: 14
+
+  publish-windows-prerelease:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.publish_windows_prerelease == true
+    needs:
+      - candidate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@0123456789012345678901234567890123456789
+        with:
+          name: codex-keysmith-desktop-windows-x64-${{ github.sha }}
+      - run: |
+          echo verify-manifest-data
+          echo 'desktop-v0\\.2\\.0-beta\\.[1-9][0-9]*'
+          echo 'if [ "$EXPECTED_COMMIT" != "$GITHUB_SHA" ]'
+          echo 'git/ref/heads/main git/ref/tags/${RELEASE_TAG}'
+          echo '.verification.verified .verification.reason'
+          echo 'package_desktop_prerelease.py assemble'
+          echo '--expected-commit "$expected_commit"'
+          echo codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe
+          echo codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip
+          echo '"draft": True "prerelease": True "make_latest": "false"'
+          echo 'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"'
+          echo 'gh api -X PATCH "$release_api"'
+          echo 'gh api -X DELETE "$release_api"'
+          echo 'Recovered numeric-ID ownership after a lost create response.'
+          echo 'Release ${tag} already exists; refusing to overwrite it.'
+          echo 'len(state["assets"]) == 3'
+          echo '.assets[] | [.name, .digest, .state, (.size | tostring)]'
 """
 
 
@@ -177,6 +218,40 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
         "desktop_version": "0.2.0",
         "cli_version": "0.2.0",
     }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda text: text.replace("permissions:\n  contents: read", "permissions:\n  contents: write"),
+            "outside the publisher job",
+        ),
+        (
+            lambda text: text.replace("inputs.publish_windows_prerelease == true", "true"),
+            "publisher markers",
+        ),
+        (
+            lambda text: text.replace("runs-on: macos-15", "runs-on: macos-15\n    env:\n      TOKEN: ${{ secrets.TOKEN }}"),
+            "candidate signing secret",
+        ),
+        (
+            lambda text: text.replace('"prerelease": True', '"prerelease": False'),
+            "publisher markers",
+        ),
+    ],
+)
+def test_validate_config_rejects_prerelease_workflow_policy_drift(
+    tmp_path,
+    mutation,
+    message,
+):
+    _config_fixture(tmp_path)
+    workflow = tmp_path / ".github/workflows/desktop-candidate.yml"
+    workflow.write_text(mutation(workflow.read_text(encoding="utf-8")), encoding="utf-8")
+
+    with pytest.raises(validator.CandidateError, match=message):
+        validator.validate_config(tmp_path)
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Desktop prerelease
+
+- Added the public `desktop-v0.2.0-beta.1` Windows x64 unsigned NSIS Pre-release with fixed setup, candidate ZIP, and `SHA256SUMS` assets. The application source remains `0.2.0`; the formal signed release keeps the `v0.2.0` tag.
+- Added a main-only manual publisher that binds the signed annotated beta tag, current remote `main`, expected commit, Windows build manifest, draft Release, and final asset digests before publication. Pull requests remain read-only and the candidate workflow contains no signing secrets.
+- Added code-signing and privacy policies. The application does not proactively collect or upload user data; SignPath Foundation review remains pending and the current beta is not SignPath-signed.
+- Windows status is `Beta / unsigned / native-CI-validated`. The CI installs, exercises, and uninstalls the package in temporary directories, but no physical Windows device or SmartScreen experience has been accepted.
+
 ## [0.2.0] - 2026-08-09
 
 This release line brings the desktop client source into the canonical repository while keeping the Python CLI as the single owner of deployment, recovery, and uninstall behavior. The CLI and GUI source now share version `0.2.0`; manifest and journal schemas remain at version 1, so existing deployments require no migration. Windows fresh deployment remains `EXPLICIT_BETA`.
@@ -14,7 +21,7 @@ This release line brings the desktop client source into the canonical repository
 
 - Added the Tauri 2 + React desktop client under `gui/`, with status, preview-gated deployment, recovery, hooks restore, uninstall, settings, and bilingual UI flows backed by the existing CLI.
 - Added native PyInstaller CLI sidecar packaging so desktop bundles do not require a separate end-user Python installation; development and advanced manual configuration retain the external-script fallback.
-- Added explicit desktop-client entry points and platform boundaries to the Chinese and English READMEs. The macOS candidate embeds the sidecar and produces `.app` / `.dmg`; signing, notarization, publication, and native Windows artifact validation remain release/CI gates.
+- Added explicit desktop-client entry points and platform boundaries to the Chinese and English READMEs. The macOS candidate embeds the sidecar and produces `.app` / `.dmg`; the Windows x64 candidate is built natively and published only as an unsigned beta, while formal signing and device acceptance remain release gates.
 
 ### Changed
 

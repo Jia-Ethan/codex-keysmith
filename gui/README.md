@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-Windows 安装器使用 WebView2 download bootstrapper、禁止降级；当前不生成 MSI。正式发布前还必须完成 Apple Developer ID 签名/公证和 Windows Authenticode 签名，本仓库不会把未签名本地构建描述为正式发行包。
+Windows 安装器使用 WebView2 download bootstrapper、禁止降级；当前不生成 MSI。公开的 `desktop-v0.2.0-beta.1` 只提供 Windows x64 unsigned NSIS Beta，状态为 `Beta / unsigned / native-CI-validated`，可能触发 Unknown publisher / SmartScreen，且没有实体设备验收。普通用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 

@@ -19,8 +19,10 @@ TAG = "v0.2.0"
 VERSION = "0.2.0"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
+    "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "PRIVACY.md",
     "README.en.md",
     "README.md",
     "SECURITY.md",

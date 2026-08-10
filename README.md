@@ -50,9 +50,11 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.2.0`。macOS 候选构建已包含 CLI sidecar 并产出 `.app` / `.dmg`；正式签名、公证和发布仍待凭据与发布流程完成。
-- Windows GUI 仍是 beta 边界：源码已配置原生 Windows NSIS 构建，但 Windows 原生产物仍待 CI 验证，当前也没有正式发布的 Windows 安装包。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`，不构成正式 Windows 支持承诺。
+- 当前统一源码版本为 `0.2.0`。macOS 候选构建已包含 CLI sidecar 并产出 `.app` / `.dmg`；本轮不公开新的 macOS 资产，正式签名、公证和发布仍待凭据与独立流程完成。
+- Windows x64 已提供公开的 unsigned Pre-release：[`desktop-v0.2.0-beta.1`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.1)。普通用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`；它是 **Beta / unsigned / native-CI-validated**，没有 Authenticode 签名，Windows 可能显示 Unknown publisher 或 SmartScreen 警告，也尚未经过实体 Windows 设备验收。
+- Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
 - 正式打包流程会把 PyInstaller CLI sidecar 放入应用包，不要求最终用户另装 Python；开发模式和手动高级配置仍可回退到外部 `codex-instruct.py`。具体开发与构建说明见 `gui/README.md`。
+- 当前应用不主动收集或上传用户数据；签名边界见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)，本地数据说明见 [`PRIVACY.md`](PRIVACY.md)。SignPath Foundation 申请仍在审核中，当前预发布资产并未使用 SignPath 签名。
 
 ### 快速开始（macOS / Linux）
 
@@ -124,7 +126,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 - 推荐 Python 3.10–3.14；已验证 Codex CLI `codex-cli 0.144.1`。
 - macOS / Linux 是主要支持范围。
 - **Windows**：已发布的 `v0.1.0` 存在已知缺陷（`os.utime` 失败后触发第二个 `PermissionError`，会留下无法用旧脚本恢复的 journal）。v0.1.1 及后续版本已重写 Windows 文件系统后端并标记 `EXPLICIT_BETA`，可以试用，但还不是正式支持；如果 v0.1.0 留下了 journal，用最新已校验 Release 脚本按 `--status` → `--recover` 预览 → `--recover --yes` → `--status` 的顺序恢复，不要手工删除任何证据。
-- **Windows GUI**：当前为构建级 beta，已配置 NSIS 安装包，但原生产物仍待 CI 验证且尚未正式发布，也不扩大上述 CLI 的 `EXPLICIT_BETA` 支持边界。
+- **Windows GUI**：Windows x64 unsigned NSIS Beta 已由 `windows-2025` 原生 CI 构建并公开为 Pre-release，但没有 Authenticode 签名或实体设备验收；它不扩大上述 CLI 的 `EXPLICIT_BETA` 支持边界，也不等于正式 Windows 支持。
 - 单文件 CLI，没有 `pip install` 或自动更新；备份和卸载归档不会自动清理。
 - 完整限制清单、事务保证、维护者验证步骤见 [`docs/reference.md`](docs/reference.md)。
 
