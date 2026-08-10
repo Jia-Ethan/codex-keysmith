@@ -134,16 +134,6 @@ jobs:
           npm --prefix gui test
           npm --prefix gui run build
 
-      - name: Run Rust tests
-        shell: bash
-        env:
-          TARGET_TRIPLE: ${{ matrix.target }}
-        run: >-
-          cargo test
-          --manifest-path gui/src-tauri/Cargo.toml
-          --locked
-          --target "$TARGET_TRIPLE"
-
       - name: Require Apple Silicon runner
         if: matrix.platform == 'macos'
         shell: bash
@@ -163,6 +153,16 @@ jobs:
           chmod +x "$source"
           "$source" --version
           echo "source=$source" >> "$GITHUB_OUTPUT"
+
+      - name: Run Rust tests
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: >-
+          cargo test
+          --manifest-path gui/src-tauri/Cargo.toml
+          --locked
+          --target "$TARGET_TRIPLE"
 
       - name: Build DMG candidate
         if: matrix.platform == 'macos'

@@ -48,6 +48,10 @@ jobs:
     steps:
       - run: echo aarch64-apple-darwin x86_64-pc-windows-msvc windows-2025
       - run: npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"
+      - name: Build pinned PyInstaller sidecar
+        run: echo built
+      - name: Run Rust tests
+        run: echo tested
       - run: echo gui/requirements-build.txt --bundles dmg --bundles nsis --signing-mode unsigned
       - run: echo gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}
       - run: echo Contents/MacOS/codex-keysmith-cli "codex-keysmith-cli.exe"
@@ -238,6 +242,13 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
         (
             lambda text: text.replace('"prerelease": True', '"prerelease": False'),
             "publisher markers",
+        ),
+        (
+            lambda text: text.replace(
+                "      - name: Build pinned PyInstaller sidecar\n        run: echo built\n      - name: Run Rust tests\n        run: echo tested",
+                "      - name: Run Rust tests\n        run: echo tested\n      - name: Build pinned PyInstaller sidecar\n        run: echo built",
+            ),
+            "real sidecar before Rust tests",
         ),
     ],
 )
