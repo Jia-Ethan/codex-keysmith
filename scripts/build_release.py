@@ -18,8 +18,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 ARCHIVE_FILES = (
     "CHANGELOG.md",
+    "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "PRIVACY.md",
     "README.en.md",
     "README.md",
     "SECURITY.md",

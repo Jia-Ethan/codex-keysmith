@@ -38,9 +38,11 @@ npm install
 npm run tauri dev
 ```
 
-- The unified source version is `0.2.0`. The macOS candidate build includes the CLI sidecar and produces `.app` / `.dmg`; formal signing, notarization, and publication still depend on the release credentials and workflow.
-- The Windows GUI remains a beta boundary: native Windows NSIS packaging is configured, but the native artifact still requires CI validation and no Windows installer has been formally published. The underlying Windows CLI fresh-deployment path also remains `EXPLICIT_BETA`, not a formal Windows support commitment.
+- The unified source version is `0.2.0`. The macOS candidate includes the CLI sidecar and produces `.app` / `.dmg`; this beta publishes no new macOS asset, and formal macOS signing, notarization, and publication remain separate work.
+- A public unsigned Windows x64 Pre-release is available at [`desktop-v0.2.0-beta.1`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.1). Most users should download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. It is **Beta / unsigned / native-CI-validated**, has no Authenticode signature, may trigger Unknown publisher or SmartScreen warnings, and has not received physical Windows device acceptance.
+- The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
 - Packaged builds include a PyInstaller CLI sidecar and do not require end users to install Python separately. Development mode and advanced manual configuration can still fall back to an external `codex-instruct.py`. See `gui/README.md` for development and build details.
+- The application does not proactively collect or upload user data. See [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) and [`PRIVACY.md`](PRIVACY.md). The SignPath Foundation application is pending, and the current prerelease assets are not SignPath-signed.
 
 ### Quick start (macOS / Linux)
 
@@ -112,7 +114,7 @@ Uninstall removes only the newest layer each run; repeat it to peel back earlier
 - Recommended Python 3.10–3.14; verified against `codex-cli 0.144.1`.
 - macOS / Linux are the primary support range.
 - **Windows**: the published `v0.1.0` has a known defect (`os.utime` failure followed by a second `PermissionError` that leaves a journal the old script can't recover). v0.1.1 and later include the rewritten Windows filesystem backend under `EXPLICIT_BETA` — usable, but not formally supported yet. If v0.1.0 left a journal on Windows, recover with the latest verified Release script in order: `--status` → `--recover` preview → `--recover --yes` → `--status`; never manually delete evidence.
-- **Windows GUI**: currently build-level beta, with NSIS packaging configured but native artifact validation still pending in CI and no formal Windows release; it does not expand the CLI's `EXPLICIT_BETA` support boundary.
+- **Windows GUI**: the Windows x64 unsigned NSIS Beta is built natively on `windows-2025` and published as a Pre-release, but it has no Authenticode signature or physical-device acceptance. It does not expand the CLI's `EXPLICIT_BETA` support boundary or constitute formal Windows support.
 - Single-file CLI, no `pip install` or auto-updater; backups and uninstall archives are not cleaned automatically.
 - Full limits list, transaction guarantees, and maintainer verification: [`docs/reference.md`](docs/reference.md).
 

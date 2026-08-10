@@ -171,18 +171,68 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
             raise CandidateError(f"{path} must pin {key} to {value}")
     forbidden_patterns = {
         "push trigger": r"^\s*push\s*:",
-        "write permission": r"^\s*contents\s*:\s*write\s*$",
         "git push command": r"\bgit\s+push\b",
         "GitHub release command": r"\bgh\s+release\b",
         "release action": r"actions/(?:create-release|upload-release-asset)",
         "duplicated PyInstaller command": r"python\s+-m\s+PyInstaller",
         "externalBin workflow override": r'["\']externalBin["\']\s*:',
+        "pull request target trigger": r"^\s*pull_request_target\s*:",
+        "workflow run trigger": r"^\s*workflow_run\s*:",
+        "candidate signing secret": r"\bsecrets\.",
+        "asset overwrite option": r"--clobber",
     }
     for label, pattern in forbidden_patterns.items():
         if re.search(pattern, text, re.I | re.M):
             raise CandidateError(f"{path} contains forbidden {label}")
+    publish_marker = "\n  publish-windows-prerelease:\n"
+    if publish_marker not in text:
+        raise CandidateError(f"{path} is missing the Windows prerelease publisher job")
+    candidate_section, publish_section = text.split(publish_marker, 1)
+    if "contents: write" in candidate_section:
+        raise CandidateError(f"{path} grants write permission outside the publisher job")
+    if text.count("contents: write") != 1 or "contents: write" not in publish_section:
+        raise CandidateError(f"{path} must grant contents: write only to the publisher job")
+    publish_required = (
+        "github.event_name == 'workflow_dispatch'",
+        "github.ref == 'refs/heads/main'",
+        "inputs.publish_windows_prerelease == true",
+        "needs:\n      - candidate",
+        "runs-on: ubuntu-24.04",
+        "permissions:\n      contents: write",
+        "actions/download-artifact@",
+        "codex-keysmith-desktop-windows-x64-${{ github.sha }}",
+        "verify-manifest-data",
+        "desktop-v0\\.2\\.0-beta\\.[1-9][0-9]*",
+        'EXPECTED_COMMIT" != "$GITHUB_SHA',
+        "git/ref/heads/main",
+        "git/ref/tags/${RELEASE_TAG}",
+        ".verification.verified",
+        ".verification.reason",
+        "package_desktop_prerelease.py assemble",
+        '--expected-commit "$expected_commit"',
+        "codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe",
+        "codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip",
+        '"draft": True',
+        '"prerelease": True',
+        '"make_latest": "false"',
+        "gh api -X POST \"repos/${GITHUB_REPOSITORY}/releases\"",
+        'gh api -X PATCH "$release_api"',
+        'gh api -X DELETE "$release_api"',
+        "Recovered numeric-ID ownership after a lost create response.",
+        "Release ${tag} already exists; refusing to overwrite it.",
+        "len(state[\"assets\"]) == 3",
+        ".assets[] | [.name, .digest, .state, (.size | tostring)]",
+    )
+    publish_missing = [marker for marker in publish_required if marker not in publish_section]
+    if publish_missing:
+        raise CandidateError(
+            f"{path} is missing required prerelease publisher markers: {publish_missing}"
+        )
     required_markers = (
         "workflow_dispatch:",
+        "release_tag:",
+        "expected_commit:",
+        "publish_windows_prerelease:",
         "pull_request:",
         "contents: read",
         "macos-15",
@@ -203,9 +253,8 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke",
         "Installed NSIS candidate must contain exactly one uninstaller.",
         "actions/upload-artifact@",
-        "SIGNING_MODE=unsigned",
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/main'",
+        "--signing-mode unsigned",
+        "retention-days: 14",
     )
     missing = [marker for marker in required_markers if marker not in text]
     if missing:
@@ -661,7 +710,7 @@ def stage_candidate(args: argparse.Namespace) -> Path:
     return manifest_path
 
 
-def verify_manifest(manifest_path: Path) -> None:
+def verify_manifest(manifest_path: Path, *, execute_sidecar: bool = True) -> None:
     manifest = _read_json(manifest_path)
     if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("product") != PRODUCT_NAME:
         raise CandidateError("unsupported desktop candidate manifest")
@@ -721,7 +770,16 @@ def verify_manifest(manifest_path: Path) -> None:
     if not _version_in_filename(bundle, version):
         raise CandidateError("staged bundle filename does not contain desktop version")
     _validate_icon(base / artifacts["icon"]["file"])
-    _run_version(base / artifacts["sidecar"]["file"], str(manifest["cli_version"]))
+    sidecar_output = manifest.get("sidecar_version_output")
+    if not isinstance(sidecar_output, str) or sidecar_output.split()[-1:] != [str(manifest["cli_version"])]:
+        raise CandidateError("manifest sidecar version output is invalid")
+    if execute_sidecar:
+        actual_output = _run_version(
+            base / artifacts["sidecar"]["file"],
+            str(manifest["cli_version"]),
+        )
+        if actual_output != sidecar_output:
+            raise CandidateError("sidecar version output does not match the build manifest")
     checksums = _read_text(base / "SHA256SUMS").splitlines()
     if sorted(checksums) != sorted(expected_checksums):
         raise CandidateError("SHA256SUMS does not exactly match the build manifest")
@@ -762,6 +820,14 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify-manifest", help="verify a staged candidate manifest")
     verify.add_argument("manifest", type=Path)
     verify.set_defaults(handler=lambda args: verify_manifest(args.manifest))
+    verify_data = subparsers.add_parser(
+        "verify-manifest-data",
+        help="verify a staged candidate without executing its target binary",
+    )
+    verify_data.add_argument("manifest", type=Path)
+    verify_data.set_defaults(
+        handler=lambda args: verify_manifest(args.manifest, execute_sidecar=False)
+    )
     return parser
 
 
