@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
 import { ExternalLink } from "lucide-react";
-import { detectCli, cliRuntime, cliVersion } from "@/lib/api";
+import { resolveCli } from "@/lib/api";
 import { getSettings, saveSettings } from "@/lib/settings";
-import { setCliInfo } from "@/lib/store";
+import { beginCliCheck, completeCliCheck } from "@/lib/store";
 import { useAppState } from "@/hooks/useAppState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,24 +28,38 @@ export function SettingsView() {
   const [cliStatus, setCliStatus] = React.useState(null); // { ok, text }
 
   const refreshCliStatus = React.useCallback(
-    async (manualPath) => {
+    async (manualPath, relocated = false) => {
+      const generation = beginCliCheck();
       setCliStatus(null);
       try {
-        const detected = manualPath ? null : await detectCli();
-        const path = manualPath || detected?.path;
+        const result = await resolveCli(manualPath);
+        const { path, version } = result;
         if (!path) {
-          setCliStatus({ ok: false, text: t("settings.notFound") });
-          setCliInfo({ path: null, checked: true });
-          return;
+          const applied = completeCliCheck(generation, { ...result, error: null, checked: true });
+          if (applied) {
+            setCliStatus({ ok: false, text: t("settings.notFound") });
+          }
+          return { ok: false, stale: !applied };
         }
-        const version = await cliVersion(path);
-        let runtime = detected?.runtime || "";
-        if (!runtime) runtime = await cliRuntime(path);
-        setCliInfo({ path, version, runtime, checked: true });
-        setCliStatus({ ok: true, text: `${path}${version ? ` (${version})` : ""}` });
-      } catch {
-        setCliInfo({ path: null, checked: true });
-        setCliStatus({ ok: false, text: t("settings.cliInvalid") });
+        if (!completeCliCheck(generation, { ...result, error: null, checked: true })) {
+          return { ok: false, stale: true };
+        }
+        const prefix = relocated ? `${t("settings.relocated")}: ` : "";
+        setCliStatus({ ok: true, text: `${prefix}${path}${version ? ` (${version})` : ""}` });
+        return { ok: true };
+      } catch (err) {
+        const error = err?.message || String(err);
+        if (!completeCliCheck(generation, {
+          path: null,
+          version: "",
+          runtime: "",
+          error,
+          checked: true,
+        })) {
+          return { ok: false, stale: true };
+        }
+        setCliStatus({ ok: false, text: `${t("settings.cliInvalid")}: ${error}` });
+        return { ok: false, error };
       }
     },
     [t],
@@ -66,24 +80,21 @@ export function SettingsView() {
   };
 
   const relocate = async () => {
-    setCliStatus(null);
-    const found = await detectCli();
-    if (found?.path) {
+    const fallbackPath = getSettings().cliPath;
+    const result = await refreshCliStatus("", true);
+    if (result?.stale) return;
+    if (result?.ok) {
       saveSettings({ cliPath: "" });
       setCliPathInput("");
-      try {
-        const version = await cliVersion(found.path);
-        setCliInfo({ path: found.path, version, runtime: found.runtime, checked: true });
-        setCliStatus({ ok: true, text: `${t("settings.relocated")}: ${found.path}${version ? ` (${version})` : ""}` });
-        toast.success(t("settings.relocated"));
-      } catch {
-        setCliInfo({ path: null, checked: true });
-        setCliStatus({ ok: false, text: t("settings.cliInvalid") });
-      }
+      toast.success(t("settings.relocated"));
     } else {
-      setCliInfo({ path: null, checked: true });
-      setCliStatus({ ok: false, text: t("settings.notFound") });
-      toast.warning(t("settings.notFound"));
+      // A failed auto-location must leave the saved manual configuration usable.
+      if (fallbackPath) {
+        const restored = await refreshCliStatus(fallbackPath);
+        if (restored?.stale) return;
+      }
+      if (result?.error) toast.error(t("settings.cliInvalid"));
+      else toast.warning(t("settings.notFound"));
     }
   };
 
@@ -230,7 +241,9 @@ export function SettingsView() {
             <dd className="font-mono text-secondary-foreground">0.2.0</dd>
             <dt className="text-muted-foreground">CLI</dt>
             <dd className="break-all font-mono text-secondary-foreground">
-              {cliInfo.path ? `${cliInfo.path}${cliInfo.version ? ` (${cliInfo.version})` : ""}` : t("settings.notFound")}
+              {cliInfo.path
+                ? `${cliInfo.path}${cliInfo.version ? ` (${cliInfo.version})` : ""}`
+                : cliInfo.error || t("settings.notFound")}
             </dd>
             <dt className="text-muted-foreground">GitHub</dt>
             <dd>

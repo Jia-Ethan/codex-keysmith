@@ -12,6 +12,7 @@
     "title": "状态总览",
     "loading": "正在检测 CLI 与 Codex 配置目录…",
     "noCli": "未找到内置 CLI。请重新安装应用，或前往「设置」指定 codex-instruct.py。",
+    "cliCheckFailed": "CLI 校验失败，请前往「设置」检查路径或重新定位。",
     "noCliAction": "打开设置",
     "getCliTitle": "如何获取 CLI",
     "getCliStep1": "1. 从 GitHub 下载 codex-instruct.py：",

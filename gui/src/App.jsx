@@ -6,11 +6,12 @@ import i18n from "./i18n";
 import { getSettings, onSettingsChange } from "@/lib/settings";
 import { useAppState } from "@/hooks/useAppState";
 import {
-  setCliInfo,
+  beginCliCheck,
+  completeCliCheck,
   setView,
   isOperationInProgressRef,
 } from "@/lib/store";
-import { detectCli, cliVersion, isTauriMissing } from "@/lib/api";
+import { resolveCli, isTauriMissing } from "@/lib/api";
 import { AmbientBg } from "@/components/AmbientBg";
 import { Sidebar } from "@/components/Sidebar";
 import { Dashboard } from "@/views/Dashboard";
@@ -50,18 +51,23 @@ export default function App() {
 
   // 启动时探测 CLI
   React.useEffect(() => {
+    const generation = beginCliCheck();
     (async () => {
       try {
-        const detected = await detectCli();
-        const path = detected?.path || null;
-        let version = "";
-        if (path) {
-          version = await cliVersion(path);
-        }
-        setCliInfo({ path, version, runtime: detected?.runtime || "", checked: true });
+        completeCliCheck(generation, {
+          ...(await resolveCli(getSettings().cliPath)),
+          error: null,
+          checked: true,
+        });
       } catch (err) {
         if (isTauriMissing(err)) return; // 纯浏览器预览保持未检测态
-        setCliInfo({ path: null, checked: true });
+        completeCliCheck(generation, {
+          path: null,
+          version: "",
+          runtime: "",
+          error: err?.message || String(err),
+          checked: true,
+        });
       }
     })();
   }, []);

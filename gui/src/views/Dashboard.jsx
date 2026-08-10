@@ -59,7 +59,9 @@ export function Dashboard() {
     if (cliInfo.checked && cliInfo.path && !status) refresh();
   }, [cliInfo.checked, cliInfo.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const noCli = cliInfo.checked && !cliInfo.path;
+  const cliChecking = !cliInfo.checked;
+  const noCli = cliInfo.checked && !cliInfo.path && !cliInfo.error;
+  const cliFailed = cliInfo.checked && !cliInfo.path && !!cliInfo.error;
 
   return (
     <div>
@@ -70,7 +72,7 @@ export function Dashboard() {
           </FadeIn>
           <FadeIn delay={0.05}>
             <p className="mt-1 text-sm text-muted-foreground">
-              {loading ? (
+              {cliChecking || loading ? (
                 <>
                   <span className="spinner mr-1.5" aria-hidden="true" />
                   {t("dash.loading")}
@@ -88,7 +90,12 @@ export function Dashboard() {
           </FadeIn>
         </div>
         <FadeIn delay={0.1}>
-          <Button variant="ghost" size="sm" onClick={refresh} disabled={loading || noCli}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={refresh}
+            disabled={loading || cliChecking || noCli || cliFailed}
+          >
             <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
             {t("dash.refresh")}
           </Button>
@@ -117,6 +124,21 @@ export function Dashboard() {
               <p className="mt-1.5 text-xs text-secondary-foreground">{t("dash.getCliStep2")}</p>
             </div>
             <Button className="mt-5" onClick={() => setView("settings")}>
+              {t("dash.noCliAction")}
+            </Button>
+          </div>
+        </FadeIn>
+      )}
+
+      {cliFailed && (
+        <FadeIn delay={0.1}>
+          <div className="card-glass border-danger/40 p-6" role="alert">
+            <div className="flex items-center gap-2 text-sm font-semibold text-danger">
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              {t("dash.cliCheckFailed")}
+            </div>
+            <pre className="log-block mt-3">{cliInfo.error}</pre>
+            <Button className="mt-4" onClick={() => setView("settings")}>
               {t("dash.noCliAction")}
             </Button>
           </div>
