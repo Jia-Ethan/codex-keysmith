@@ -15,12 +15,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.1.3"
-VERSION = "0.1.3"
+TAG = "v0.2.0"
+VERSION = "0.2.0"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
+    "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "PRIVACY.md",
     "README.en.md",
     "README.md",
     "SECURITY.md",
@@ -30,8 +32,22 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.1.3.md",
+    "docs/releases/v0.2.0.md",
     "examples/gpt-unrestricted.md",
+    "gui/README.md",
+    "gui/package.json",
+    "gui/scripts/build-sidecar.mjs",
+    "gui/src-tauri/icons/Square44x44Logo.png",
+    "gui/src-tauri/icons/icon.ico",
+    "gui/src-tauri/tauri.windows.conf.json",
+}
+FIXTURE_GUI_FILES = {
+    "gui/README.md": b"# GUI fixture\n",
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.2.0"}\n',
+    "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
+    "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
+    "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
+    "gui/src-tauri/tauri.windows.conf.json": b'{"bundle":{"targets":["nsis"]}}\n',
 }
 WINDOWS_POLICY_FILES = (
     "README.md",
@@ -41,7 +57,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.1.3.md",
+    "docs/releases/v0.2.0.md",
 )
 
 
@@ -90,6 +106,14 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
         path.write_bytes(data)
         source_bytes[relative_path] = data
 
+    for relative_path, data in FIXTURE_GUI_FILES.items():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        if relative_path.endswith(".mjs"):
+            path.chmod(0o755)
+        source_bytes[relative_path] = data
+
     (repo / ".gitattributes").write_bytes((REPO_ROOT / ".gitattributes").read_bytes())
 
     _run(["git", "init", "-q"], repo)
@@ -97,6 +121,7 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
     _run(["git", "config", "user.email", "release-test@example.invalid"], repo)
     _run(["git", "config", "core.autocrlf", "false"], repo)
     _run(["git", "add", "."], repo)
+    _run(["git", "update-index", "--chmod=+x", "gui/scripts/build-sidecar.mjs"], repo)
     _run(["git", "commit", "-qm", "release fixture"], repo)
     if create_tag:
         _run(["git", "tag", TAG], repo)
@@ -128,15 +153,41 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-07-29".format(VERSION) in changelog
-    assert "Source version v0.1.3" in readme
-    assert "v0.1.3 local candidate" not in readme
+    assert "## [{}] - 2026-08-09".format(VERSION) in changelog
+    assert "Source version v0.2.0" in readme
+    assert "v0.2.0 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
         assert "codex-instruct-v0.1.0.py" not in quick_start
         assert "--codex-dir ~/.codex --status" in quick_start
         assert "--codex-dir ~/.codex --dry-run" in quick_start
+
+
+def test_cli_and_desktop_source_versions_match():
+    version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
+    package = json.loads((REPO_ROOT / "gui" / "package.json").read_text(encoding="utf-8"))
+    tauri_config = json.loads(
+        (REPO_ROOT / "gui" / "src-tauri" / "tauri.conf.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cargo_toml = (REPO_ROOT / "gui" / "src-tauri" / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    cargo_version = re.search(
+        r'^version\s*=\s*"([^"]+)"\s*$',
+        cargo_toml,
+        re.MULTILINE,
+    )
+
+    assert tauri_config["version"] == "../package.json"
+    assert cargo_version is not None
+    assert {
+        version,
+        package["version"],
+        cargo_version.group(1),
+    } == {VERSION}
 
 
 def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
@@ -159,6 +210,11 @@ def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
 
 def test_release_markdown_relative_links_stay_inside_bundle(release_builder):
     archive_files = set(release_builder._archive_files(TAG))
+    tracked_gui = _run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "gui"],
+        REPO_ROOT,
+    ).stdout.splitlines()
+    archive_files.update(tracked_gui)
     markdown_link_pattern = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
     html_link_pattern = re.compile(
         r"<(?:a|img)\b[^>]*\b(?:href|src)=[\"']([^\"']+)[\"']",
@@ -196,7 +252,7 @@ def test_release_build_is_reproducible_and_contains_required_files(
     release_builder.build_release(TAG, repo, first_output)
     release_builder.build_release(TAG, repo, second_output)
 
-    archive_files = release_builder._archive_files(TAG)
+    archive_files = tuple(sorted(source_bytes))
     assert REQUIRED_ARCHIVE_FILES <= set(archive_files)
     assert _asset_hashes(first_output) == _asset_hashes(second_output)
     prefix = "codex-keysmith-{}/".format(TAG)
@@ -211,6 +267,8 @@ def test_release_build_is_reproducible_and_contains_required_files(
         for relative_path in archive_files:
             assert prefix + relative_path in zip_members
             assert archive.read(prefix + relative_path) == source_bytes[relative_path]
+        executable = archive.getinfo(prefix + "gui/scripts/build-sidecar.mjs")
+        assert executable.external_attr >> 16 & 0o777 == 0o755
         assert archive.read(prefix + "LICENSE") == (REPO_ROOT / "LICENSE").read_bytes()
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
 
@@ -224,6 +282,7 @@ def test_release_build_is_reproducible_and_contains_required_files(
             assert extracted.read() == source_bytes[relative_path]
             assert member.mtime == 0
             assert member.uid == member.gid == 0
+        assert tar_members[prefix + "gui/scripts/build-sidecar.mjs"].mode == 0o755
 
 
 def test_standalone_script_and_checksums_match_assets(release_builder, tmp_path):
@@ -312,21 +371,135 @@ def test_builder_rejects_dirty_repository(release_builder, tmp_path):
 
 
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+@pytest.mark.parametrize("relative_path", ["README.md", "gui/README.md"])
 def test_candidate_build_rejects_index_flag_hidden_source_drift(
     release_builder,
     tmp_path,
     index_flag,
+    relative_path,
 ):
     repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
     candidate = _head_commit(repo)
-    readme = repo / "README.md"
-    readme.write_bytes(readme.read_bytes() + b"hidden working-tree drift\n")
-    _run(["git", "update-index", index_flag, "README.md"], repo)
+    source = repo / relative_path
+    source.write_bytes(source.read_bytes() + b"hidden working-tree drift\n")
+    _run(["git", "update-index", index_flag, relative_path], repo)
     assert _run(["git", "status", "--porcelain"], repo).stdout == ""
 
     with pytest.raises(
         release_builder.ReleaseError,
-        match="differs from validated source commit: README.md",
+        match="differs from validated source commit: {}".format(re.escape(relative_path)),
+    ):
+        release_builder.build_release(
+            TAG,
+            repo,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
+
+
+def test_candidate_build_rejects_tracked_gui_symlink(release_builder, tmp_path):
+    repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
+    gui_readme = repo / "gui" / "README.md"
+    gui_readme.unlink()
+    try:
+        gui_readme.symlink_to("../README.md")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip("symlink creation is unavailable: {}".format(exc))
+    _run(["git", "add", "gui/README.md"], repo)
+    _run(["git", "commit", "-qm", "track GUI symlink"], repo)
+    candidate = _head_commit(repo)
+
+    with pytest.raises(
+        release_builder.ReleaseError,
+        match="tracked GUI entry is not a regular file: gui/README.md",
+    ):
+        release_builder.build_release(
+            TAG,
+            repo,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
+
+
+def test_candidate_build_rejects_tracked_gui_gitlink(release_builder, tmp_path):
+    repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
+    parent = _head_commit(repo)
+    _run(
+        [
+            "git",
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,{},gui/vendor-fixture".format(parent),
+        ],
+        repo,
+    )
+    _run(["git", "commit", "-qm", "track GUI gitlink"], repo)
+    candidate = _head_commit(repo)
+
+    with pytest.raises(
+        release_builder.ReleaseError,
+        match="tracked GUI entry is not a regular file: gui/vendor-fixture",
+    ):
+        release_builder.build_release(
+            TAG,
+            repo,
+            tmp_path / "assets",
+            source_commit=candidate,
+        )
+
+
+def test_candidate_build_excludes_untracked_gui_when_clean_check_is_disabled(
+    release_builder,
+    tmp_path,
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
+    candidate = _head_commit(repo)
+    (repo / "gui/untracked.txt").write_text("must not ship\n", encoding="utf-8")
+    output = tmp_path / "assets"
+
+    release_builder.build_release(
+        TAG,
+        repo,
+        output,
+        require_clean=False,
+        source_commit=candidate,
+    )
+
+    prefix = "codex-keysmith-{}/".format(TAG)
+    with zipfile.ZipFile(str(output / "codex-keysmith-{}.zip".format(TAG))) as archive:
+        assert prefix + "gui/untracked.txt" not in archive.namelist()
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        r"gui/bad\\name.txt",
+        "gui/AUX.txt",
+        "gui/trailing-dot.",
+        "gui/bad:name.txt",
+    ],
+)
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows cannot materialize the unsafe fixture filenames",
+)
+def test_candidate_build_rejects_cross_platform_unsafe_gui_paths(
+    release_builder,
+    tmp_path,
+    unsafe_path,
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder, create_tag=False)
+    path = repo / unsafe_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("unsafe archive path\n", encoding="utf-8")
+    _run(["git", "add", "--", unsafe_path], repo)
+    _run(["git", "commit", "-qm", "track unsafe GUI path"], repo)
+    candidate = _head_commit(repo)
+
+    with pytest.raises(
+        release_builder.ReleaseError,
+        match="cross-platform unsafe GUI path",
     ):
         release_builder.build_release(
             TAG,
