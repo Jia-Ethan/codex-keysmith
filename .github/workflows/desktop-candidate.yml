@@ -26,7 +26,7 @@ on:
       - "requirements-quality.txt"
       - "CODE_SIGNING_POLICY.md"
       - "PRIVACY.md"
-      - "docs/releases/desktop-v0.2.0-beta.1.md"
+      - "docs/releases/desktop-v0.2.0-beta.*.md"
       - "scripts/package_desktop_prerelease.py"
       - "scripts/validate_desktop_candidate.py"
       - "tests/**"
@@ -685,8 +685,26 @@ jobs:
               assert candidate["assets"] == []
           PY
           normalize_request="${RUNNER_TEMP}/desktop-prerelease-normalize.json"
-          printf '%s\n' '{"name":"codex-keysmith 0.2.0 Windows x64 unsigned Beta"}' \
-            > "$normalize_request"
+          python - "$normalize_request" "$notes_blob" "$tag" "$expected_commit" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          request_path, notes_path, tag, commit = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": "codex-keysmith 0.2.0 Windows x64 unsigned Beta",
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": True,
+              "prerelease": True,
+              "make_latest": "false",
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
           normalized_state="${RUNNER_TEMP}/desktop-prerelease-normalized.json"
           gh api -X PATCH "$release_api" --input "$normalize_request" > "$normalized_state"
           python - "$normalized_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
@@ -765,8 +783,26 @@ jobs:
           verify_remote_tag
 
           publish_request="${RUNNER_TEMP}/desktop-prerelease-publish.json"
-          printf '%s\n' '{"draft":false,"prerelease":true,"make_latest":"false"}' \
-            > "$publish_request"
+          python - "$publish_request" "$notes_blob" "$tag" "$expected_commit" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          request_path, notes_path, tag, commit = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": "codex-keysmith 0.2.0 Windows x64 unsigned Beta",
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": False,
+              "prerelease": True,
+              "make_latest": "false",
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
           publish_error="${RUNNER_TEMP}/desktop-prerelease-publish-error.txt"
           set +e
           published="$(
