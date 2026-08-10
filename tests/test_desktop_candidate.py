@@ -55,6 +55,7 @@ jobs:
       - run: echo gui/requirements-build.txt --bundles dmg --bundles nsis --signing-mode unsigned
       - run: echo gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}
       - run: echo Contents/MacOS/codex-keysmith-cli "codex-keysmith-cli.exe"
+      - run: echo 'Expected exactly one macOS app bundle.'
       - run: echo 'Expected exactly one macOS GUI executable.'
       - run: echo desktop-candidate-install 'Start-Process -FilePath $bundles[0].FullName'
       - run: echo '--status --lang en' '--dry-run --lang en'

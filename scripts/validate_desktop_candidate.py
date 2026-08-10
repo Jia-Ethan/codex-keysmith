@@ -245,6 +245,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "gui/requirements-build.txt",
         f"gui/src-tauri/binaries/{sidecar_basename}-${{TARGET_TRIPLE}}${{SIDECAR_SUFFIX}}",
         f"Contents/MacOS/{sidecar_basename}",
+        "Expected exactly one macOS app bundle.",
         "Expected exactly one macOS GUI executable.",
         f'"{sidecar_basename}.exe"',
         "desktop-candidate-install",
