@@ -18,8 +18,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 ARCHIVE_FILES = (
     "CHANGELOG.md",
+    "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "PRIVACY.md",
     "README.en.md",
     "README.md",
     "SECURITY.md",
@@ -146,6 +148,168 @@ def _read_and_validate_sources(repo_root: Path, tag: str) -> Tuple[str, Dict[str
     release_notes = "docs/releases/{}.md".format(tag)
     sources[release_notes] = _regular_file_bytes(repo_root / release_notes)
     return version, sources
+
+
+def _tracked_gui_sources(
+    repo_root: Path,
+    source_commit: str,
+) -> Tuple[Dict[str, bytes], Dict[str, int]]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                source_commit,
+                "--",
+                "gui",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise ReleaseError("cannot enumerate tracked GUI sources: {}".format(exc)) from exc
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ReleaseError(
+            "cannot enumerate tracked GUI sources: {}".format(
+                detail or "git ls-tree failed"
+            )
+        )
+
+    sources = {}
+    modes = {}
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split(b" ")
+        if not separator or len(fields) != 3:
+            raise ReleaseError("validated source commit returned malformed GUI tree data")
+        raw_mode, raw_type, raw_object = fields
+        try:
+            relative_path = raw_path.decode("utf-8")
+            mode = int(raw_mode, 8)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ReleaseError(
+                "validated source commit contains an unsupported GUI path or mode"
+            ) from exc
+        _validate_gui_archive_path(relative_path)
+        if raw_type != b"blob" or raw_mode not in {b"100644", b"100755"}:
+            raise ReleaseError(
+                "tracked GUI entry is not a regular file: {} (mode {}, type {})".format(
+                    relative_path,
+                    raw_mode.decode("ascii", errors="replace"),
+                    raw_type.decode("ascii", errors="replace"),
+                )
+            )
+        if relative_path in sources:
+            raise ReleaseError(
+                "validated source commit contains a duplicate GUI path: {}".format(
+                    relative_path
+                )
+            )
+        try:
+            blob = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "cat-file",
+                    "blob",
+                    raw_object.decode("ascii"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ReleaseError(
+                "cannot read tracked GUI file {}: {}".format(relative_path, exc)
+            ) from exc
+        if blob.returncode != 0:
+            detail = blob.stderr.decode("utf-8", errors="replace").strip()
+            raise ReleaseError(
+                "cannot read tracked GUI file {}: {}".format(
+                    relative_path,
+                    detail or "git cat-file failed",
+                )
+            )
+        sources[relative_path] = blob.stdout
+        modes[relative_path] = mode
+
+    if not sources:
+        raise ReleaseError("validated source commit contains no tracked GUI files")
+    return sources, modes
+
+
+def _validate_gui_archive_path(relative_path: str) -> None:
+    if relative_path == "gui" or not relative_path.startswith("gui/"):
+        raise ReleaseError(
+            "validated source commit contains an invalid GUI tree path: {}".format(
+                relative_path
+            )
+        )
+    if "\\" in relative_path or any(ord(character) < 32 or ord(character) == 127 for character in relative_path):
+        raise ReleaseError(
+            "validated source commit contains a cross-platform unsafe GUI path: {}".format(
+                relative_path
+            )
+        )
+
+    reserved = {"CON", "PRN", "AUX", "NUL"}
+    reserved.update("COM{}".format(index) for index in range(1, 10))
+    reserved.update("LPT{}".format(index) for index in range(1, 10))
+    for component in relative_path.split("/"):
+        if (
+            component in {"", ".", ".."}
+            or component.endswith((" ", "."))
+            or any(character in component for character in '<>:"|?*')
+            or component.split(".", 1)[0].upper() in reserved
+        ):
+            raise ReleaseError(
+                "validated source commit contains a cross-platform unsafe GUI path: {}".format(
+                    relative_path
+                )
+            )
+
+
+def _read_release_sources(
+    repo_root: Path,
+    tag: str,
+    source_commit: str,
+) -> Tuple[str, Dict[str, bytes], Dict[str, int]]:
+    version, sources = _read_and_validate_sources(repo_root, tag)
+    gui_sources, gui_modes = _tracked_gui_sources(repo_root, source_commit)
+    collisions = set(sources).intersection(gui_sources)
+    if collisions:
+        raise ReleaseError(
+            "GUI sources collide with fixed release paths: {}".format(
+                ", ".join(sorted(collisions))
+            )
+        )
+    sources.update(gui_sources)
+    modes = {relative_path: _archive_mode(relative_path) for relative_path in sources}
+    modes.update(gui_modes)
+    return version, sources, modes
+
+
+def _validate_gui_worktree_matches_commit(
+    repo_root: Path,
+    sources: Dict[str, bytes],
+) -> None:
+    for relative_path, expected in sources.items():
+        if not relative_path.startswith("gui/"):
+            continue
+        if _regular_file_bytes(repo_root / relative_path) != expected:
+            raise ReleaseError(
+                "working-tree GUI file differs from validated source commit: {}".format(
+                    relative_path
+                )
+            )
 
 
 def _validate_sources_match_commit(
@@ -565,17 +729,27 @@ def _archive_name(tag: str, relative_path: str) -> str:
     return "codex-keysmith-{}/{}".format(tag, relative_path)
 
 
-def _write_zip(path: Path, tag: str, sources: Dict[str, bytes]) -> None:
+def _write_zip(
+    path: Path,
+    tag: str,
+    sources: Dict[str, bytes],
+    modes: Dict[str, int],
+) -> None:
     with zipfile.ZipFile(str(path), "w", compression=zipfile.ZIP_STORED) as archive:
         for relative_path in sorted(sources):
             info = zipfile.ZipInfo(_archive_name(tag, relative_path), ZIP_TIMESTAMP)
             info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
-            info.external_attr = (_archive_mode(relative_path) & 0xFFFF) << 16
+            info.external_attr = (modes[relative_path] & 0xFFFF) << 16
             archive.writestr(info, sources[relative_path])
 
 
-def _write_tar_gz(path: Path, tag: str, sources: Dict[str, bytes]) -> None:
+def _write_tar_gz(
+    path: Path,
+    tag: str,
+    sources: Dict[str, bytes],
+    modes: Dict[str, int],
+) -> None:
     with path.open("wb") as raw_output:
         with gzip.GzipFile(
             filename="",
@@ -594,7 +768,7 @@ def _write_tar_gz(path: Path, tag: str, sources: Dict[str, bytes]) -> None:
                     info = tarfile.TarInfo(_archive_name(tag, relative_path))
                     info.size = len(data)
                     info.mtime = TAR_TIMESTAMP
-                    info.mode = _archive_mode(relative_path)
+                    info.mode = modes[relative_path]
                     info.uid = 0
                     info.gid = 0
                     info.uname = ""
@@ -738,10 +912,18 @@ def build_release(
     """Validate the source tree and write a deterministic release asset set."""
     repo_root = repo_root.resolve()
     output_dir = Path(os.path.abspath(str(output_dir)))
-    version, sources = _read_and_validate_sources(repo_root, tag)
+    # Preserve the public validation order: reject malformed tags and version
+    # drift before consulting Git refs for the selected source commit.
+    _read_and_validate_sources(repo_root, tag)
     _require_complete_git_checkout(repo_root)
     validated_source = _resolve_source_commit(repo_root, tag, source_commit)
+    version, sources, source_modes = _read_release_sources(
+        repo_root,
+        tag,
+        validated_source,
+    )
     _validate_sources_match_commit(repo_root, validated_source, sources)
+    _validate_gui_worktree_matches_commit(repo_root, sources)
     _validate_output_location(repo_root, output_dir)
     if require_clean:
         _require_clean_repository(repo_root, output_dir)
@@ -759,8 +941,8 @@ def build_release(
         zip_path = staging_dir / asset_names[0]
         tar_path = staging_dir / asset_names[1]
         script_path = staging_dir / asset_names[2]
-        _write_zip(zip_path, tag, sources)
-        _write_tar_gz(tar_path, tag, sources)
+        _write_zip(zip_path, tag, sources, source_modes)
+        _write_tar_gz(tar_path, tag, sources, source_modes)
         script_path.write_bytes(
             _standalone_script_bytes(
                 sources["codex-instruct.py"],
@@ -778,13 +960,22 @@ def build_release(
         for path in (zip_path, tar_path, checksum_path):
             path.chmod(0o644)
 
-        final_version, final_sources = _read_and_validate_sources(repo_root, tag)
-        if final_version != version or final_sources != sources:
-            raise ReleaseError("release source files changed during the build")
         final_source = _resolve_source_commit(repo_root, tag, source_commit)
         if final_source != validated_source:
             raise ReleaseError("release source commit changed during the build")
+        final_version, final_sources, final_modes = _read_release_sources(
+            repo_root,
+            tag,
+            final_source,
+        )
+        if (
+            final_version != version
+            or final_sources != sources
+            or final_modes != source_modes
+        ):
+            raise ReleaseError("release source files changed during the build")
         _validate_sources_match_commit(repo_root, final_source, final_sources)
+        _validate_gui_worktree_matches_commit(repo_root, final_sources)
         if require_clean:
             _require_clean_repository(repo_root, output_dir)
 
@@ -793,12 +984,6 @@ def build_release(
             final_paths,
         )
         try:
-            published_version, published_sources = _read_and_validate_sources(
-                repo_root,
-                tag,
-            )
-            if published_version != version or published_sources != sources:
-                raise ReleaseError("release source files changed during publication")
             published_source = _resolve_source_commit(
                 repo_root,
                 tag,
@@ -806,11 +991,23 @@ def build_release(
             )
             if published_source != validated_source:
                 raise ReleaseError("release source commit changed during publication")
+            published_version, published_sources, published_modes = _read_release_sources(
+                repo_root,
+                tag,
+                published_source,
+            )
+            if (
+                published_version != version
+                or published_sources != sources
+                or published_modes != source_modes
+            ):
+                raise ReleaseError("release source files changed during publication")
             _validate_sources_match_commit(
                 repo_root,
                 published_source,
                 published_sources,
             )
+            _validate_gui_worktree_matches_commit(repo_root, published_sources)
             if require_clean:
                 _require_clean_repository(repo_root, output_dir)
         except (OSError, ReleaseError) as exc:

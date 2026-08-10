@@ -1,0 +1,8 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/binaries/codex-keysmith-cli-*
+src-tauri/gen/schemas
+.DS_Store
+*.log
+src-tauri/icons/old-backup/

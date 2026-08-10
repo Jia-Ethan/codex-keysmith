@@ -162,7 +162,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -4734,13 +4734,16 @@ def _rollback_claim(
 
 
 def _format_restore_command(codex_dir: Path) -> str:
-    parts = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--codex-dir",
-        str(codex_dir),
-        "--restore-hooks",
-    ]
+    parts = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        parts.append(str(Path(__file__).resolve()))
+    parts.extend(
+        [
+            "--codex-dir",
+            str(codex_dir),
+            "--restore-hooks",
+        ]
+    )
     if os.name == "nt":
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
