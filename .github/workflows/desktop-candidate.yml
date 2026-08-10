@@ -193,7 +193,12 @@ jobs:
         run: |
           set -euo pipefail
           base="gui/src-tauri/target/$TARGET_TRIPLE/release/bundle"
-          app="$base/macos/codex-keysmith.app"
+          app_count="$(find "$base/macos" -maxdepth 1 -type d -name '*.app' -print | wc -l)"
+          if [ "$app_count" -ne 1 ]; then
+            echo "Expected exactly one macOS app bundle." >&2
+            exit 1
+          fi
+          app="$(find "$base/macos" -maxdepth 1 -type d -name '*.app' -print)"
           executable_count="$(
             find "$app/Contents/MacOS" -maxdepth 1 -type f \
               ! -name 'codex-keysmith-cli' -print | wc -l
