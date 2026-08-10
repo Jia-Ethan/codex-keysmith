@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.1` 提供 Windows x64 unsigned Pre-release，正式签名、公证与实体设备验收仍待完成
+> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.3` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **M1–M3 完整实现 + Windows x64 unsigned Beta** | GitHub 原生 CI 构建并公开 Pre-release；未签名、无实体设备验收，不等于正式 Windows 支持 |
+| 本轮交付 | **M1–M3 完整实现 + macOS/Windows unsigned Desktop Beta** | GitHub 原生 CI 构建并统一公开 Pre-release；未签名、无实体设备验收，不等于正式平台支持 |
 
 ## 3. 总体架构
 

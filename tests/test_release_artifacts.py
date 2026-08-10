@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import package_desktop_prerelease as desktop_prerelease
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
 TAG = "v0.2.0"
@@ -309,6 +311,18 @@ def test_standalone_script_and_checksums_match_assets(release_builder, tmp_path)
     assert set(checksums.values()) == expected_assets
     for digest, name in checksums.items():
         assert digest == _file_sha256(output_dir / name)
+
+
+def test_release_builder_output_is_accepted_by_desktop_prerelease_packager(
+    release_builder,
+    tmp_path,
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    output_dir = tmp_path / "assets"
+
+    release_builder.build_release(TAG, repo, output_dir)
+
+    desktop_prerelease._validate_source_assets(output_dir)
 
 
 def test_default_in_repository_output_can_be_rebuilt(release_builder, tmp_path):
