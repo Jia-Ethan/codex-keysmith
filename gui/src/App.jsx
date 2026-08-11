@@ -1,7 +1,6 @@
 import React from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Toaster, toast } from "sonner";
-import { useTranslation } from "react-i18next";
 import i18n from "./i18n";
 import { getSettings, onSettingsChange } from "@/lib/settings";
 import { useAppState } from "@/hooks/useAppState";
@@ -9,9 +8,9 @@ import {
   beginCliCheck,
   completeCliCheck,
   setView,
-  isOperationInProgressRef,
 } from "@/lib/store";
 import { resolveCli, isTauriMissing } from "@/lib/api";
+import { installWindowCloseLifecycle } from "@/lib/windowLifecycle";
 import { AmbientBg } from "@/components/AmbientBg";
 import { Sidebar } from "@/components/Sidebar";
 import { Dashboard } from "@/views/Dashboard";
@@ -45,7 +44,6 @@ function useTheme() {
 }
 
 export default function App() {
-  const { t } = useTranslation();
   const { view } = useAppState();
   useTheme();
 
@@ -72,21 +70,23 @@ export default function App() {
     })();
   }, []);
 
-  // 部署/卸载期间禁止关闭窗口（仅 Tauri 环境）
+  // 所有关闭先建立退出屏障；活动后端调用结束后再销毁窗口。
   React.useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
-    let unlisten;
-    getCurrentWindow()
-      .onCloseRequested(async (event) => {
-        if (isOperationInProgressRef()) {
-          event.preventDefault();
-          toast.warning(t("manage.running"));
-        }
-      })
-      .then((fn) => (unlisten = fn))
-      .catch(() => {});
-    return () => unlisten?.();
-  }, [t]);
+    const appWindow = getCurrentWindow();
+    const lifecycle = installWindowCloseLifecycle({
+      appWindow,
+      onExitQueued: () => toast.warning(i18n.t("manage.exitQueued")),
+      onError: ({ phase, error }) => {
+        console.error(`Window close lifecycle ${phase} failed`, error);
+        toast.error(i18n.t(
+          phase === "registration" ? "manage.exitGuardFailed" : "manage.exitFailed",
+        ));
+      },
+    });
+
+    return lifecycle.dispose;
+  }, []);
 
   const views = {
     dashboard: <Dashboard />,

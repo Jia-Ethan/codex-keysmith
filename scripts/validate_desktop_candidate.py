@@ -164,6 +164,43 @@ def _tauri_version(path: Path, value: object) -> str:
     return _semver(package.get("version"), str(version_source))
 
 
+def _workflow_step(text: str, name: str) -> str:
+    lines = text.splitlines()
+    marker = f"      - name: {name}"
+    try:
+        start = lines.index(marker)
+    except ValueError as exc:
+        raise CandidateError(f"workflow is missing step {name!r}") from exc
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("      - ") or re.match(r"^  \S[^:]*:\s*$", lines[index]):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def _workflow_step_run(step: str, name: str) -> str:
+    lines = step.splitlines()
+    try:
+        start = next(
+            index for index, line in enumerate(lines)
+            if line in {"        run: |", "        run: |-"}
+        )
+    except StopIteration as exc:
+        raise CandidateError(f"workflow step {name!r} must use a multiline run block") from exc
+    script: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("          "):
+            script.append(line[10:])
+        elif not line.strip():
+            script.append("")
+        else:
+            break
+    if not script:
+        raise CandidateError(f"workflow step {name!r} has an empty run block")
+    return "\n".join(script)
+
+
 def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
     text = _read_text(path)
     for key, value in PINNED_TOOLS.items():
@@ -250,6 +287,55 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
             raise CandidateError(
                 f"{path} must preserve {marker} in create, normalize, and publish requests"
             )
+    windows_step_name = "Validate and stage Windows candidate"
+    try:
+        windows_step = _workflow_step(candidate_section, windows_step_name)
+        windows_run = _workflow_step_run(windows_step, windows_step_name)
+    except CandidateError as exc:
+        raise CandidateError(f"{path} {exc}") from exc
+    if "if: matrix.platform == 'windows'" not in windows_step or "shell: pwsh" not in windows_step:
+        raise CandidateError(f"{path} Windows candidate smoke step must be Windows-only PowerShell")
+    windows_run_patterns = {
+        "isolated USERPROFILE": r'^\s*\[Environment\]::SetEnvironmentVariable\("USERPROFILE", \$profileRoot, "Process"\)$',
+        "isolated HOME": r'^\s*\[Environment\]::SetEnvironmentVariable\("HOME", \$profileRoot, "Process"\)$',
+        "isolated LOCALAPPDATA": r'^\s*\[Environment\]::SetEnvironmentVariable\("LOCALAPPDATA", \$localAppData, "Process"\)$',
+        "cleared CODEX_HOME": r'^\s*\[Environment\]::SetEnvironmentVariable\("CODEX_HOME", \$null, "Process"\)$',
+        "automatic status execution": r'^\s*\$automaticStatusOutput = & \$installedSidecars\[0\]\.FullName --status --lang en 2>&1$',
+        "runtime-directory exclusion": r'^\s*if \(\$automaticStatusText -match \[Regex\]::Escape\(\$runtimeDir\)\) \{$',
+        "slow sidecar build": r'^\s*& rustc \$slowSidecarSource -O -o \$slowSidecarBinary$',
+        "slow sidecar launch": r'^\s*\$slowAppProcess = Start-Process -FilePath \$installedApps\[0\]\.FullName -PassThru$',
+        "active-sidecar native close": r'^\s*if \(-not \$slowAppProcess\.CloseMainWindow\(\)\) \{$',
+        "active-sidecar exit deadline": r'^\s*if \(-not \$slowAppProcess\.WaitForExit\(20000\)\) \{$',
+        "active-sidecar completion assertion": r'^\s*throw "GUI closed before the active sidecar process tree completed\."$',
+        "real sidecar restoration": r'^\s*Copy-Item -LiteralPath \$realSidecarBackup -Destination \$installedSidecars\[0\]\.FullName -Force$',
+        "primary GUI launch": r'^\s*\$appProcess = Start-Process -FilePath \$installedApps\[0\]\.FullName -PassThru$',
+        "primary GUI minimization": r'^\s*\[KeysmithWindowProbe\]::ShowWindow\(\$primaryWindowHandle, 6\) \| Out-Null$',
+        "minimized handoff precondition": r'^\s*if \(-not \[KeysmithWindowProbe\]::IsIconic\(\$primaryWindowHandle\)\) \{$',
+        "second GUI launch": r'^\s*\$secondProcess = Start-Process -FilePath \$installedApps\[0\]\.FullName -PassThru$',
+        "second-instance handoff": r'^\s*if \(-not \$secondProcess\.WaitForExit\(15000\)\) \{$',
+        "primary GUI visibility probe": r'^\s*\$primaryVisible = \[KeysmithWindowProbe\]::IsWindowVisible\(\$primaryWindowHandle\)$',
+        "primary GUI focus probe": r'^\s*\$primaryFocused = \[KeysmithWindowProbe\]::GetForegroundWindow\(\) -eq \$primaryWindowHandle$',
+        "primary-instance preservation": r'^\s*if \(\$appProcess\.HasExited -or \$appProcess\.MainWindowHandle -eq 0\) \{$',
+        "primary GUI restore assertion": r'^\s*throw "Second GUI launch did not restore the minimized primary window\."$',
+        "primary GUI visibility assertion": r'^\s*throw "Second GUI launch did not make the primary window visible\."$',
+        "primary GUI focus diagnostic": r'^\s*Write-Warning "Second GUI launch restored the primary window but Windows did not make it foreground\."$',
+        "native close": r'^\s*if \(-not \$appProcess\.CloseMainWindow\(\)\) \{$',
+        "GUI exit deadline": r'^\s*if \(-not \$appProcess\.WaitForExit\(15000\)\) \{$',
+        "payload process deadline": r'^\s*\$payloadProcessDeadline = \[DateTime\]::UtcNow\.AddSeconds\(15\)$',
+        "payload process polling": r'^\s*Get-Process -Name "codex-keysmith\*" -ErrorAction SilentlyContinue \|$',
+        "environment restoration": r'\$environmentBackup\[\$name\]',
+        "Codex directory snapshot": r'Compare-Object -ReferenceObject \$beforeCodex -DifferenceObject \$afterCodex',
+        "runtime directory snapshot": r'Compare-Object -ReferenceObject \$beforeRuntime -DifferenceObject \$afterRuntime',
+    }
+    windows_missing = [
+        label
+        for label, pattern in windows_run_patterns.items()
+        if not re.search(pattern, windows_run, re.M)
+    ]
+    if windows_missing:
+        raise CandidateError(
+            f"{path} Windows candidate smoke step is missing executable checks: {windows_missing}"
+        )
     required_markers = (
         "workflow_dispatch:",
         "release_tag:",
@@ -272,9 +358,22 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         f'"{sidecar_basename}.exe"',
         "desktop-candidate-install",
         "Start-Process -FilePath $bundles[0].FullName",
+        '[Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")',
+        '[Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")',
+        "$automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1",
+        "Automatic discovery reported the Windows runtime directory",
+        "GUI closed before the active sidecar process tree completed.",
+        "Primary GUI could not be minimized before the second-instance handoff.",
+        "Second GUI launch did not restore the minimized primary window.",
+        "Second GUI launch did not make the primary window visible.",
+        "Second GUI launch restored the primary window but Windows did not make it foreground.",
+        "$appProcess.CloseMainWindow()",
+        "Installed GUI remained resident after its main window was closed.",
+        "Installed GUI or sidecar processes remained after close",
         "--status --lang en",
         "--dry-run --lang en",
-        "Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke",
+        "Compare-Object -ReferenceObject $beforeCodex -DifferenceObject $afterCodex",
+        "Compare-Object -ReferenceObject $beforeRuntime -DifferenceObject $afterRuntime",
         "Installed NSIS candidate must contain exactly one uninstaller.",
         "actions/upload-artifact@",
         "--signing-mode unsigned",
@@ -359,6 +458,28 @@ def _sidecar_contract(root: Path, package: dict[str, Any]) -> str:
     return basename
 
 
+def _validate_window_capabilities(root: Path) -> None:
+    path = root / "gui/src-tauri/capabilities/default.json"
+    capability = _read_json(path)
+    windows = capability.get("windows")
+    if not isinstance(windows, list) or "main" not in windows:
+        raise CandidateError(f"{path} must apply to the main window")
+    permissions = capability.get("permissions")
+    required = {
+        "core:window:allow-close",
+        "core:window:allow-destroy",
+    }
+    if not isinstance(permissions, list) or not all(
+        isinstance(permission, str) for permission in permissions
+    ):
+        raise CandidateError(f"{path} must declare window lifecycle permissions")
+    missing = sorted(required.difference(permissions))
+    if missing:
+        raise CandidateError(
+            f"{path} is missing required window lifecycle permissions: {missing}"
+        )
+
+
 def validate_config(root: Path) -> dict[str, str]:
     root = root.resolve()
     version = _semver(_read_text(root / "VERSION").strip(), str(root / "VERSION"))
@@ -400,6 +521,7 @@ def validate_config(root: Path) -> dict[str, str]:
         raise CandidateError("Tauri bundle must configure both macOS and Windows icons")
     _validate_icon(root / "gui/src-tauri/icons/icon.icns")
     _validate_icon(root / "gui/src-tauri/icons/icon.ico")
+    _validate_window_capabilities(root)
     sidecar_basename = _sidecar_contract(root, package)
     _validate_workflow_policy(
         root / ".github/workflows/desktop-candidate.yml",
