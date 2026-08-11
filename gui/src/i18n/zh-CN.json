@@ -94,6 +94,7 @@
     "previewFailed": "预览失败，流程已阻断",
     "previewTimeout": "预览超时，流程已阻断",
     "previewEmpty": "CLI 没有产出预览内容，流程已阻断",
+    "previewUnrecognized": "无法识别 CLI 预览格式，流程已阻断",
     "confirmDeploy": "确认部署",
     "confirmHint": "将修改目标目录下的 config.toml 与提示词文件，CLI 会自动备份。",
     "deploying": "正在部署…",

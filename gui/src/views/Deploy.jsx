@@ -379,6 +379,7 @@ function Step2({ t, preview, loading, onBack, onNext }) {
     empty: t("deploy.previewEmpty"),
     exit: t("deploy.previewFailed"),
     blockers: t("deploy.blockers"),
+    unrecognized: t("deploy.previewUnrecognized"),
   }[gate.reason];
 
   return (
