@@ -45,6 +45,8 @@ env:
 jobs:
   candidate:
     runs-on: macos-15
+    env:
+      CODEX_KEYSMITH_SOURCE_COMMIT: ${{ github.sha }}
     steps:
       - run: echo aarch64-apple-darwin x86_64-pc-windows-msvc windows-2025
       - run: npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"
@@ -214,6 +216,15 @@ def _pe_binary(machine: int = 0x8664) -> bytes:
     return bytes(data)
 
 
+def _write_frontend_build(root: Path, source_commit: str) -> None:
+    bundle = root / "gui/dist/assets/index.js"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text(
+        f'const sourceCommit = "{source_commit}";\n',
+        encoding="utf-8",
+    )
+
+
 def _pe_binary_with_icon_resources() -> bytes:
     data = bytearray(1024)
     data[:2] = b"MZ"
@@ -252,6 +263,13 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
         (
             lambda text: text.replace("inputs.publish_desktop_prerelease == true", "true"),
             "publisher markers",
+        ),
+        (
+            lambda text: text.replace(
+                "    env:\n      CODEX_KEYSMITH_SOURCE_COMMIT: ${{ github.sha }}\n",
+                "",
+            ),
+            "workflow markers",
         ),
         (
             lambda text: text.replace("runs-on: macos-15", "runs-on: macos-15\n    env:\n      TOKEN: ${{ secrets.TOKEN }}"),
@@ -369,9 +387,27 @@ def test_detects_windows_icon_resource_types(tmp_path):
     assert validator._pe_resource_type_ids(app) == {3, 14}
 
 
+def test_frontend_build_identity_requires_exact_candidate_commit(tmp_path):
+    source_commit = "a" * 40
+    _write_frontend_build(tmp_path, source_commit)
+
+    validator.verify_frontend_build_identity(tmp_path, source_commit)
+
+    with pytest.raises(validator.CandidateError, match="candidate source commit"):
+        validator.verify_frontend_build_identity(tmp_path, "b" * 40)
+
+
+def test_frontend_build_identity_requires_javascript_output(tmp_path):
+    (tmp_path / "gui/dist").mkdir(parents=True)
+
+    with pytest.raises(validator.CandidateError, match="no JavaScript bundles"):
+        validator.verify_frontend_build_identity(tmp_path, "a" * 40)
+
+
 def test_stage_and_verify_manifest_detects_artifact_tampering(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
+    _write_frontend_build(root, "a" * 40)
     source = tmp_path / "source.exe"
     packaged = tmp_path / "packaged.exe"
     app = tmp_path / "app.exe"
@@ -422,6 +458,7 @@ def test_stage_and_verify_manifest_detects_artifact_tampering(tmp_path, monkeypa
 def test_signed_candidate_accepts_signature_modified_sidecar(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
+    _write_frontend_build(root, "a" * 40)
     source = tmp_path / "source.exe"
     packaged = tmp_path / "packaged.exe"
     app = tmp_path / "app.exe"

@@ -63,6 +63,8 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      CODEX_KEYSMITH_SOURCE_COMMIT: ${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:

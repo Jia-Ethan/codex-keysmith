@@ -18,6 +18,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { buildInfo } from "@/lib/buildInfo";
 
 export function SettingsView() {
   const { t } = useTranslation();
@@ -237,8 +238,14 @@ export function SettingsView() {
           <div className="text-sm font-medium">{t("settings.about")}</div>
           <p className="mt-1.5 text-xs text-muted-foreground">{t("settings.aboutDesc")}</p>
           <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-            <dt className="text-muted-foreground">Version</dt>
-            <dd className="font-mono text-secondary-foreground">0.2.0</dd>
+            <dt className="text-muted-foreground">{t("settings.desktopVersion")}</dt>
+            <dd className="font-mono text-secondary-foreground">{buildInfo.desktopVersion}</dd>
+            <dt className="text-muted-foreground">{t("settings.buildChannel")}</dt>
+            <dd className="font-mono text-secondary-foreground">{buildInfo.channel}</dd>
+            <dt className="text-muted-foreground">{t("settings.sourceCommit")}</dt>
+            <dd className="break-all font-mono text-secondary-foreground">
+              {buildInfo.sourceCommit || t("settings.sourceCommitUnavailable")}
+            </dd>
             <dt className="text-muted-foreground">CLI</dt>
             <dd className="break-all font-mono text-secondary-foreground">
               {cliInfo.path

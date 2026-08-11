@@ -13,7 +13,7 @@ import pytest
 from scripts import package_desktop_prerelease as prerelease
 
 COMMIT = "a" * 40
-TAG = "desktop-v0.2.0-beta.4"
+TAG = "desktop-v0.2.0-beta.5"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -555,7 +555,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.en.md",
-        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.4.md",
+        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.5.md",
         REPO_ROOT / "CODE_SIGNING_POLICY.md",
         REPO_ROOT / "PRIVACY.md",
     ]
@@ -589,14 +589,14 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
 
 
 def test_prerelease_release_notes_match_approved_compact_copy():
-    release_notes = (REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.4.md").read_text(
+    release_notes = (REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.5.md").read_text(
         encoding="utf-8"
     )
     expected = textwrap.dedent(
         """\
         # codex-keysmith v0.2.0 Desktop Beta
 
-        修复了桌面端启动后误报“未找到 CLI”的问题。
+        修复了 Windows 桌面端打开状态页时误报“状态获取失败”的问题。
 
         ## 下载
 
