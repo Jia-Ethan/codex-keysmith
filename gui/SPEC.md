@@ -253,6 +253,8 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 - **恢复中断事务**（`--recover`）：仅在 status 显示残留时可用，确认后 `--yes`
 - 每个操作后自动刷新 Dashboard
 
+Deploy 与 Manage 共用 Radix `AlertDialog`：Overlay 负责全屏模糊和背景交互隔离，Content 必须以固定定位在 1200×800 默认窗口及 900×600 最小窗口内居中可见。`card-glass` 等视觉表面类不得设置 `position`，避免覆盖弹窗的布局定位。
+
 ### 6.4 Settings
 
 - CLI 脚本路径（自动探测 + 手动指定）
