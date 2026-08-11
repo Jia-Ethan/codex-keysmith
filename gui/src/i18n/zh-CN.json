@@ -146,6 +146,10 @@
     "themeDark": "深色",
     "about": "关于",
     "aboutDesc": "codex-keysmith GUI 客户端 — codex-instruct.py 的可视化包装",
+    "desktopVersion": "桌面版本",
+    "buildChannel": "构建类型",
+    "sourceCommit": "源代码提交",
+    "sourceCommitUnavailable": "未注入",
     "saved": "已保存",
     "cliInvalid": "指定的 CLI 文件不存在或不可执行",
     "getCli": "没有 CLI？从 GitHub 获取："

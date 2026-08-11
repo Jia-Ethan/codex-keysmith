@@ -8,14 +8,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Desktop prerelease
 
-- Prepared `desktop-v0.2.0-beta.4` as the unified unsigned Desktop Beta with an Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, deterministic source archives, two platform candidate ZIPs, and one complete `SHA256SUMS`.
+- Prepared `desktop-v0.2.0-beta.5` as the unified unsigned Desktop Beta with an Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, deterministic source archives, two platform candidate ZIPs, and one complete `SHA256SUMS`.
 - Extended the main-only manual publisher to bind both platform manifests, the signed annotated beta tag, current remote `main`, expected commit, draft Release, and all eight public assets before publication. Pull requests remain read-only and the candidate workflow contains no signing secrets.
-- `desktop-v0.2.0-beta.3` remains the earlier unified desktop prerelease, and `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. The application source remains `0.2.0`, and the formal signed release keeps the `v0.2.0` tag.
+- `desktop-v0.2.0-beta.4` and `desktop-v0.2.0-beta.3` remain earlier unified desktop prereleases, and `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. The application source remains `0.2.0`, and the formal signed release keeps the `v0.2.0` tag.
 - Added code-signing and privacy policies. The application does not proactively collect or upload user data; SignPath Foundation review remains pending and the current beta is not SignPath-signed.
 - Desktop status is `Beta / unsigned / native-CI-validated`. CI builds both native candidates and installs, exercises, and uninstalls Windows in temporary directories, but no physical macOS or Windows device experience has been accepted.
 
 ### Fixed
 
+- Fixed automatic Windows status discovery so a cache-only `%LOCALAPPDATA%\OpenAI\Codex` directory is ignored while real config, managed files, abnormal managed nodes, transaction residue, and cleanup markers remain inspectable. Explicit `--codex-dir` behavior is unchanged.
+- Desktop candidate builds now display the source version, `candidate`/`development` channel, and full source commit in Settings. Candidate validation requires the exact manifest commit to be embedded in the production JavaScript bundle.
 - Fixed the desktop startup flow so it no longer reports that the CLI is missing before CLI resolution finishes.
 - GitHub draft Release updates now resend the complete tag, target commit, name, notes, draft state, prerelease state, and Latest Release policy. A partial PATCH had reset the draft tag to GitHub's internal `untagged-*` placeholder; the fail-closed assertion removed that draft before any asset upload or public publication.
 

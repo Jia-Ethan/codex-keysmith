@@ -146,6 +146,10 @@
     "themeDark": "Dark",
     "about": "About",
     "aboutDesc": "codex-keysmith GUI client — a visual wrapper for codex-instruct.py",
+    "desktopVersion": "Desktop version",
+    "buildChannel": "Build channel",
+    "sourceCommit": "Source commit",
+    "sourceCommitUnavailable": "not injected",
     "saved": "Saved",
     "cliInvalid": "The selected CLI file does not exist or cannot be executed",
     "getCli": "No CLI yet? Get it from GitHub:"

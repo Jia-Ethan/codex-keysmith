@@ -132,6 +132,175 @@ def test_windows_candidates_include_userprofile_and_localappdata(tmp_path, monke
     assert localappdata / "OpenAI" / "Codex" in candidates
 
 
+def test_status_discovery_ignores_candidate_without_status_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    candidate = tmp_path / "local-app-data" / "OpenAI" / "Codex"
+    candidate.mkdir(parents=True)
+    (candidate / "unrelated-cache.bin").write_bytes(b"cache")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [candidate],
+    )
+
+    assert codex_instruct.find_status_dirs() == []
+
+
+@pytest.mark.parametrize(
+    "evidence_name",
+    [
+        "config.toml",
+        codex_instruct.DEFAULT_MD_FILENAME,
+        codex_instruct.LEGACY_MD_FILENAME,
+        "hooks.json",
+        "hooks.json.disabled",
+        codex_instruct.MANIFEST_FILENAME,
+    ],
+)
+def test_status_discovery_includes_managed_evidence_without_config(
+    tmp_path,
+    monkeypatch,
+    evidence_name,
+):
+    candidate = tmp_path / evidence_name.replace(".", "-")
+    candidate.mkdir()
+    (candidate / evidence_name).write_text("evidence\n", encoding="utf-8")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [candidate],
+    )
+
+    assert codex_instruct.find_status_dirs() == [str(candidate.resolve())]
+
+
+@pytest.mark.parametrize("node_kind", ["directory", "symlink"])
+def test_status_discovery_keeps_abnormal_managed_nodes(
+    tmp_path,
+    monkeypatch,
+    node_kind,
+):
+    candidate = tmp_path / node_kind
+    candidate.mkdir()
+    evidence = candidate / "config.toml"
+    if node_kind == "directory":
+        evidence.mkdir()
+    else:
+        target = candidate / "config-target.toml"
+        target.write_text('model = "gpt-5.6"\n', encoding="utf-8")
+        try:
+            evidence.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [candidate],
+    )
+
+    assert codex_instruct.find_status_dirs() == [str(candidate.resolve())]
+
+
+def test_status_discovery_includes_transaction_and_cleanup_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    transaction = tmp_path / "transaction"
+    cleanup = tmp_path / "cleanup"
+    transaction.mkdir()
+    cleanup.mkdir()
+    (transaction / f"{codex_instruct.JOURNAL_PREFIX}abc").mkdir()
+    (
+        cleanup
+        / f"{codex_instruct.CLEANUP_MARKER_PREFIX}abc{codex_instruct.CLEANUP_MARKER_SUFFIX}"
+    ).write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [cleanup, transaction],
+    )
+
+    assert codex_instruct.find_status_dirs() == sorted(
+        [str(cleanup.resolve()), str(transaction.resolve())]
+    )
+
+
+def test_status_discovery_includes_claimed_cleanup_marker(tmp_path, monkeypatch):
+    candidate = tmp_path / "claimed-cleanup"
+    candidate.mkdir()
+    transaction_id = "a" * 32
+    claim_id = "b" * 32
+    marker_name = (
+        f"{codex_instruct.CLEANUP_MARKER_PREFIX}{transaction_id}"
+        f"{codex_instruct.CLEANUP_MARKER_SUFFIX}"
+        f"{codex_instruct.CLEANUP_CLAIM_SEPARATOR}{claim_id}"
+    )
+    (candidate / marker_name).write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [candidate],
+    )
+
+    assert codex_instruct.find_status_dirs() == [str(candidate.resolve())]
+
+
+def test_status_discovery_skips_candidate_when_evidence_probe_fails(
+    tmp_path,
+    monkeypatch,
+):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [candidate],
+    )
+
+    def fail(_path):
+        raise PermissionError("simulated evidence access race")
+
+    monkeypatch.setattr(codex_instruct, "_path_entry_exists", fail)
+
+    assert codex_instruct.find_status_dirs() == []
+
+
+def test_automatic_status_ignores_windows_cache_only_candidate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    user_codex = tmp_path / "user" / ".codex"
+    cache_codex = tmp_path / "local" / "OpenAI" / "Codex"
+    user_codex.mkdir(parents=True)
+    cache_codex.mkdir(parents=True)
+    (user_codex / "config.toml").write_text(
+        'model = "gpt-5.6"\n',
+        encoding="utf-8",
+    )
+    (cache_codex / "Cache_Data").mkdir()
+    monkeypatch.setattr(
+        codex_instruct,
+        "_codex_dir_candidates",
+        lambda: [user_codex, cache_codex],
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(MODULE_PATH), "--status", "--lang", "en"],
+    )
+
+    codex_instruct.main()
+
+    output = capsys.readouterr().out
+    assert "Found 1 Codex configuration location" in output
+    assert str(user_codex.resolve()) in output
+    assert str(cache_codex.resolve()) not in output
+    assert "[Done] Status found no blockers" in output
+
+
 def test_multi_directory_successful_deployment(tmp_path, monkeypatch):
     directories = [tmp_path / "first", tmp_path / "second"]
     for directory in directories:
