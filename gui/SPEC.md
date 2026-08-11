@@ -89,7 +89,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 - `--uninstall`/`--recover` 不能与 `--file`/`--name`/`--skip-hooks-isolation` 同用
 - `--skip-hooks-isolation` 必须显式 `--codex-dir`
 
-**退出码约定：** 操作失败时 `sys.exit(1)`（源码中大量路径）；argparse 校验错误也是非零退出。客户端把「非零退出码」一律视为操作失败，并展示 stderr。
+**退出码约定：** 写操作失败时 `sys.exit(1)`（源码中大量路径）；argparse 校验错误也是非零退出。`--status` 是例外：目录存在冲突或异常节点时会输出完整报告并以非零退出，客户端须校验报告语义完整性后降级展示；其他非零退出均按失败处理并展示完整 stdout/stderr。
 
 ## 5. 真实输出样例与解析规范
 
@@ -123,6 +123,13 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 ```js
 {
+  declaredDirectoryCount: 1,
+  terminator: { kind: "done|error", affectedCount: 0, line: "..." },
+  semanticComplete: true,
+  exitCode: 0,
+  stderr: "",
+  timedOut: false,
+  degraded: false,
   directories: [{
     path: "/Users/ethan/.codex",
     nodes: { config_toml: "regular|missing|other", md: "regular|missing|other",
@@ -276,7 +283,7 @@ async fn cli_version(cli_path: Option<String>) -> Result<String, String>;
 async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 ```
 
-另注册 `tauri-plugin-dialog`（文件/目录选择），capabilities 开通 `dialog:default` + `dialog:allow-open`。窗口 1200×800、最小 900×600。
+另注册 `tauri-plugin-dialog`（文件/目录选择）与官方 `tauri-plugin-single-instance`（重复启动时显示、取消最小化并聚焦现有主窗口），capabilities 开通 `dialog:default` + `dialog:allow-open`。窗口 1200×800、最小 900×600。
 
 **实现要点：**
 
@@ -293,10 +300,14 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 |---|---|
 | CLI 不存在 | Settings 引导重新定位；所有操作按钮禁用 |
 | 子进程超时 | kill 进程，提示用户检查是否有残留事务（可去 Manage 用 `--recover`） |
-| 非零退出码 | 展示 stderr 全文 + 建议动作（如「先运行 status 查看原因」） |
+| status 非零退出码 | 若声明目录数、目录核心字段、终止句与退出码一致，则保留目录卡片并显示退出码、stdout、stderr 诊断；否则失败关闭 |
+| 其他非零退出码 | 同时保留 stdout/stderr 全文 + 建议动作（如「先运行 status 查看原因」） |
 | codex-dir 不存在 | 用 `--codex-dir` 明确指定时由 CLI 报错；自动探测时提示未找到 |
 | manifest 读取失败 | Dashboard 详情面板显示「无法读取 manifest」，不阻塞其他功能 |
-| 操作进行中 | 按钮禁用 + 防重复提交；部署/卸载期间禁止关闭窗口（`onCloseRequested` 拦截） |
+| 后端调用运行中 | 每次 Keysmith `cli_run`/`cli_version`/status/manifest 等 invoke 获取独立生命周期租约；全局交互锁禁用 Sidebar 和写入口，关闭请求排队，最后一个租约释放后自动销毁主窗口并退出；销毁失败回退到普通关闭并保留重试状态 |
+| 写操作进行中 | Deploy/Manage 通过全局互斥入口防止并发写；调用 CLI 时可叠加生命周期租约，只有全部租约释放后才解除关闭队列 |
+| 空闲关闭 | 无托盘驻留；关闭事件先建立退出屏障并阻止新后端调用，再显式销毁主窗口，避免默认关闭与迟到 sidecar 启动之间的竞态 |
+| 重复启动 | 第二进程退出并通知首进程显示、取消最小化、聚焦主窗口 |
 
 ## 9. 里程碑
 
@@ -306,7 +317,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M2 部署向导** ✅ | 3 步向导 + dry-run 解析 + 确认执行 | 完整走通「选文件→预览→部署→Dashboard 刷新」 |
 | **M3 管理操作** ✅ | 卸载 / 恢复 hooks / 恢复中断 | 与 CLI 逐层回滚语义一致；残留场景可恢复 |
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
-| **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；正式发布前仍需 Authenticode 与真机生命周期验收 |
+| **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
 
 ## 10. 交接说明（给接手 Agent）
 
@@ -330,7 +341,8 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 **踩坑实录（开发期实测，已修）：**
 
 - `--restore-hooks` 与 `--yes` 互斥（argparse 校验），Manage 执行该操作时不追加 `--yes`
-- `--status` 在存在 conflict/异常节点时非零退出但 stdout 完整，`fetchStatus` 按「有目录列表即成功」处理
+- `--status` 在存在 conflict/异常节点时非零退出但 stdout 完整；`fetchStatus` 仅在声明目录数、目录核心字段、最终终止句和退出码一致时降级展示，并保留退出码、stderr 与完整输出
+- 主窗口没有托盘语义且只允许单实例；所有 Keysmith 后端调用使用独立生命周期租约，写操作再通过全局互斥入口防并发；任意关闭先建立退出屏障，运行中关闭会排队，最后一个租约释放后自动退出
 - `Hooks restore: available …` 是提示行不是状态，解析时映射为 `restorable`
 - kv 区可能出现 `[Error] config.toml …` 中文诊断行，需转成 warning 展示而非吞掉
 

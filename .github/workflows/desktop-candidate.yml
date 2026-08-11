@@ -259,6 +259,24 @@ jobs:
           TARGET_TRIPLE: ${{ matrix.target }}
         run: |
           $ErrorActionPreference = "Stop"
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class KeysmithWindowProbe {
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(IntPtr window, int command);
+
+              [DllImport("user32.dll")]
+              public static extern bool IsIconic(IntPtr window);
+
+              [DllImport("user32.dll")]
+              public static extern bool IsWindowVisible(IntPtr window);
+
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
+          }
+          '@
           $base = "gui/src-tauri/target/$env:TARGET_TRIPLE/release"
           $bundles = @(Get-ChildItem -LiteralPath "$base/bundle/nsis" -Filter "*.exe" -File)
           if ($bundles.Count -ne 1) { throw "Expected exactly one NSIS candidate." }
@@ -281,8 +299,14 @@ jobs:
             if ($installedApps.Count -ne 1 -or $installedSidecars.Count -ne 1) {
               throw "Installed NSIS payload does not contain exactly one app and sidecar executable."
             }
-            $codexDir = Join-Path $smokeRoot ".codex"
+            $profileRoot = Join-Path $smokeRoot "profile"
+            $codexDir = Join-Path $profileRoot ".codex"
+            $localAppData = Join-Path $profileRoot "AppData\Local"
+            $runtimeDir = Join-Path $localAppData "OpenAI\Codex"
             New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+            foreach ($name in @("bin", "runtimes", "sessions")) {
+              New-Item -ItemType Directory -Force -Path (Join-Path $runtimeDir $name) | Out-Null
+            }
             Set-Content -LiteralPath (Join-Path $codexDir "config.toml") `
               -Value 'model = "gpt-5.5"' -Encoding UTF8
             function Get-SmokeSnapshot([string]$Root) {
@@ -300,16 +324,299 @@ jobs:
                   Sort-Object
               )
             }
-            $beforeSmoke = Get-SmokeSnapshot $smokeRoot
+            $beforeCodex = Get-SmokeSnapshot $codexDir
+            $beforeRuntime = Get-SmokeSnapshot $runtimeDir
+            $rustupHome = (& rustup show home | Out-String).Trim()
+            if (-not $rustupHome -or -not (Test-Path -LiteralPath $rustupHome -PathType Container)) {
+              throw "Pinned Rust toolchain home is unavailable before the isolated Windows smoke."
+            }
+            $environmentBackup = @{}
+            foreach ($name in @("USERPROFILE", "HOME", "LOCALAPPDATA", "CODEX_HOME", "RUSTUP_HOME")) {
+              $environmentBackup[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+            }
+            try {
+              [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
+              [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
+              [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
+              [Environment]::SetEnvironmentVariable("CODEX_HOME", $null, "Process")
+              [Environment]::SetEnvironmentVariable("RUSTUP_HOME", $rustupHome, "Process")
+              $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                throw "Frozen sidecar automatic status smoke failed: $automaticStatusOutput"
+              }
+              $automaticStatusText = $automaticStatusOutput | Out-String
+              if ($automaticStatusText -notmatch "Found 1 Codex configuration location") {
+                throw "Automatic discovery did not report exactly one Codex configuration directory: $automaticStatusText"
+              }
+              if ($automaticStatusText -notmatch [Regex]::Escape($codexDir)) {
+                throw "Automatic discovery did not report the user Codex directory: $automaticStatusText"
+              }
+              if ($automaticStatusText -match [Regex]::Escape($runtimeDir)) {
+                throw "Automatic discovery reported the Windows runtime directory: $automaticStatusText"
+              }
+
+              # Exercise close while a sidecar process tree is still active. Without the
+              # frontend process lease, Tauri drops only the direct child and this helper
+              # never reaches its completion marker.
+              $slowSidecarSource = Join-Path $smokeRoot "slow-sidecar.rs"
+              $slowSidecarBinary = Join-Path $smokeRoot "slow-sidecar.exe"
+              $realSidecarBackup = Join-Path $smokeRoot "codex-keysmith-cli.real.exe"
+              $slowMarker = Join-Path $smokeRoot "slow-sidecar.marker"
+              @'
+          use std::env;
+          use std::fs::OpenOptions;
+          use std::io::Write;
+          use std::process::Command;
+          use std::thread;
+          use std::time::Duration;
+
+          fn mark(value: &str) {
+              let marker = env::var("CODEX_KEYSMITH_SLOW_MARKER").expect("marker path");
+              let mut file = OpenOptions::new()
+                  .create(true)
+                  .append(true)
+                  .open(marker)
+                  .expect("open marker");
+              writeln!(file, "{value}").expect("write marker");
+          }
+
+          fn main() {
+              if env::args().any(|arg| arg == "--slow-child") {
+                  thread::sleep(Duration::from_secs(6));
+                  mark("child-complete");
+                  return;
+              }
+
+              let executable = env::current_exe().expect("current executable");
+              let mut child = Command::new(executable)
+                  .arg("--slow-child")
+                  .spawn()
+                  .expect("spawn child");
+              mark("started");
+              assert!(child.wait().expect("wait for child").success());
+              mark("complete");
+              println!("codex-keysmith 0.2.0");
+          }
+          '@ | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
+              & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
+                throw "Failed to build the slow sidecar lifecycle fixture."
+              }
+              Copy-Item -LiteralPath $installedSidecars[0].FullName -Destination $realSidecarBackup
+              $slowAppProcess = $null
+              $slowMarkerEnvBackup = [Environment]::GetEnvironmentVariable(
+                "CODEX_KEYSMITH_SLOW_MARKER",
+                "Process"
+              )
+              try {
+                Copy-Item -LiteralPath $slowSidecarBinary -Destination $installedSidecars[0].FullName -Force
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_SLOW_MARKER",
+                  $slowMarker,
+                  "Process"
+                )
+                $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+                $slowWindowDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  Start-Sleep -Milliseconds 250
+                  $slowAppProcess.Refresh()
+                } while (
+                  -not $slowAppProcess.HasExited -and
+                  $slowAppProcess.MainWindowHandle -eq 0 -and
+                  [DateTime]::UtcNow -lt $slowWindowDeadline
+                )
+                if ($slowAppProcess.HasExited -or $slowAppProcess.MainWindowHandle -eq 0) {
+                  throw "Slow-sidecar GUI did not expose its main window."
+                }
+                $slowMarkerDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  $slowMarkerText = if (Test-Path -LiteralPath $slowMarker) {
+                    Get-Content -LiteralPath $slowMarker -Raw
+                  }
+                  else {
+                    ""
+                  }
+                  if ($slowMarkerText -match "(?m)^started\r?$") { break }
+                  Start-Sleep -Milliseconds 250
+                } while ([DateTime]::UtcNow -lt $slowMarkerDeadline)
+                if ($slowMarkerText -notmatch "(?m)^started\r?$") {
+                  throw "Slow sidecar did not start within 30 seconds."
+                }
+                Start-Sleep -Seconds 1
+                if (-not $slowAppProcess.CloseMainWindow()) {
+                  throw "Slow-sidecar GUI rejected the native close request."
+                }
+                if (-not $slowAppProcess.WaitForExit(20000)) {
+                  throw "Slow-sidecar GUI did not exit after the active process tree completed."
+                }
+                $slowMarkerText = Get-Content -LiteralPath $slowMarker -Raw
+                if (
+                  $slowMarkerText -notmatch "(?m)^child-complete\r?$" -or
+                  $slowMarkerText -notmatch "(?m)^complete\r?$"
+                ) {
+                  throw "GUI closed before the active sidecar process tree completed."
+                }
+              }
+              finally {
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_SLOW_MARKER",
+                  $slowMarkerEnvBackup,
+                  "Process"
+                )
+                if ($null -ne $slowAppProcess) {
+                  $slowAppProcess.Refresh()
+                  if (-not $slowAppProcess.HasExited) {
+                    Stop-Process -Id $slowAppProcess.Id -Force -ErrorAction SilentlyContinue
+                    $slowAppProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+                $slowSidecarProcesses = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.Equals($installedSidecars[0].FullName, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                foreach ($process in $slowSidecarProcesses) {
+                  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                  try { $process.WaitForExit(5000) | Out-Null }
+                  catch {}
+                }
+                Copy-Item -LiteralPath $realSidecarBackup -Destination $installedSidecars[0].FullName -Force
+              }
+
+              $appProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+              $secondProcess = $null
+              try {
+                $windowDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  Start-Sleep -Milliseconds 250
+                  $appProcess.Refresh()
+                } while (
+                  -not $appProcess.HasExited -and
+                  $appProcess.MainWindowHandle -eq 0 -and
+                  [DateTime]::UtcNow -lt $windowDeadline
+                )
+                if ($appProcess.HasExited) {
+                  throw "Installed GUI exited before exposing its main window (exit $($appProcess.ExitCode))."
+                }
+                if ($appProcess.MainWindowHandle -eq 0) {
+                  throw "Installed GUI did not expose a main window within 30 seconds."
+                }
+                Start-Sleep -Seconds 2
+                $appProcess.Refresh()
+                if ($appProcess.HasExited) {
+                  throw "Installed GUI exited during startup before the native close request."
+                }
+                $primaryWindowHandle = [IntPtr]$appProcess.MainWindowHandle
+                [KeysmithWindowProbe]::ShowWindow($primaryWindowHandle, 6) | Out-Null
+                $minimizeDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                do {
+                  Start-Sleep -Milliseconds 100
+                } while (
+                  -not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle) -and
+                  [DateTime]::UtcNow -lt $minimizeDeadline
+                )
+                if (-not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle)) {
+                  throw "Primary GUI could not be minimized before the second-instance handoff."
+                }
+                $secondProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+                if (-not $secondProcess.WaitForExit(15000)) {
+                  throw "Second GUI launch did not hand off to the existing instance."
+                }
+                if ($secondProcess.ExitCode -ne 0) {
+                  throw "Second GUI launch returned exit code $($secondProcess.ExitCode)."
+                }
+                $focusDeadline = [DateTime]::UtcNow.AddSeconds(15)
+                do {
+                  Start-Sleep -Milliseconds 100
+                  $appProcess.Refresh()
+                  $primaryWindowHandle = [IntPtr]$appProcess.MainWindowHandle
+                  $primaryRestored = -not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle)
+                  $primaryVisible = [KeysmithWindowProbe]::IsWindowVisible($primaryWindowHandle)
+                  $primaryFocused = [KeysmithWindowProbe]::GetForegroundWindow() -eq $primaryWindowHandle
+                } while (
+                  -not $appProcess.HasExited -and
+                  (-not $primaryRestored -or -not $primaryVisible -or -not $primaryFocused) -and
+                  [DateTime]::UtcNow -lt $focusDeadline
+                )
+                if ($appProcess.HasExited -or $appProcess.MainWindowHandle -eq 0) {
+                  throw "Second GUI launch did not preserve the primary window."
+                }
+                if (-not $primaryRestored) {
+                  throw "Second GUI launch did not restore the minimized primary window."
+                }
+                if (-not $primaryVisible) {
+                  throw "Second GUI launch did not make the primary window visible."
+                }
+                if (-not $primaryFocused) {
+                  # Hosted runners can deny SetForegroundWindow even after a valid user-style handoff.
+                  Write-Warning "Second GUI launch restored the primary window but Windows did not make it foreground."
+                }
+                if (-not $appProcess.CloseMainWindow()) {
+                  throw "Installed GUI rejected the native close request."
+                }
+                if (-not $appProcess.WaitForExit(15000)) {
+                  throw "Installed GUI remained resident after its main window was closed."
+                }
+                if ($appProcess.ExitCode -ne 0) {
+                  throw "Installed GUI close lifecycle returned exit code $($appProcess.ExitCode)."
+                }
+              }
+              finally {
+                if ($null -ne $secondProcess) {
+                  $secondProcess.Refresh()
+                  if (-not $secondProcess.HasExited) {
+                    Stop-Process -Id $secondProcess.Id -Force -ErrorAction SilentlyContinue
+                    $secondProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+                if ($null -ne $appProcess) {
+                  $appProcess.Refresh()
+                  if (-not $appProcess.HasExited) {
+                    Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+                    $appProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+              }
+              $payloadProcessDeadline = [DateTime]::UtcNow.AddSeconds(15)
+              do {
+                $remainingPayloadProcesses = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                if ($remainingPayloadProcesses.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 250
+              } while ([DateTime]::UtcNow -lt $payloadProcessDeadline)
+              if ($remainingPayloadProcesses.Count -ne 0) {
+                throw "Installed GUI or sidecar processes remained after close: $($remainingPayloadProcesses.Id -join ', ')"
+              }
+            }
+            finally {
+              foreach ($name in $environmentBackup.Keys) {
+                [Environment]::SetEnvironmentVariable(
+                  $name,
+                  $environmentBackup[$name],
+                  "Process"
+                )
+              }
+            }
             $statusOutput = & $installedSidecars[0].FullName `
               --codex-dir $codexDir --status --lang en 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar status smoke failed: $statusOutput" }
             $dryRunOutput = & $installedSidecars[0].FullName `
               --codex-dir $codexDir --dry-run --lang en 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar dry-run smoke failed: $dryRunOutput" }
-            $afterSmoke = Get-SmokeSnapshot $smokeRoot
-            if (Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke) {
+            $afterCodex = Get-SmokeSnapshot $codexDir
+            if (Compare-Object -ReferenceObject $beforeCodex -DifferenceObject $afterCodex) {
               throw "Frozen sidecar read-only smoke mutated the temporary Codex directory."
+            }
+            $afterRuntime = Get-SmokeSnapshot $runtimeDir
+            if (Compare-Object -ReferenceObject $beforeRuntime -DifferenceObject $afterRuntime) {
+              throw "Desktop smoke mutated the Codex runtime-only directory."
             }
             python scripts/validate_desktop_candidate.py candidate `
               --root . `

@@ -33,7 +33,7 @@ const NAV = [
  */
 export function Sidebar() {
   const { t } = useTranslation();
-  const { view } = useAppState();
+  const { view, operationInProgress } = useAppState();
   const [pinned, setPinned] = React.useState(false);
 
   return (
@@ -74,9 +74,11 @@ export function Sidebar() {
                 key={key}
                 data-view={key}
                 aria-current={active ? "page" : undefined}
+                disabled={operationInProgress}
                 onClick={() => setView(key)}
                 className={cn(
                   "relative flex h-10 items-center gap-2.5 rounded-[10px] px-[11px] text-sm transition-colors cursor-pointer",
+                  "disabled:cursor-not-allowed disabled:opacity-50",
                   active
                     ? "text-accent font-medium"
                     : "text-secondary-foreground hover:text-foreground hover:bg-elevated",

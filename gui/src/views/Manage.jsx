@@ -6,7 +6,12 @@ import { cliRun, cliExecute, fetchStatus } from "@/lib/api";
 import { parseUninstallPreview, gatePreview } from "@/lib/parser";
 import { useAppState } from "@/hooks/useAppState";
 import { getSettings } from "@/lib/settings";
-import { setLastStatus, setOperationInProgress, setView } from "@/lib/store";
+import {
+  beginExclusiveOperation,
+  endOperation,
+  setLastStatus,
+  setView,
+} from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FadeIn } from "@/components/FadeIn";
@@ -27,20 +32,48 @@ import { cn } from "@/lib/utils";
 
 const ALL_DIRS = "__all__";
 
+export function invalidateManageSnapshots({
+  statusRequestGeneration,
+  setStatusState,
+  setCachedStatus = setLastStatus,
+  setPreviewEpoch,
+}) {
+  statusRequestGeneration.current += 1;
+  setStatusState(null);
+  setCachedStatus(null);
+  setPreviewEpoch((epoch) => epoch + 1);
+}
+
 export function Manage() {
   const { t } = useTranslation();
-  const { cliInfo, lastStatus } = useAppState();
+  const { cliInfo, lastStatus, operationInProgress } = useAppState();
   const [status, setStatus] = React.useState(lastStatus);
+  const [previewEpoch, setPreviewEpoch] = React.useState(0);
+  const statusRequestGeneration = React.useRef(0);
 
   React.useEffect(() => {
     if (status || !cliInfo.path) return;
+    const generation = ++statusRequestGeneration.current;
+    let disposed = false;
     fetchStatus()
       .then((s) => {
+        if (disposed || generation !== statusRequestGeneration.current) return;
         setStatus(s);
         setLastStatus(s);
       })
       .catch(() => {});
-  }, [cliInfo.path]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      disposed = true;
+    };
+  }, [cliInfo.path, previewEpoch, status]);
+
+  const handleWriteSuccess = React.useCallback(() => {
+    invalidateManageSnapshots({
+      statusRequestGeneration,
+      setStatusState: setStatus,
+      setPreviewEpoch,
+    });
+  }, []);
 
   const cliChecking = !cliInfo.checked;
   const cliUnavailable = cliInfo.checked && !cliInfo.path;
@@ -90,6 +123,9 @@ export function Manage() {
             icon={<Undo2 className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--uninstall"]}
             dirs={dirs}
+            operationInProgress={operationInProgress}
+            invalidationEpoch={previewEpoch}
+            onWriteSuccess={handleWriteSuccess}
             danger
             delay={0.1}
           />
@@ -101,6 +137,9 @@ export function Manage() {
             icon={<Anchor className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--restore-hooks"]}
             dirs={dirs}
+            operationInProgress={operationInProgress}
+            invalidationEpoch={previewEpoch}
+            onWriteSuccess={handleWriteSuccess}
             noYes // CLI 约束：--restore-hooks 与 --yes 互斥
             delay={0.18}
           />
@@ -112,6 +151,9 @@ export function Manage() {
             icon={<Zap className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--recover"]}
             dirs={dirs}
+            operationInProgress={operationInProgress}
+            invalidationEpoch={previewEpoch}
+            onWriteSuccess={handleWriteSuccess}
             danger
             recoverPreview // --recover 不带 --yes 即预览
             enabled={hasResidue}
@@ -130,13 +172,39 @@ export function Manage() {
  * 流程：选目录 → 预览（gate 校验通过才解锁执行）→ 确认 → 执行。
  * 预览绑定当时的目录选择；之后改动目录则预览作废（previewStale）。
  */
-function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes, recoverPreview, enabled = true, highlight, extraBadge, delay }) {
+function ActionCard({
+  opKey,
+  t,
+  title,
+  desc,
+  icon,
+  cliArgs,
+  dirs,
+  operationInProgress,
+  invalidationEpoch,
+  onWriteSuccess,
+  danger,
+  noYes,
+  recoverPreview,
+  enabled = true,
+  highlight,
+  extraBadge,
+  delay,
+}) {
   const [dirSel, setDirSel] = React.useState(ALL_DIRS);
   const [preview, setPreview] = React.useState(null); // { dirKey, gate, parsed, output }
   const [previewing, setPreviewing] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
   const [running, setRunning] = React.useState(false);
   const [result, setResult] = React.useState(null);
+  const previewRequestGeneration = React.useRef(0);
+
+  React.useEffect(() => {
+    previewRequestGeneration.current += 1;
+    setPreview(null);
+    setPreviewing(false);
+    setConfirming(false);
+  }, [invalidationEpoch]);
 
   const dirKey = dirSel === ALL_DIRS ? "" : dirSel;
 
@@ -152,6 +220,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
     preview && preview.dirKey === (dirKey || getSettings().defaultCodexDir || "") && preview.gate.ok;
 
   const runPreview = async () => {
+    const requestGeneration = ++previewRequestGeneration.current;
     setPreviewing(true);
     setResult(null);
     try {
@@ -160,9 +229,11 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
       const output = await cliRun([...buildArgs(effectiveDir), "--lang", "en"]);
       const parsed = parseUninstallPreview(output.stdout);
       const gate = gatePreview(output, parsed);
+      if (requestGeneration !== previewRequestGeneration.current) return;
       setPreview({ dirKey: effectiveDir, gate, parsed, output });
       if (!gate.ok) toast.error(t("deploy.previewFailed"));
     } catch (err) {
+      if (requestGeneration !== previewRequestGeneration.current) return;
       setPreview({
         dirKey: dirKey || "",
         gate: { ok: false, reason: "exit", detail: err?.message || String(err) },
@@ -170,13 +241,19 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
         output: null,
       });
     } finally {
-      setPreviewing(false);
+      if (requestGeneration === previewRequestGeneration.current) {
+        setPreviewing(false);
+      }
     }
   };
 
   const execute = async () => {
+    const operationLease = beginExclusiveOperation();
+    if (!operationLease) {
+      toast.warning(t("common.operationBusy"));
+      return;
+    }
     setRunning(true);
-    setOperationInProgress(true);
     setResult(null);
     try {
       const args = buildArgs();
@@ -190,8 +267,8 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
       } else if (output.exit_code === 0) {
         setResult({ ok: true, text: output.stdout });
         toast.success(t("manage.done"));
-        setLastStatus(null); // 失效快照，回 Dashboard 自动刷新
         setPreview(null); // 执行后旧预览作废
+        onWriteSuccess();
       } else {
         setResult({ ok: false, code: output.exit_code, text: output.stderr || output.stdout });
         toast.error(t("manage.failed"));
@@ -201,7 +278,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
       toast.error(t("manage.failed"));
     } finally {
       setRunning(false);
-      setOperationInProgress(false);
+      endOperation(operationLease);
     }
   };
 
@@ -227,7 +304,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
             <label htmlFor={`dir-${opKey}`} className="text-xs text-muted-foreground whitespace-nowrap">
               {t("manage.selectDir")}
             </label>
-            <Select value={dirSel} onValueChange={setDirSel}>
+            <Select value={dirSel} onValueChange={setDirSel} disabled={operationInProgress}>
               <SelectTrigger id={`dir-${opKey}`} className="h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -244,14 +321,19 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
         )}
 
         <div className="mt-4 flex items-center gap-2.5">
-          <Button size="sm" variant="outline" onClick={runPreview} disabled={!enabled || previewing || running}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={runPreview}
+            disabled={!enabled || previewing || running || operationInProgress}
+          >
             {previewing ? <span className="spinner" aria-hidden="true" /> : null}
             {t("manage.preview")}
           </Button>
           <Button
             size="sm"
             variant={danger ? "destructive" : "default"}
-            disabled={!enabled || !previewValid || running}
+            disabled={!enabled || !previewValid || running || operationInProgress}
             title={!previewValid ? t("manage.previewRequired") : undefined}
             onClick={() => setConfirming(true)}
           >
@@ -338,6 +420,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
         title={title}
         body={dirKey || t("manage.allDirs")}
         confirmText={t("manage.execute")}
+        confirmDisabled={operationInProgress}
         danger={danger}
         onConfirm={execute}
       />
