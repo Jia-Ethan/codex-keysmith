@@ -39,10 +39,15 @@ npm run tauri dev
 ```
 
 - The unified source version is `0.2.0`. [`desktop-v0.2.0-beta.4`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.4) publishes the Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, and deterministic source archives together.
+- `desktop-v0.2.0-beta.4` predates the Windows CLI line-ending compatibility and the Manage-page confirmation gate for Restore hooks. Those fixes will ship in the next Desktop Beta and are not included in the existing beta.4 installers.
 - macOS users download `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`; Windows users download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. Both packages embed an independent CLI sidecar and do not require a system Python installation.
 - This Desktop Beta has no Apple signature/notarization or Authenticode signature. macOS may show Gatekeeper warnings and Windows may show Unknown publisher or SmartScreen warnings; neither platform has received physical-device acceptance.
 - The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
 - The application does not proactively collect or upload user data. See [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) and [`PRIVACY.md`](PRIVACY.md). The SignPath Foundation application is pending, and the current prerelease assets are not SignPath-signed.
+
+### Copy this to an agent
+
+> Read this repository and [`docs/agent-install.md`](docs/agent-install.md) first. Download and verify only a formal Release, run status / dry-run, report exact targets plus write and backup paths, wait for my confirmation before risky writes, and finish with the minimum verification.
 
 ### Quick start (macOS / Linux)
 

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { FileText, Package, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { fetchDryRun, cliExecute } from "@/lib/api";
 import { useAppState } from "@/hooks/useAppState";
-import { setOperationInProgress, setView, setLastStatus } from "@/lib/store";
+import { beginOperation, endOperation, setView, setLastStatus } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 export function Deploy() {
   const { t } = useTranslation();
-  const { cliInfo } = useAppState();
+  const { cliInfo, operationInProgress } = useAppState();
   const [step, setStep] = React.useState(1);
   const [source, setSource] = React.useState("bundled");
   const [filePath, setFilePath] = React.useState("");
@@ -62,9 +62,15 @@ export function Deploy() {
   };
 
   const doDeploy = async () => {
+    const operationOwner = "deploy";
+    if (!beginOperation(operationOwner)) {
+      setConfirming(false);
+      toast.error(t("manage.operationInProgress"));
+      return;
+    }
     setDeploying(true);
-    setOperationInProgress(true);
     setResult(null);
+    let keepLockForTransition = false;
     try {
       const output = await cliExecute(buildArgs());
       if (output.timed_out) {
@@ -74,8 +80,9 @@ export function Deploy() {
         setResult({ ok: true, text: output.stdout });
         toast.success(t("deploy.success"));
         setLastStatus(null);
+        keepLockForTransition = true;
         setTimeout(() => {
-          setOperationInProgress(false);
+          endOperation(operationOwner);
           setView("dashboard");
         }, 1200);
         return;
@@ -93,7 +100,7 @@ export function Deploy() {
       toast.error(t("deploy.failed"));
     } finally {
       setDeploying(false);
-      setOperationInProgress(false);
+      if (!keepLockForTransition) endOperation(operationOwner);
     }
   };
 
@@ -202,6 +209,7 @@ export function Deploy() {
                 deploying={deploying}
                 result={result}
                 codexDir={codexDir}
+                operationLocked={operationInProgress}
                 onBack={() => setStep(2)}
                 onConfirm={() => setConfirming(true)}
               />
@@ -217,6 +225,7 @@ export function Deploy() {
         body={codexDir || t("manage.allDirs")}
         confirmText={t("deploy.confirmDeploy")}
         danger
+        confirmDisabled={operationInProgress}
         onConfirm={doDeploy}
       />
     </div>
@@ -485,7 +494,7 @@ function Step2({ t, preview, loading, onBack, onNext }) {
 
 // ── 步骤 3：确认执行 ──────────────────────────
 
-function Step3({ t, deploying, result, onBack, onConfirm }) {
+function Step3({ t, deploying, result, operationLocked, onBack, onConfirm }) {
   return (
     <>
       <FadeIn delay={0.05}>
@@ -496,7 +505,7 @@ function Step3({ t, deploying, result, onBack, onConfirm }) {
               variant="destructive"
               size="lg"
               onClick={onConfirm}
-              disabled={deploying || result?.ok}
+              disabled={operationLocked || deploying || result?.ok}
             >
               {deploying ? (
                 <>

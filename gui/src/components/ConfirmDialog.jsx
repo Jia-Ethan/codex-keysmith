@@ -13,9 +13,9 @@ import { cn } from "@/lib/utils";
 
 /**
  * 受控确认对话框（危险操作用 destructive 变体）
- * props: open, onOpenChange, title, body, confirmText, danger, onConfirm
+ * props: open, onOpenChange, title, body, confirmText, danger, confirmDisabled, onConfirm
  */
-export function ConfirmDialog({ open, onOpenChange, title, body, confirmText, danger, onConfirm }) {
+export function ConfirmDialog({ open, onOpenChange, title, body, confirmText, danger, confirmDisabled = false, onConfirm }) {
   const { t } = useTranslation();
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -26,6 +26,7 @@ export function ConfirmDialog({ open, onOpenChange, title, body, confirmText, da
           <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             className={cn(danger && buttonVariants({ variant: "destructive" }))}
+            disabled={confirmDisabled}
             onClick={onConfirm}
           >
             {confirmText || t("common.confirm")}

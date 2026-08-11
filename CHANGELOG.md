@@ -16,6 +16,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Normalized desktop CLI output across LF, CRLF, and standalone CR line endings, and made status parsing reject timeouts or unrecognized reports while previews fail closed on incomplete output.
+- Changed Manage's Restore hooks flow to build a read-only plan from the latest status snapshot, execute only after confirmation, invalidate every management preview after any write attempt, and surface status refresh failures with an explicit retry. Desktop writes now share one owner lock across Deploy and Manage, including navigation and window-close protection.
 - Fixed the desktop startup flow so it no longer reports that the CLI is missing before CLI resolution finishes.
 - GitHub draft Release updates now resend the complete tag, target commit, name, notes, draft state, prerelease state, and Latest Release policy. A partial PATCH had reset the draft tag to GitHub's internal `untagged-*` placeholder; the fail-closed assertion removed that draft before any asset upload or public publication.
 

@@ -3,10 +3,15 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Undo2, Anchor, Zap } from "lucide-react";
 import { cliRun, cliExecute, fetchStatus } from "@/lib/api";
-import { parseUninstallPreview, gatePreview } from "@/lib/parser";
+import {
+  executeRestoreHooksPlans,
+  isManagementPreviewValid,
+  prepareManagementPreview,
+  shouldRefreshManagementStatus,
+} from "@/lib/manage";
 import { useAppState } from "@/hooks/useAppState";
 import { getSettings } from "@/lib/settings";
-import { setLastStatus, setOperationInProgress, setView } from "@/lib/store";
+import { beginOperation, endOperation, setLastStatus, setView } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FadeIn } from "@/components/FadeIn";
@@ -29,23 +34,58 @@ const ALL_DIRS = "__all__";
 
 export function Manage() {
   const { t } = useTranslation();
-  const { cliInfo, lastStatus } = useAppState();
+  const { cliInfo, lastStatus, operationInProgress } = useAppState();
   const [status, setStatus] = React.useState(lastStatus);
+  const [statusLoading, setStatusLoading] = React.useState(!lastStatus);
+  const [statusError, setStatusError] = React.useState(null);
+  const [statusRevision, setStatusRevision] = React.useState(0);
+
+  const loadStatus = React.useCallback(async () => {
+    setStatusLoading(true);
+    setStatusError(null);
+    try {
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
+      setLastStatus(nextStatus);
+      return nextStatus;
+    } catch (error) {
+      setStatus(null);
+      setLastStatus(null);
+      setStatusError(error?.message || String(error));
+      throw error;
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  const refreshStatus = React.useCallback(async () => {
+    // Any write attempt invalidates every card's preview before status is re-read.
+    setStatusRevision((revision) => revision + 1);
+    setStatus(null);
+    setLastStatus(null);
+    try {
+      return await loadStatus();
+    } catch {
+      return null;
+    }
+  }, [loadStatus]);
+
+  const beginManagementOperation = React.useCallback((operation) => {
+    if (!beginOperation(operation)) return false;
+    setStatusRevision((revision) => revision + 1);
+    return true;
+  }, []);
 
   React.useEffect(() => {
     if (status || !cliInfo.path) return;
-    fetchStatus()
-      .then((s) => {
-        setStatus(s);
-        setLastStatus(s);
-      })
-      .catch(() => {});
+    loadStatus().catch(() => {});
   }, [cliInfo.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cliChecking = !cliInfo.checked;
   const cliUnavailable = cliInfo.checked && !cliInfo.path;
   const dirs = status?.directories ?? [];
   const hasResidue = dirs.some((d) => d.residue.length > 0);
+  const actionsReady = Boolean(status) && !statusLoading && !statusError;
 
   return (
     <div>
@@ -82,6 +122,24 @@ export function Manage() {
 
       {cliInfo.checked && cliInfo.path && (
         <div className="mt-6 flex flex-col gap-4">
+          {statusError && (
+            <FadeIn delay={0.08}>
+              <div className="card-glass border-danger/40 p-5" role="alert">
+                <div className="text-sm font-semibold text-danger">{t("dash.error")}</div>
+                <pre className="log-block mt-3">{statusError}</pre>
+                <Button
+                  className="mt-4"
+                  size="sm"
+                  variant="outline"
+                  onClick={refreshStatus}
+                  disabled={statusLoading}
+                >
+                  {statusLoading ? <span className="spinner" aria-hidden="true" /> : null}
+                  {t("dash.refresh")}
+                </Button>
+              </div>
+            </FadeIn>
+          )}
           <ActionCard
             opKey="uninstall"
             t={t}
@@ -90,6 +148,12 @@ export function Manage() {
             icon={<Undo2 className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--uninstall"]}
             dirs={dirs}
+            statusRevision={statusRevision}
+            onStatusRefresh={refreshStatus}
+            operationLocked={operationInProgress}
+            onOperationStart={beginManagementOperation}
+            onOperationEnd={endOperation}
+            enabled={actionsReady}
             danger
             delay={0.1}
           />
@@ -101,6 +165,12 @@ export function Manage() {
             icon={<Anchor className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--restore-hooks"]}
             dirs={dirs}
+            statusRevision={statusRevision}
+            onStatusRefresh={refreshStatus}
+            operationLocked={operationInProgress}
+            onOperationStart={beginManagementOperation}
+            onOperationEnd={endOperation}
+            enabled={actionsReady}
             noYes // CLI 约束：--restore-hooks 与 --yes 互斥
             delay={0.18}
           />
@@ -112,9 +182,14 @@ export function Manage() {
             icon={<Zap className="size-[18px]" aria-hidden="true" />}
             cliArgs={["--recover"]}
             dirs={dirs}
+            statusRevision={statusRevision}
+            onStatusRefresh={refreshStatus}
+            operationLocked={operationInProgress}
+            onOperationStart={beginManagementOperation}
+            onOperationEnd={endOperation}
             danger
             recoverPreview // --recover 不带 --yes 即预览
-            enabled={hasResidue}
+            enabled={actionsReady && hasResidue}
             highlight={hasResidue}
             extraBadge={hasResidue ? t("manage.recoverAvailable") : null}
             delay={0.26}
@@ -130,7 +205,7 @@ export function Manage() {
  * 流程：选目录 → 预览（gate 校验通过才解锁执行）→ 确认 → 执行。
  * 预览绑定当时的目录选择；之后改动目录则预览作废（previewStale）。
  */
-function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes, recoverPreview, enabled = true, highlight, extraBadge, delay }) {
+function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, statusRevision, onStatusRefresh, operationLocked, onOperationStart, onOperationEnd, danger, noYes, recoverPreview, enabled = true, highlight, extraBadge, delay }) {
   const [dirSel, setDirSel] = React.useState(ALL_DIRS);
   const [preview, setPreview] = React.useState(null); // { dirKey, gate, parsed, output }
   const [previewing, setPreviewing] = React.useState(false);
@@ -148,23 +223,38 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
   };
 
   // 预览有效的条件：当前目录选择与预览时的目录一致，且门禁通过
-  const previewValid =
-    preview && preview.dirKey === (dirKey || getSettings().defaultCodexDir || "") && preview.gate.ok;
+  const previewValid = isManagementPreviewValid(
+    preview,
+    dirKey || getSettings().defaultCodexDir || "",
+    statusRevision,
+  );
 
   const runPreview = async () => {
     setPreviewing(true);
     setResult(null);
+    const effectiveDir = dirKey || getSettings().defaultCodexDir || "";
     try {
-      const effectiveDir = dirKey || getSettings().defaultCodexDir || "";
-      // recoverPreview：--recover 不带 --yes 就是预览；其余操作默认即预览
-      const output = await cliRun([...buildArgs(effectiveDir), "--lang", "en"]);
-      const parsed = parseUninstallPreview(output.stdout);
-      const gate = gatePreview(output, parsed);
-      setPreview({ dirKey: effectiveDir, gate, parsed, output });
-      if (!gate.ok) toast.error(t("deploy.previewFailed"));
+      const prepared = await prepareManagementPreview({
+        operation: opKey,
+        directories: dirs,
+        // Restore plans use canonical paths returned by status. The default
+        // setting may be an equivalent non-canonical path such as ~/.codex.
+        targetDir: opKey === "restore-hooks" ? dirKey : effectiveDir,
+        args: [...buildArgs(effectiveDir), "--lang", "en"],
+        runCli: cliRun,
+      });
+      setPreview({ dirKey: effectiveDir, statusRevision, ...prepared });
+      if (!prepared.gate.ok) {
+        toast.error(t(
+          prepared.gate.reason === "no-restorable"
+            ? "manage.noRestorableTargets"
+            : "deploy.previewFailed",
+        ));
+      }
     } catch (err) {
       setPreview({
-        dirKey: dirKey || "",
+        dirKey: effectiveDir,
+        statusRevision,
         gate: { ok: false, reason: "exit", detail: err?.message || String(err) },
         parsed: null,
         output: null,
@@ -175,33 +265,60 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
   };
 
   const execute = async () => {
+    if (!previewValid) {
+      setConfirming(false);
+      toast.error(t("manage.previewStale"));
+      return;
+    }
+    const operationOwner = `manage:${opKey}`;
+    if (!onOperationStart(operationOwner)) {
+      setConfirming(false);
+      toast.error(t("manage.operationInProgress"));
+      return;
+    }
     setRunning(true);
-    setOperationInProgress(true);
     setResult(null);
+    let output = null;
+    let attemptStarted = false;
     try {
       const args = buildArgs();
-      // --restore-hooks 与 --yes 互斥（noYes）；其余（含 --recover）追加 --yes
-      const output = noYes
-        ? await cliRun([...args, "--lang", "en"], 120_000)
+      // restore-hooks 仅在确认后按预览目标执行；其余操作追加 --yes。
+      attemptStarted = true;
+      output = noYes
+        ? await executeRestoreHooksPlans(preview.parsed.plans, cliRun)
         : await cliExecute(args);
+      const outputText = noYes
+        ? output.text
+        : [output.stdout, output.stderr].filter((value) => value?.trim()).join("\n");
       if (output.timed_out) {
-        setResult({ ok: false, text: t("deploy.timedOut") });
-        toast.error(t("manage.failed"));
+        setResult({
+          ok: false,
+          partial: output.partial,
+          text: outputText || t("deploy.timedOut"),
+        });
+        toast.error(t(output.partial ? "manage.partial" : "manage.failed"));
       } else if (output.exit_code === 0) {
-        setResult({ ok: true, text: output.stdout });
+        setResult({ ok: true, text: outputText });
         toast.success(t("manage.done"));
-        setLastStatus(null); // 失效快照，回 Dashboard 自动刷新
-        setPreview(null); // 执行后旧预览作废
       } else {
-        setResult({ ok: false, code: output.exit_code, text: output.stderr || output.stdout });
-        toast.error(t("manage.failed"));
+        setResult({
+          ok: false,
+          partial: output.partial,
+          code: output.exit_code,
+          text: outputText,
+        });
+        toast.error(t(output.partial ? "manage.partial" : "manage.failed"));
       }
     } catch (err) {
       setResult({ ok: false, text: err?.message || String(err) });
       toast.error(t("manage.failed"));
     } finally {
+      if (shouldRefreshManagementStatus(opKey, output, attemptStarted)) {
+        setPreview(null);
+        await onStatusRefresh();
+      }
       setRunning(false);
-      setOperationInProgress(false);
+      onOperationEnd(operationOwner);
     }
   };
 
@@ -244,14 +361,14 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
         )}
 
         <div className="mt-4 flex items-center gap-2.5">
-          <Button size="sm" variant="outline" onClick={runPreview} disabled={!enabled || previewing || running}>
+          <Button size="sm" variant="outline" onClick={runPreview} disabled={!enabled || operationLocked || previewing || running}>
             {previewing ? <span className="spinner" aria-hidden="true" /> : null}
             {t("manage.preview")}
           </Button>
           <Button
             size="sm"
             variant={danger ? "destructive" : "default"}
-            disabled={!enabled || !previewValid || running}
+            disabled={!enabled || operationLocked || !previewValid || running}
             title={!previewValid ? t("manage.previewRequired") : undefined}
             onClick={() => setConfirming(true)}
           >
@@ -260,7 +377,10 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
           </Button>
           {!previewValid && enabled && !running && (
             <span className="text-xs text-muted-foreground">
-              {preview && preview.dirKey !== (dirKey || getSettings().defaultCodexDir || "")
+              {preview && (
+                preview.dirKey !== (dirKey || getSettings().defaultCodexDir || "")
+                || preview.statusRevision !== statusRevision
+              )
                 ? t("manage.previewStale")
                 : t("manage.previewRequired")}
             </span>
@@ -273,7 +393,11 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
             {!preview.gate.ok && (
               <div className="rounded-[10px] border border-danger/50 bg-[var(--danger-soft)] p-3.5" role="alert">
                 <div className="text-xs font-semibold text-danger">{t("deploy.previewFailed")}</div>
-                {preview.gate.detail && <pre className="log-block mt-2">{preview.gate.detail}</pre>}
+                {(preview.gate.detail || preview.gate.reason === "no-restorable") && (
+                  <pre className="log-block mt-2">
+                    {preview.gate.detail || t("manage.noRestorableTargets")}
+                  </pre>
+                )}
               </div>
             )}
             {preview.gate.ok && preview.parsed?.plans.length > 0 && (
@@ -283,7 +407,9 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
                   {preview.parsed.plans.map((p) => (
                     <div key={p.dir} className="text-xs">
                       <div className="break-all font-mono font-semibold">{p.dir}</div>
-                      <div className="text-secondary-foreground">{p.summary}</div>
+                      <div className="text-secondary-foreground">
+                        {p.kind === "restore-hooks" ? t("manage.restoreHooksPlan") : p.summary}
+                      </div>
                       {p.detail && <div className="text-muted-foreground">{p.detail}</div>}
                     </div>
                   ))}
@@ -316,7 +442,9 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
             role={result.ok ? "status" : "alert"}
           >
             <div className={cn("text-xs font-semibold", result.ok ? "text-ok" : "text-danger")}>
-              {result.ok ? `✓ ${t("manage.done")}` : `${t("manage.failed")}${result.code ? ` (exit ${result.code})` : ""}`}
+              {result.ok
+                ? `✓ ${t("manage.done")}`
+                : `${t(result.partial ? "manage.partial" : "manage.failed")}${result.code ? ` (exit ${result.code})` : ""}`}
             </div>
             {result.text && (
               <Collapsible className="mt-2">
@@ -339,6 +467,7 @@ function ActionCard({ opKey, t, title, desc, icon, cliArgs, dirs, danger, noYes,
         body={dirKey || t("manage.allDirs")}
         confirmText={t("manage.execute")}
         danger={danger}
+        confirmDisabled={operationLocked}
         onConfirm={execute}
       />
     </FadeIn>

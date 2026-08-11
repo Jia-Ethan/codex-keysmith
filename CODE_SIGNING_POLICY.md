@@ -2,7 +2,7 @@
 
 ## Current desktop beta
 
-`desktop-v0.2.0-beta.3` publishes an Apple Silicon macOS DMG and Windows x64 NSIS installer as one unsigned Desktop Beta. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
+`desktop-v0.2.0-beta.4` publishes an Apple Silicon macOS DMG and Windows x64 NSIS installer as one unsigned Desktop Beta. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
 
 `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease and is not overwritten by the unified beta.
 

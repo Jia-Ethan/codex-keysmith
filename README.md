@@ -51,10 +51,15 @@ npm run tauri dev
 ```
 
 - 当前统一源码版本为 `0.2.0`。[`desktop-v0.2.0-beta.4`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.4) 统一提供 macOS Apple Silicon DMG、Windows x64 NSIS、单文件 CLI 和确定性源码归档。
+- `desktop-v0.2.0-beta.4` 早于 Windows CLI 换行兼容和 Manage「恢复 hooks」确认门修复；这些修复将在下一版 Desktop Beta 提供，现有 beta.4 安装包不包含。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
 - 当前应用不主动收集或上传用户数据；签名边界见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)，本地数据说明见 [`PRIVACY.md`](PRIVACY.md)。SignPath Foundation 申请仍在审核中，当前预发布资产并未使用 SignPath 签名。
+
+### 复制给智能体安装
+
+> 请先阅读本仓库和 [`docs/agent-install.md`](docs/agent-install.md)，只从正式 Release 下载并校验资产；先执行 status / dry-run，报告准确目标、写入与备份路径，在任何风险写入前等待我确认，完成后运行最小验证。
 
 ### 快速开始（macOS / Linux）
 

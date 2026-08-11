@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-`desktop-v0.2.0-beta.3` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+`desktop-v0.2.0-beta.4` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。beta.4 早于 Windows 换行兼容和 Restore hooks 确认门修复，下一版 Desktop Beta 才包含这些修复。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
@@ -69,7 +69,7 @@ cargo check --manifest-path src-tauri/Cargo.toml --locked
 
 - **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情。
 - **部署向导**：选择内容、dry-run 预览、确认执行；非零退出、超时、空输出和阻塞项全部阻断。
-- **管理**：卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。
+- **管理**：卸载和中断恢复通过 CLI 预览；恢复 hooks 根据只读 status 生成计划。全部要求预览、确认后才执行，任一写操作尝试后都会刷新状态并使旧预览失效。
 - **设置**：可选 CLI 路径覆盖、默认 `.codex` 目录、中英双语和主题。
 
 ## 目录结构
@@ -90,8 +90,8 @@ gui/
 ## 核心约束
 
 1. GUI 不直接写 `.codex`，所有写操作都由 CLI 完成。
-2. CLI 调用固定追加 `--lang en`，解析器只解析稳定英文输出。
+2. CLI 调用固定追加 `--lang en`；解析器先统一 LF、CRLF 和独立 CR，再按英文输出契约解析，并兼容既有的中英混合 hooks 恢复标记。
 3. `[Behavior notice]` 必须在部署确认前原样展示。
-4. 部署、卸载和中断恢复必须先通过对应预览门禁。
-5. `--restore-hooks` 与 `--yes` 互斥，恢复 hooks 时不追加 `--yes`。
-6. `--status` 可在输出完整状态的同时返回非零退出码；只有缺少目录列表时才视为真正失败。
+4. 部署、卸载和中断恢复必须先通过对应 CLI 预览门禁；恢复 hooks 只能从最新 status 快照生成只读计划，确认前不得调用写操作。
+5. `--restore-hooks` 与 `--yes` 互斥，恢复 hooks 时不追加 `--yes`；任何管理写操作尝试后都要刷新 status，并让全部卡片的旧预览失效。Deploy 与 Manage 共用一个全局写操作 owner，持锁期间禁止跨页导航或启动第二个写操作。
+6. `--status` 可在输出可识别目录状态的同时返回非零退出码；超时或零目录视为真正失败，并显示可重试错误。

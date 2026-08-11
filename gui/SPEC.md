@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.3` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成
+> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.4` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成。beta.4 早于 Windows 换行兼容和 Restore hooks 确认门修复，下一版 Desktop Beta 才包含这些修复
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -53,8 +53,8 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 1. **客户端永不直接修改 `~/.codex` 下的任何文件。** 所有写操作都通过 CLI 完成，保证与 CLI 的事务/备份/回滚语义一致。
 2. **Rust 只做进程执行与文件读取，不做业务解析。** CLI 文本解析放前端 `parser.js`，改解析逻辑不用碰 Rust。
-3. **所有 CLI 调用固定 `--lang en`**，输出格式稳定，解析器只认英文输出。
-4. 部署/卸载/恢复等写操作前，**始终先跑一次对应预览**（`--dry-run` / 无 `--yes`），把预览结果展示给用户确认，与 CLI 的「预览优先」哲学一致。
+3. **所有 CLI 调用固定 `--lang en`**；解析器统一 LF、CRLF 和独立 CR 后按英文契约解析，并兼容既有的中英混合 hooks 恢复标记。
+4. 部署、卸载和中断恢复写操作前，**始终先跑一次对应 CLI 预览**（`--dry-run` / 无 `--yes`）；恢复 hooks 则从最新只读 status 快照生成计划。所有计划都必须展示给用户确认后才可执行。
 
 ## 4. CLI 接口清单（已从源码核实）
 
@@ -140,7 +140,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 }
 ```
 
-**注意：** 文件行格式为 `    <name>: <kind> (<path>)`，kind 取值为 `regular file` / `missing` / 其他描述（如 `directory`、`symlink`——源码 `_print_node` 会输出实际类型）。解析时**不要假设只有 regular/missing 两种**，未知类型一律映射为 `other` 并转成 warning。
+**注意：** 解析前先把 LF、CRLF 和独立 CR 统一为 LF。文件行格式为 `    <name>: <kind> (<path>)`，kind 取值为 `regular file` / `missing` / 其他描述（如 `directory`、`symlink`——源码 `_print_node` 会输出实际类型）。解析时**不要假设只有 regular/missing 两种**，未知类型一律映射为 `other` 并转成 warning。status 超时或零目录时必须失败关闭；已识别到目录的 status 即使进程非零退出仍可展示。
 
 ### 5.2 `--dry-run`（真实输出）
 
@@ -234,9 +234,9 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 ### 6.3 Manage
 
 - **卸载**（`--uninstall`）：先预览（显示将撤销哪一层），确认后 `--yes`；多次卸载逐层回滚
-- **恢复 hooks**（`--restore-hooks`）：确认后执行
-- **恢复中断事务**（`--recover`）：仅在 status 显示残留时可用，确认后 `--yes`
-- 每个操作后自动刷新 Dashboard
+- **恢复 hooks**（`--restore-hooks`）：根据最新 status 中 `restorable` 目录生成只读计划，确认后逐目录执行；预览阶段不得调用 CLI 写操作
+- **恢复中断事务**（`--recover`）：仅在 status 显示残留时可用，先预览，确认后 `--yes`
+- 任一管理写操作尝试后立即让全部卡片的旧预览失效并重新读取 status；刷新失败时操作保持禁用，展示错误和重试入口
 
 ### 6.4 Settings
 
@@ -316,21 +316,21 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
 - `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
-- `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 15 个 vitest 用例（真实 CLI 输出样本）
+- `src/lib/parser.js` 与 `src/lib/manage.js`：CLI 解析、语义门禁、只读 Restore hooks 计划和管理执行结果聚合；由完整 GUI Vitest 套件覆盖
 - 本 SPEC.md：解析规范与设计决策
 
-**React 迁移期修复的问题（原 vanilla 版缺陷，均已在真机验证）：**
+**React 迁移及后续审查修复的问题（自动化已覆盖，下一版 Desktop Beta 仍需 Windows 真机复验）：**
 
-1. **dry-run 门禁可绕过**：新增 `gatePreview(output, parsed)`，非零退出 / 超时 / 空 stdout / blockers 一律 `ok:false` 并携带 stderr（含错误只写 stdout 的情况，如 `--name` 校验失败）；Deploy 步骤 2 与管理页预览都走此门禁，不放行到确认步骤。
+1. **dry-run/status 门禁可绕过**：新增 `gatePreview(output, parsed)`，非零退出 / 超时 / 空 stdout / blockers / 预览语义不完整一律 `ok:false` 并携带 stderr（含错误只写 stdout 的情况，如 `--name` 校验失败）；status 超时或零目录同样失败关闭。CLI 输出在解析前统一 LF、CRLF 和独立 CR，避免 Windows 输出被拆坏。
 2. **异常节点静默丢弃**：`FILE_LINE_RE` 放开类型白名单，`symbolic link` / `FIFO` / `socket` / `other node` / `directory` 统一归一化为 `other`，节点保留在 `nodes` 中并进入 `abnormalNodes[]` + `warnings[]`，Dashboard 显眼警告块展示。
-3. **管理操作无强制预览**：卸载 / 恢复 hooks / 恢复中断事务全部「预览 → 确认 → 执行」；预览绑定当时的目录选择，改目录后预览作废（previewStale）。`--restore-hooks` 与 `--yes` 互斥不变（`noYes`）；`--recover` 预览不带 `--yes`、执行带 `--yes`。
+3. **管理操作无强制预览**：卸载和恢复中断事务走 CLI「预览 → 确认 → 执行」；恢复 hooks 从最新 status 构建零写入计划，确认后才逐目录调用 CLI。预览绑定目录选择和 status revision，任何管理写操作尝试都会使所有卡片旧预览失效并刷新状态；部分成功、失败、超时和调用异常保留逐目录证据。Deploy 与 Manage 共用一个全局 operation owner，持锁期间拒绝跨页导航、第二个写操作和非 owner 解锁。`--restore-hooks` 与 `--yes` 互斥不变，`--recover` 预览不带 `--yes`、执行带 `--yes`。
 4. **安装包无 CLI 死路**：正式 bundle 通过 `externalBin` 带入冻结 sidecar；sidecar 缺失时明确报错并保留 `.py` 高级回退。
 5. **可访问性**：恢复文字选中（可复制路径/报错）；`--text-muted` 提到 #5f5e57（浅）/#9a9a9a（深）保证 4.5:1；侧边栏 hover + focus-within + 显式开关三重展开；reduced-motion 保留 spinner/focus 等功能性动效，只去掉装饰性动画（motion 的 `useReducedMotion` + CSS `@media`）。
 
 **踩坑实录（开发期实测，已修）：**
 
 - `--restore-hooks` 与 `--yes` 互斥（argparse 校验），Manage 执行该操作时不追加 `--yes`
-- `--status` 在存在 conflict/异常节点时非零退出但 stdout 完整，`fetchStatus` 按「有目录列表即成功」处理
+- `--status` 在存在 conflict/异常节点时可非零退出但 stdout 仍包含可识别目录；`fetchStatus` 在超时或零目录时才报错并允许用户重试
 - `Hooks restore: available …` 是提示行不是状态，解析时映射为 `restorable`
 - kv 区可能出现 `[Error] config.toml …` 中文诊断行，需转成 warning 展示而非吞掉
 

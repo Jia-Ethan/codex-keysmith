@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  beginOperation,
   beginCliCheck,
   completeCliCheck,
+  endOperation,
   getState,
   setCliInfo,
+  setView,
 } from "./store.js";
 
 describe("CLI 检测结果时序", () => {
@@ -34,5 +37,28 @@ describe("CLI 检测结果时序", () => {
       checked: true,
     })).toBe(false);
     expect(getState().cliInfo.path).toBe("/selected/cli");
+  });
+});
+
+describe("全局写操作锁", () => {
+  it("只允许锁持有者释放，阻止 Deploy 与 Manage 并发写入", () => {
+    expect(beginOperation("deploy")).toBe(true);
+    expect(beginOperation("manage:uninstall")).toBe(false);
+    expect(getState()).toMatchObject({
+      operationOwner: "deploy",
+      operationInProgress: true,
+    });
+    const currentView = getState().view;
+    const otherView = currentView === "manage" ? "deploy" : "manage";
+    expect(setView(otherView)).toBe(false);
+    expect(getState().view).toBe(currentView);
+
+    expect(endOperation("manage:uninstall")).toBe(false);
+    expect(getState().operationInProgress).toBe(true);
+    expect(endOperation("deploy")).toBe(true);
+    expect(getState()).toMatchObject({
+      operationOwner: null,
+      operationInProgress: false,
+    });
   });
 });

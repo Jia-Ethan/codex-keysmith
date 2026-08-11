@@ -4,6 +4,7 @@
 let state = {
   cliInfo: { path: null, version: "", runtime: "", error: null, checked: false },
   lastStatus: null,
+  operationOwner: null,
   operationInProgress: false,
   view: "dashboard",
 };
@@ -51,19 +52,30 @@ export function setLastStatus(lastStatus) {
   emit();
 }
 
-export function setOperationInProgress(operationInProgress) {
-  state = { ...state, operationInProgress };
+export function beginOperation(owner) {
+  if (!owner || state.operationOwner) return false;
+  state = { ...state, operationOwner: owner, operationInProgress: true };
   emit();
+  return true;
+}
+
+export function endOperation(owner) {
+  if (!owner || state.operationOwner !== owner) return false;
+  state = { ...state, operationOwner: null, operationInProgress: false };
+  emit();
+  return true;
 }
 
 /** 供非 React 环境（窗口关闭拦截）同步读取操作锁 */
 export function isOperationInProgressRef() {
-  return state.operationInProgress;
+  return Boolean(state.operationOwner);
 }
 
 export function setView(view) {
+  if (state.operationOwner && view !== state.view) return false;
   // 离开 manage 时失效快照（与原逻辑一致）
   const lastStatus = view === "manage" ? state.lastStatus : null;
   state = { ...state, view, lastStatus };
   emit();
+  return true;
 }
