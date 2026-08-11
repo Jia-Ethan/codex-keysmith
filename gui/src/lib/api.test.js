@@ -1,5 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
-import { resolveCli } from "./api.js";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fetchStatus, resolveCli } from "./api.js";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+beforeEach(() => {
+  invoke.mockReset();
+});
 
 describe("resolveCli", () => {
   it("优先验证并使用已保存的手动 CLI 路径", async () => {
@@ -77,5 +84,45 @@ describe("resolveCli", () => {
     });
     expect(getVersion).not.toHaveBeenCalled();
     expect(getRuntime).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchStatus", () => {
+  it("exit 0 但非空报告不可识别时失败关闭", async () => {
+    invoke.mockResolvedValue({
+      stdout: "[Status] Output contract changed unexpectedly.\r\n",
+      stderr: "",
+      exit_code: 0,
+      timed_out: false,
+    });
+
+    await expect(fetchStatus()).rejects.toThrow("Output contract changed");
+  });
+
+  it("非零退出但已解析到完整目录报告时保留诊断状态", async () => {
+    invoke.mockResolvedValue({
+      stdout: "── Status directory: C:\\Users\\Administrator\\.codex ──\r\n    Config activation: conflict\r\n",
+      stderr: "",
+      exit_code: 1,
+      timed_out: false,
+    });
+
+    await expect(fetchStatus()).resolves.toMatchObject({
+      directories: [{
+        path: "C:\\Users\\Administrator\\.codex",
+        activation: "conflict",
+      }],
+    });
+  });
+
+  it("超时即使已有部分可解析报告也失败", async () => {
+    invoke.mockResolvedValue({
+      stdout: "── Status directory: C:\\Users\\Administrator\\.codex ──\r\n",
+      stderr: "status timed out",
+      exit_code: -1,
+      timed_out: true,
+    });
+
+    await expect(fetchStatus()).rejects.toThrow("status timed out");
   });
 });

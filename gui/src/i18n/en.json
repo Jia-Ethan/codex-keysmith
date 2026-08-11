@@ -94,6 +94,7 @@
     "previewFailed": "Preview failed; the flow is blocked",
     "previewTimeout": "Preview timed out; the flow is blocked",
     "previewEmpty": "The CLI produced no preview; the flow is blocked",
+    "previewUnrecognized": "The CLI preview format was not recognized; the flow is blocked",
     "confirmDeploy": "Confirm Deploy",
     "confirmHint": "This modifies config.toml and the prompt file in the target directory. The CLI backs up automatically.",
     "deploying": "Deploying…",

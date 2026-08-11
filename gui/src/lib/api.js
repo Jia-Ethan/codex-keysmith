@@ -69,9 +69,9 @@ export async function fetchStatus() {
 
   const output = await cliRun(args);
   // status 在目录存在 conflict/异常节点时也会非零退出，但 stdout 仍是完整
-  // 状态报告（SPEC §5.1）。只有连目录列表都没输出时才视为真失败。
+  // 状态报告（SPEC §5.1）。超时或连目录列表都没解析到时才视为真失败。
   const parsed = parseStatus(output.stdout);
-  if (output.exit_code !== 0 && parsed.directories.length === 0) {
+  if (output.timed_out || parsed.directories.length === 0) {
     throw new CliError(output);
   }
   return parsed;
