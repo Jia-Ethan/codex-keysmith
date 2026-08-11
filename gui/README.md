@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-`desktop-v0.2.0-beta.3` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+`desktop-v0.2.0-beta.5` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
@@ -63,7 +63,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo check --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-安装包验收还需验证目标架构、GUI/CLI 版本、sidecar `--version`、全流程临时目录测试、最终图标、签名和公证状态。
+安装包验收还需验证目标架构、GUI/CLI 版本、设置页 source commit 与发布标签 peeled commit 一致、sidecar `--version`、全流程临时目录测试、最终图标、签名和公证状态。
 
 ## 功能
 
