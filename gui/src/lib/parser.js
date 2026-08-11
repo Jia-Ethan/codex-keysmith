@@ -11,6 +11,15 @@
 // directory / symbolic link / FIFO / socket / other node 等）
 const FILE_LINE_RE = /^ {4}(.+?): ([^()]+) \((.+)\)$/;
 
+const STATUS_HEADER_RE =
+  /^\[Status\] Found (\d+) Codex configuration location\(s\) \(read-only inspection\):$/;
+const STATUS_DONE_RE =
+  /^\[Done\] Status found no blockers; live active\/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed\.$/;
+const STATUS_INACTIVE_DONE_RE =
+  /^\[Done\] Status recognized (\d+) inactive-by-config location\(s\) and found no other blockers; live active\/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed\.$/;
+const STATUS_ERROR_RE =
+  /^\[Error\] (\d+) location\(s\) contain conflicts or abnormal nodes\.$/;
+
 const NODE_NAME_MAP = {
   "config.toml": "configToml",
   "gpt-unrestricted.md": "md",
@@ -19,6 +28,22 @@ const NODE_NAME_MAP = {
   "hooks.json.disabled": "hooksDisabled",
   "deployment manifest": "manifest",
 };
+const REQUIRED_STATUS_NODE_KEYS = Object.values(NODE_NAME_MAP);
+const REQUIRED_STATUS_FIELDS = [
+  "modelInstructionsFile",
+  "residue",
+];
+const VALID_ACTIVATIONS = new Set([
+  "active",
+  "inactive-by-config",
+  "conflict",
+  "not-installed",
+]);
+const VALID_LEGACY_MIGRATIONS = new Set(["none", "archive", "unmanaged"]);
+const VALID_HOOKS_STATUSES = new Set(["absent", "active", "restorable", "conflict"]);
+const VALID_HEALTH_STATUSES = new Set(["healthy", "blocked"]);
+const VALID_UNINSTALL_READINESS = new Set(["ready", "blocked", "not-applicable"]);
+const VALID_DEPLOYABILITY = new Set(["ready", "blocked"]);
 
 const MANAGEMENT_PREVIEW_SENTINELS = new Set([
   "[Preview] No files were changed; add --yes to confirm uninstall.",
@@ -35,16 +60,76 @@ function splitCliLines(text) {
   return String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
 }
 
+function parseStatusTerminator(line) {
+  if (STATUS_DONE_RE.test(line)) {
+    return { kind: "done", affectedCount: 0, line };
+  }
+
+  const inactiveMatch = line.match(STATUS_INACTIVE_DONE_RE);
+  if (inactiveMatch) {
+    return { kind: "done", affectedCount: Number(inactiveMatch[1]), line };
+  }
+
+  const errorMatch = line.match(STATUS_ERROR_RE);
+  if (errorMatch) {
+    return { kind: "error", affectedCount: Number(errorMatch[1]), line };
+  }
+
+  return null;
+}
+
+function statusDirectoryIsComplete(directory) {
+  const nodeKeys = Object.keys(directory.nodes);
+  if (nodeKeys.length === 0) return directory.errors.length > 0;
+  return REQUIRED_STATUS_NODE_KEYS.every((key) => directory.nodes[key])
+    && REQUIRED_STATUS_FIELDS.every((field) => directory.seenFields.has(field))
+    && statusFieldIsComplete(directory, "activation", VALID_ACTIVATIONS)
+    && statusFieldIsComplete(
+      directory,
+      "legacyMigration",
+      VALID_LEGACY_MIGRATIONS,
+      true,
+    )
+    && statusFieldIsComplete(directory, "hooksStatus", VALID_HOOKS_STATUSES, true)
+    && statusFieldIsComplete(directory, "health", VALID_HEALTH_STATUSES)
+    && statusFieldIsComplete(
+      directory,
+      "uninstallReadiness",
+      VALID_UNINSTALL_READINESS,
+    )
+    && statusFieldIsComplete(directory, "deployability", VALID_DEPLOYABILITY);
+}
+
+function statusFieldIsComplete(directory, field, validValues, allowMissingOnError = false) {
+  if (!directory.seenFields.has(field)) {
+    return allowMissingOnError && directory.errors.length > 0;
+  }
+  return validValues.has(directory[field]);
+}
+
 /**
  * 解析 --status 输出（SPEC §5.1）
  * 容错原则：遇到不认识的行直接跳过，绝不抛异常导致整页挂掉。
  * 但已识别的节点行如果类型异常，必须保留节点并升级为 warning。
  */
-export function parseStatus(stdout) {
-  const result = { directories: [], raw: stdout };
+export function parseStatus(stdout, exitCode = null) {
+  const result = {
+    directories: [],
+    declaredDirectoryCount: null,
+    terminator: null,
+    semanticComplete: false,
+    raw: stdout,
+  };
   let current = null;
+  const lines = splitCliLines(stdout);
 
-  for (const line of splitCliLines(stdout)) {
+  for (const line of lines) {
+    const headerMatch = line.match(STATUS_HEADER_RE);
+    if (headerMatch) {
+      result.declaredDirectoryCount = Number(headerMatch[1]);
+      continue;
+    }
+
     const dirMatch = line.match(/^── Status directory: (.+?) ──$/);
     if (dirMatch) {
       current = {
@@ -59,12 +144,22 @@ export function parseStatus(stdout) {
         uninstallReadiness: "unknown",
         deployability: "unknown",
         warnings: [],
+        errors: [],
+        seenFields: new Set(),
         abnormalNodes: [], // 类型异常的节点（符号链接/FIFO/socket…），视图层显眼展示
       };
       result.directories.push(current);
       continue;
     }
     if (!current) continue;
+
+    const diagnosticMatch = line.match(/^ {4}\[(Warning|Error)\]\s+(.+)$/);
+    if (diagnosticMatch) {
+      const [, severity, detail] = diagnosticMatch;
+      current.warnings.push(`${severity}: ${detail}`);
+      if (severity === "Error") current.errors.push(detail);
+      continue;
+    }
 
     const fileMatch = line.match(FILE_LINE_RE);
     if (fileMatch) {
@@ -94,41 +189,53 @@ export function parseStatus(stdout) {
       if (m) {
         const detail = [m[2], value].filter(Boolean).join(": ");
         current.warnings.push(`${m[1]}: ${detail}`);
+        if (m[1] === "Error") current.errors.push(detail);
       }
       continue;
     }
-    // "Hooks restore: available ..." 是提示行不是状态，等效于 restorable
-    if (label === "Hooks restore" && value.startsWith("available")) {
-      current.hooksStatus = "restorable";
+    // Hooks restore 是提示行，但仍完整表达 restorable/conflict 状态。
+    if (label === "Hooks restore") {
+      current.seenFields.add("hooksStatus");
+      current.hooksStatus = firstToken(value) === "available"
+        ? "restorable"
+        : parseHooks(value);
       continue;
     }
 
     switch (label) {
       case "model_instructions_file":
+        current.seenFields.add("modelInstructionsFile");
         current.modelInstructionsFile =
           value === "<unset or unrecognized>" ? null : value;
         break;
       case "Config activation":
+        current.seenFields.add("activation");
         current.activation = parseActivation(value);
         break;
       case "Transaction residue":
+        current.seenFields.add("residue");
         current.residue =
           value === "none" ? [] : value.split(", ").filter(Boolean);
         break;
       case "Legacy migration":
+        current.seenFields.add("legacyMigration");
         current.legacyMigration = parseLegacy(value);
         break;
       case "Hooks status":
+        current.seenFields.add("hooksStatus");
         current.hooksStatus = parseHooks(value);
         break;
       case "Structural health":
-        current.health = value.startsWith("healthy") ? "healthy" : "blocked";
+        current.seenFields.add("health");
+        current.health = parseKnownToken(value, VALID_HEALTH_STATUSES);
         break;
       case "Uninstall readiness":
-        current.uninstallReadiness = firstToken(value);
+        current.seenFields.add("uninstallReadiness");
+        current.uninstallReadiness = parseKnownToken(value, VALID_UNINSTALL_READINESS);
         break;
       case "Deployability":
-        current.deployability = firstToken(value);
+        current.seenFields.add("deployability");
+        current.deployability = parseKnownToken(value, VALID_DEPLOYABILITY);
         break;
       default:
         if (value.startsWith("[Warning]")) {
@@ -136,6 +243,46 @@ export function parseStatus(stdout) {
         }
     }
   }
+
+  const lastLine = [...lines].reverse().find((line) => line.trim()) ?? "";
+  result.terminator = parseStatusTerminator(lastLine);
+
+  const countMatches =
+    result.declaredDirectoryCount !== null
+    && result.declaredDirectoryCount === result.directories.length;
+  const directoryBlocksComplete =
+    result.directories.length > 0
+    && result.directories.every(statusDirectoryIsComplete);
+  const invalidDirectoryCount = result.directories.filter(
+    (directory) => directory.errors.length > 0
+      || directory.activation === "conflict"
+      || directory.health === "blocked",
+  ).length;
+  const inactiveDirectoryCount = result.directories.filter(
+    (directory) => directory.activation === "inactive-by-config",
+  ).length;
+  const parsedAffectedCount = result.terminator?.kind === "error"
+    ? invalidDirectoryCount
+    : inactiveDirectoryCount;
+  const affectedCountMatches =
+    result.terminator !== null
+    && result.terminator.affectedCount === parsedAffectedCount;
+  const terminatorMatchesDirectoryStates = result.terminator?.kind === "error"
+    ? invalidDirectoryCount > 0
+    : invalidDirectoryCount === 0;
+  const terminatorMatchesExitCode =
+    exitCode === null
+    || (exitCode === 0
+      ? result.terminator?.kind === "done"
+      : result.terminator?.kind === "error");
+  result.semanticComplete =
+    countMatches
+    && directoryBlocksComplete
+    && affectedCountMatches
+    && terminatorMatchesDirectoryStates
+    && terminatorMatchesExitCode;
+
+  for (const directory of result.directories) delete directory.seenFields;
 
   return result;
 }
@@ -308,26 +455,30 @@ function normalizeKind(kind) {
 }
 
 function parseActivation(value) {
-  for (const k of ["inactive-by-config", "not-installed", "conflict", "active"]) {
-    if (value.startsWith(k)) return k;
-  }
-  return "unknown";
+  return parseKnownToken(value, VALID_ACTIVATIONS);
 }
 
 function parseLegacy(value) {
   if (value === "none") return "none";
-  if (value.startsWith("next default deploy will archive")) return "archive";
+  if (
+    value.startsWith("the next default deployment will archive")
+    || value.startsWith("next default deploy will archive")
+  ) {
+    return "archive";
+  }
   if (value.startsWith("unmanaged")) return "unmanaged";
   return "unknown";
 }
 
 function parseHooks(value) {
-  for (const k of ["absent", "active", "restorable", "conflict", "blocked", "ready"]) {
-    if (value.startsWith(k)) return k;
-  }
-  return "unknown";
+  return parseKnownToken(value, VALID_HOOKS_STATUSES);
 }
 
 function firstToken(value) {
-  return value.split(/[\s(]/)[0] || "unknown";
+  return value.split(/[\s(（]/)[0] || "unknown";
+}
+
+function parseKnownToken(value, allowed) {
+  const token = firstToken(value);
+  return allowed.has(token) ? token : "unknown";
 }
