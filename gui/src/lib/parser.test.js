@@ -114,6 +114,8 @@ const CLI_USAGE_ERROR = {
   timed_out: false,
 };
 
+const withLineEnding = (text, ending) => text.replace(/\n/g, ending);
+
 describe("parseStatus", () => {
   it("解析 active 状态（SPEC 真实样本）", () => {
     const r = parseStatus(STATUS_ACTIVE);
@@ -134,6 +136,34 @@ describe("parseStatus", () => {
     expect(d.deployability).toBe("ready");
     expect(d.warnings).toEqual([]);
     expect(d.abnormalNodes).toEqual([]);
+  });
+
+  it.each(["\n", "\r\n", "\r"])("兼容 %j 换行", (ending) => {
+    const d = parseStatus(withLineEnding(STATUS_ACTIVE, ending)).directories[0];
+    expect(d.path).toBe("/Users/ethan/.codex");
+    expect(d.activation).toBe("active");
+    expect(d.deployability).toBe("ready");
+  });
+
+  it("解析 Windows CRLF 双目录报告且保留原始输出", () => {
+    const out = [
+      "[Status] Found 2 Codex configuration location(s) (read-only inspection):",
+      "",
+      "── Status directory: C:\\Users\\Administrator\\.codex ──",
+      "    Config activation: not-installed",
+      "",
+      "── Status directory: C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex ──",
+      "    Config activation: conflict",
+      "",
+    ].join("\r\n");
+
+    const result = parseStatus(out);
+    expect(result.raw).toBe(out);
+    expect(result.directories.map((directory) => directory.path)).toEqual([
+      "C:\\Users\\Administrator\\.codex",
+      "C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex",
+    ]);
+    expect(result.directories[1].activation).toBe("conflict");
   });
 
   it("异常节点类型（symbolic link / FIFO / socket）不静默丢弃，升级为 warning", () => {
@@ -228,6 +258,12 @@ describe("parseDryRun", () => {
     expect(r.warnings.some((w) => w.startsWith("No hooks.json detected"))).toBe(true);
   });
 
+  it.each(["\n", "\r\n", "\r"])("兼容 %j 换行", (ending) => {
+    const r = parseDryRun(withLineEnding(DRY_RUN_OK, ending));
+    expect(r.semanticComplete).toBe(true);
+    expect(r.targets[0].actions).toHaveLength(6);
+  });
+
   it("[Blocked] 动作升级为 blocker", () => {
     const r = parseDryRun(DRY_RUN_BLOCKED);
     expect(r.blockers).toHaveLength(1);
@@ -295,17 +331,115 @@ describe("gatePreview（问题 1：门禁不可绕过）", () => {
     expect(gate.ok).toBe(false);
     expect(gate.reason).toBe("blockers");
   });
+
+  it.each([
+    ["缺少 prompt source", DRY_RUN_OK.replace(/^\[Prompt\].*\n/, "")],
+    ["缺少 target", DRY_RUN_OK.replace(/^  Target:.*$(?:\n {4}→.*$)*/m, "")],
+    ["target 缺少 action", "[Prompt] Source: bundled prompt.md; SHA-256: " + "a".repeat(64) + "\n  Target: C:\\Users\\Administrator\\.codex"],
+  ])("退出码 0 但%s → 阻断", (_label, stdout) => {
+    const gate = gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parseDryRun(stdout),
+    );
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe("unrecognized");
+  });
 });
 
 describe("parseUninstallPreview", () => {
   it("解析回滚计划", () => {
     const out = `[Uninstall] Preview (no changes made):
   [Plan] /tmp/fake-codex: revert 3 layer(s)
-         MD restored from backup, config reverted, hooks kept isolated`;
+         MD restored from backup, config reverted, hooks kept isolated
+[Preview] No files were changed; add --yes to confirm uninstall.`;
     const r = parseUninstallPreview(out);
     expect(r.plans).toHaveLength(1);
     expect(r.plans[0].dir).toBe("/tmp/fake-codex");
     expect(r.plans[0].summary).toContain("revert 3 layer(s)");
     expect(r.plans[0].detail).toContain("MD restored");
+    expect(r.semanticComplete).toBe(true);
+  });
+
+  it("只有计划但缺少预览确认标记时阻断", () => {
+    const stdout = "  [Plan] /tmp/fake-codex: revert 1 layer(s)";
+    const parsed = parseUninstallPreview(stdout);
+    expect(parsed.plans).toHaveLength(1);
+    expect(gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    )).toMatchObject({ ok: false, reason: "unrecognized" });
+  });
+
+  it.each(["\n", "\r\n", "\r"])("兼容 %j 换行并解析恢复计划", (ending) => {
+    const out = withLineEnding(
+      "[Restore] Deployment transaction abc has 1 participant(s); phase: prepared\n  [Plan] 恢复 C:\\Users\\Administrator\\.codex\n[Preview] No files were changed; add --yes to confirm recovery.",
+      ending,
+    );
+    const r = parseUninstallPreview(out);
+    expect(r.plans).toEqual([{
+      dir: "C:\\Users\\Administrator\\.codex",
+      summary: "Restore interrupted transaction",
+      detail: null,
+    }]);
+    expect(gatePreview(
+      { stdout: out, stderr: "", exit_code: 0, timed_out: false },
+      r,
+    ).ok).toBe(true);
+  });
+
+  it.each([
+    "[Done] No codex-keysmith deployment manifest was found; nothing to uninstall.",
+    "[Done] No managed deployment was found; nothing to uninstall.",
+    "[Done] No interrupted deployment transaction requires recovery.",
+    "[Done] No interrupted uninstall transaction requires recovery.",
+    "[Done] Restored 0 hooks.json file(s).",
+  ])("明确 no-op/完成输出放行：%s", (stdout) => {
+    const parsed = parseUninstallPreview(stdout);
+    const gate = gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    );
+    expect(parsed.semanticComplete).toBe(true);
+    expect(gate.ok).toBe(true);
+  });
+
+  it.each([
+    "[Preview] No files were changed; add --yes to confirm uninstall.",
+    "[Preview] No files were changed; add --yes to confirm recovery.",
+    "[Preview] No files were changed; add --yes to clean the initializing journal.",
+    "[Preview] Cleanup residue was not changed; add --yes to confirm cleanup.",
+    "[Preview] Found an empty initializing journal before intent publication; nothing changed. Add --yes to remove it.",
+    "[Preview] 终态资源不会回滚；确认清理请添加 --yes。",
+    "[Preview] 终态资源不会反向恢复；确认清理请添加 --yes。",
+    "[Preview] 业务路径未修改；确认清理初始化日志请添加 --yes。",
+  ])("当前 CLI 合法预览终止句放行：%s", (stdout) => {
+    const parsed = parseUninstallPreview(stdout);
+    expect(parsed.preview).toBe(stdout);
+    expect(gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    ).ok).toBe(true);
+  });
+
+  it("未知非空输出失败关闭", () => {
+    const stdout = "[Notice] A future CLI changed this report format.";
+    const parsed = parseUninstallPreview(stdout);
+    const gate = gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    );
+    expect(parsed.semanticComplete).toBe(false);
+    expect(gate).toMatchObject({ ok: false, reason: "unrecognized" });
+  });
+
+  it("未知预览即使包含 --yes 也失败关闭", () => {
+    const stdout = "[Preview] Unsupported format; rerun with --yes";
+    const parsed = parseUninstallPreview(stdout);
+    const gate = gatePreview(
+      { stdout, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    );
+    expect(parsed.semanticComplete).toBe(false);
+    expect(gate).toMatchObject({ ok: false, reason: "unrecognized" });
   });
 });
