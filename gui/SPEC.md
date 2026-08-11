@@ -119,7 +119,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 [Done] Status found no blockers; live active/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed.
 ```
 
-**解析目标（parser.js 输出结构）：**
+**解析目标（`fetchStatus()` 输出结构）：**
 
 ```js
 {
@@ -132,17 +132,25 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
   degraded: false,
   directories: [{
     path: "/Users/ethan/.codex",
-    nodes: { config_toml: "regular|missing|other", md: "regular|missing|other",
-             legacy_md: "...", hooks: "...", hooks_disabled: "...", manifest: "..." },
+    nodes: {
+      configToml: { kind: "regular|missing|other", path: "...", raw: "regular file" },
+      md: { kind: "...", path: "...", raw: "..." },
+      legacyMd: { kind: "...", path: "...", raw: "..." },
+      hooks: { kind: "...", path: "...", raw: "..." },
+      hooksDisabled: { kind: "...", path: "...", raw: "..." },
+      manifest: { kind: "...", path: "...", raw: "..." }
+    },
     modelInstructionsFile: "./gpt-unrestricted.md" | null,
     activation: "active" | "inactive-by-config" | "conflict" | "not-installed",
-    residue: "none" | "path1, path2",
+    residue: [] | ["path1", "path2"],
     legacyMigration: "none" | "archive" | "unmanaged",
-    hooksStatus: "absent" | "active" | "restorable" | "conflict" | "blocked",
+    hooksStatus: "absent" | "active" | "restorable" | "conflict",
     health: "healthy" | "blocked",
-    uninstallReadiness: "ready" | "blocked" | "not-installed" | "inactive-by-config",
-    deployability: "ready" | "blocked" | "inactive-by-config" | "not-installed",
-    warnings: []
+    uninstallReadiness: "ready" | "blocked" | "not-applicable",
+    deployability: "ready" | "blocked",
+    warnings: [],
+    errors: [],
+    abnormalNodes: []
   }]
 }
 ```
@@ -283,7 +291,7 @@ async fn cli_version(cli_path: Option<String>) -> Result<String, String>;
 async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 ```
 
-另注册 `tauri-plugin-dialog`（文件/目录选择）与官方 `tauri-plugin-single-instance`（重复启动时显示、取消最小化并聚焦现有主窗口），capabilities 开通 `dialog:default` + `dialog:allow-open`。窗口 1200×800、最小 900×600。
+另注册 `tauri-plugin-dialog`（文件/目录选择）与官方 `tauri-plugin-single-instance`（重复启动时恢复并显示现有主窗口，同时请求系统聚焦），capabilities 开通 `core:default`、`core:window:allow-close`、`core:window:allow-destroy`、`dialog:default` 与 `dialog:allow-open`。窗口 1200×800、最小 900×600。
 
 **实现要点：**
 
@@ -307,7 +315,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | 后端调用运行中 | 每次 Keysmith `cli_run`/`cli_version`/status/manifest 等 invoke 获取独立生命周期租约；全局交互锁禁用 Sidebar 和写入口，关闭请求排队，最后一个租约释放后自动销毁主窗口并退出；销毁失败回退到普通关闭并保留重试状态 |
 | 写操作进行中 | Deploy/Manage 通过全局互斥入口防止并发写；调用 CLI 时可叠加生命周期租约，只有全部租约释放后才解除关闭队列 |
 | 空闲关闭 | 无托盘驻留；关闭事件先建立退出屏障并阻止新后端调用，再显式销毁主窗口，避免默认关闭与迟到 sidecar 启动之间的竞态 |
-| 重复启动 | 第二进程退出并通知首进程显示、取消最小化、聚焦主窗口 |
+| 重复启动 | 第二进程退出并通知首进程恢复、显示主窗口，同时请求系统聚焦 |
 
 ## 9. 里程碑
 
@@ -327,7 +335,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
 - `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
-- `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 15 个 vitest 用例（真实 CLI 输出样本）
+- `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 使用真实 CLI 输出样本覆盖状态、预览和失败关闭边界
 - 本 SPEC.md：解析规范与设计决策
 
 **React 迁移期修复的问题（原 vanilla 版缺陷，均已在真机验证）：**
@@ -348,7 +356,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 **后续工作（正式发布门禁）：**
 
-1. 在原生 Apple Silicon / Windows x64 runner 上构建对应 PyInstaller sidecar 与 Tauri bundle
+1. 从最终发布提交在原生 Apple Silicon / Windows x64 runner 上重跑阻断构建与安装包验证，并绑定标签、source commit、build manifest 和资产校验和
 2. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
 3. 验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留后再创建 GitHub Release
 

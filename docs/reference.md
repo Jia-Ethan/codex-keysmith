@@ -245,6 +245,15 @@ python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -
 python3 -m coverage combine
 python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
+(
+  cd gui
+  npm ci
+  npm test
+  npm run build
+  cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+  cargo test --manifest-path src-tauri/Cargo.toml --locked
+  cargo check --manifest-path src-tauri/Cargo.toml --locked
+)
 
 # pre-tag / PR / CI candidate：完整 checkout；既有版本冲突必须精确拒绝
 RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
@@ -268,27 +277,39 @@ codex-keysmith/
 │   ├── ISSUE_TEMPLATE/
 │   ├── pull_request_template.md
 │   └── workflows/
+│       ├── desktop-candidate.yml
 │       ├── release.yml
 │       └── tests.yml
 ├── docs/
-│   ├── reference.md
-│   ├── recovery-and-uninstall.md → see hooks-transactions.md
 │   ├── agent-install.md
 │   ├── hooks-transactions.md
-│   └── legacy/
+│   ├── reference.md
+│   ├── legacy/
+│   └── releases/
 ├── examples/gpt-unrestricted.md
+├── gui/
+│   ├── src/
+│   ├── src-tauri/
+│   ├── README.md
+│   ├── SPEC.md
+│   ├── package.json
+│   └── package-lock.json
 ├── scripts/
 │   ├── build_release.py
 │   └── run_prompt_bank_regression.py
 ├── tests/
 ├── CHANGELOG.md
+├── CODE_SIGNING_POLICY.md
 ├── CONTRIBUTING.md
+├── LICENSE
+├── PRIVACY.md
+├── README.en.md
+├── README.md
 ├── SECURITY.md
 ├── VERSION
 ├── codex-instruct.py
 ├── pyproject.toml
-├── requirements-quality.txt
-└── README.md
+└── requirements-quality.txt
 ```
 
 ---
@@ -420,6 +441,15 @@ python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -
 python3 -m coverage combine
 python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
+(
+  cd gui
+  npm ci
+  npm test
+  npm run build
+  cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+  cargo test --manifest-path src-tauri/Cargo.toml --locked
+  cargo check --manifest-path src-tauri/Cargo.toml --locked
+)
 
 RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
@@ -434,17 +464,22 @@ git diff --check
 
 ```text
 codex-keysmith/
-├── .github/
-├── docs/
+├── .github/                  # issue/PR templates and Tests/Release/Desktop workflows
+├── docs/                     # reference, transaction design, install guide, release notes
 ├── examples/gpt-unrestricted.md
+├── gui/                      # React/Tauri desktop client, tests, and native bundle config
 ├── scripts/
 ├── tests/
 ├── CHANGELOG.md
+├── CODE_SIGNING_POLICY.md
 ├── CONTRIBUTING.md
+├── LICENSE
+├── PRIVACY.md
+├── README.en.md
+├── README.md
 ├── SECURITY.md
 ├── VERSION
 ├── codex-instruct.py
 ├── pyproject.toml
-├── requirements-quality.txt
-└── README.md
+└── requirements-quality.txt
 ```
