@@ -21,6 +21,14 @@
     "summary": "CLI {{cliVer}} · {{runtime}} · {{count}} Codex config location(s) detected",
     "noDirs": "No Codex configuration directory found.",
     "error": "Failed to fetch status",
+    "diagnosticTitle": "Status completed with diagnostics",
+    "diagnosticSummary": "The CLI exited with code {{exitCode}}. The complete status report is shown below; review the diagnostics before making changes.",
+    "diagnosticOutput": "View complete CLI output",
+    "diagnosticStdout": "Standard output:",
+    "diagnosticStderr": "Error output:",
+    "diagnosticTimeout": "Timed out",
+    "diagnosticExitCode": "Exit code",
+    "diagnosticYes": "yes",
     "refresh": "Refresh",
     "modelInstructions": "model_instructions_file",
     "hooks": "hooks",
@@ -121,6 +129,9 @@
     "confirmRestore": "Confirm restoring hooks?",
     "confirmRecover": "Confirm recovering the interrupted transaction?",
     "running": "Running…",
+    "exitQueued": "An operation is running. The app will exit automatically when it finishes.",
+    "exitGuardFailed": "Close protection could not be registered. Keep the app open until the operation finishes.",
+    "exitFailed": "The app could not close automatically. Close it again after the operation finishes.",
     "done": "Operation complete",
     "failed": "Operation failed",
     "result": "Result",
@@ -164,6 +175,7 @@
     "confirm": "Confirm",
     "close": "Close",
     "none": "none",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "operationBusy": "Another CLI operation is already running."
   }
 }

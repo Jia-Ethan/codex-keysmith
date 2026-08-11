@@ -4,11 +4,29 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings, normalizeCliPath } from "./settings.js";
 import { parseStatus, parseDryRun, gatePreview } from "./parser.js";
+import { beginOperation, endOperation } from "./store.js";
+
+function invokeTrackedOperation(command, payload) {
+  const operationLease = beginOperation();
+  if (!operationLease) {
+    return Promise.reject(
+      new Error("Application exit is pending; refusing to start another backend operation."),
+    );
+  }
+  try {
+    return Promise.resolve(invoke(command, payload)).finally(() => {
+      endOperation(operationLease);
+    });
+  } catch (error) {
+    endOperation(operationLease);
+    throw error;
+  }
+}
 
 /** 执行 CLI 命令，返回 { stdout, stderr, exit_code, timed_out } */
 export function cliRun(args, timeoutMs = 30_000) {
   const { cliPath } = getSettings();
-  return invoke("cli_run", {
+  return invokeTrackedOperation("cli_run", {
     cliPath: cliPath || null,
     args,
     timeoutMs,
@@ -17,22 +35,22 @@ export function cliRun(args, timeoutMs = 30_000) {
 
 /** 读取指定 codex 目录的 manifest JSON */
 export function readManifest(codexDir) {
-  return invoke("read_manifest", { codexDir });
+  return invokeTrackedOperation("read_manifest", { codexDir });
 }
 
 /** 探测 CLI，返回 { path, runtime } */
 export function detectCli() {
-  return invoke("detect_cli");
+  return invokeTrackedOperation("detect_cli");
 }
 
 /** 获取 CLI 版本 */
 export function cliVersion(cliPath) {
-  return invoke("cli_version", { cliPath: cliPath || null });
+  return invokeTrackedOperation("cli_version", { cliPath: cliPath || null });
 }
 
 /** 获取运行时类型：bundled / executable / python */
 export function cliRuntime(cliPath) {
-  return invoke("cli_runtime", { cliPath: cliPath || null });
+  return invokeTrackedOperation("cli_runtime", { cliPath: cliPath || null });
 }
 
 /** 验证手动 CLI 路径；未指定时保留 Rust 侧的 sidecar 优先自动探测。 */
@@ -69,9 +87,16 @@ export async function fetchStatus() {
 
   const output = await cliRun(args);
   // status 在目录存在 conflict/异常节点时也会非零退出，但 stdout 仍是完整
-  // 状态报告（SPEC §5.1）。超时或连目录列表都没解析到时才视为真失败。
-  const parsed = parseStatus(output.stdout);
-  if (output.timed_out || parsed.directories.length === 0) {
+  // 状态报告（SPEC §5.1）。只有声明目录数和终止句均完整时才允许降级展示。
+  const parsed = parseStatus(output.stdout, output.exit_code);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = String(output.stderr ?? "");
+  parsed.timedOut = Boolean(output.timed_out);
+  parsed.degraded =
+    (parsed.exitCode != null && parsed.exitCode !== 0)
+    || Boolean(parsed.stderr.trim());
+
+  if (parsed.timedOut || !parsed.semanticComplete) {
     throw new CliError(output);
   }
   return parsed;
@@ -105,8 +130,16 @@ export function isTauriMissing(err) {
 }
 
 export class CliError extends Error {
-  constructor(output) {
-    super(output.stderr || output.stdout || `exit ${output.exit_code}`);
+  constructor(output = {}) {
+    const stdout = String(output.stdout ?? "");
+    const stderr = String(output.stderr ?? "");
+    const details = [stderr.trim(), stdout.trim()].filter(Boolean);
+    super(details.join("\n\n") || `exit ${output.exit_code ?? "unknown"}`);
+    this.name = "CliError";
     this.output = output;
+    this.stdout = stdout;
+    this.stderr = stderr;
+    this.exitCode = output.exit_code ?? null;
+    this.timedOut = Boolean(output.timed_out);
   }
 }

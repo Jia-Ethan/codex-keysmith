@@ -59,10 +59,94 @@ jobs:
       - run: echo Contents/MacOS/codex-keysmith-cli "codex-keysmith-cli.exe"
       - run: echo 'Expected exactly one macOS app bundle.'
       - run: echo 'Expected exactly one macOS GUI executable.'
-      - run: echo desktop-candidate-install 'Start-Process -FilePath $bundles[0].FullName'
-      - run: echo '--status --lang en' '--dry-run --lang en'
-      - run: echo 'Compare-Object -ReferenceObject $beforeSmoke -DifferenceObject $afterSmoke'
-      - run: echo 'Installed NSIS candidate must contain exactly one uninstaller.'
+      - name: Validate and stage Windows candidate
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "desktop-candidate-install"
+          $installer = Start-Process -FilePath $bundles[0].FullName -PassThru
+          [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
+          [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
+          [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
+          [Environment]::SetEnvironmentVariable("CODEX_HOME", $null, "Process")
+          try {
+            $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1
+            $automaticStatusText = $automaticStatusOutput | Out-String
+            if ($automaticStatusText -match [Regex]::Escape($runtimeDir)) {
+              throw "Automatic discovery reported the Windows runtime directory"
+            }
+            & rustc $slowSidecarSource -O -o $slowSidecarBinary
+            $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+            if (-not $slowAppProcess.CloseMainWindow()) {
+              throw "Slow-sidecar GUI rejected the native close request."
+            }
+            if (-not $slowAppProcess.WaitForExit(20000)) {
+              throw "Slow-sidecar GUI did not exit after the active process tree completed."
+            }
+            if ($slowMarkerText -notmatch "complete") {
+              throw "GUI closed before the active sidecar process tree completed."
+            }
+            Copy-Item -LiteralPath $realSidecarBackup -Destination $installedSidecars[0].FullName -Force
+            $appProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+            [KeysmithWindowProbe]::ShowWindow($primaryWindowHandle, 6) | Out-Null
+            if (-not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle)) {
+              throw "Primary GUI could not be minimized before the second-instance handoff."
+            }
+            $secondProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+            if (-not $secondProcess.WaitForExit(15000)) {
+              throw "Second GUI launch did not hand off to the existing instance."
+            }
+            $primaryFocused = [KeysmithWindowProbe]::GetForegroundWindow() -eq $primaryWindowHandle
+            if ($appProcess.HasExited -or $appProcess.MainWindowHandle -eq 0) {
+              throw "Second GUI launch did not preserve the primary window."
+            }
+            $primaryVisible = [KeysmithWindowProbe]::IsWindowVisible($primaryWindowHandle)
+            if (-not $primaryRestored) {
+              throw "Second GUI launch did not restore the minimized primary window."
+            }
+            if (-not $primaryVisible) {
+              throw "Second GUI launch did not make the primary window visible."
+            }
+            if (-not $primaryFocused) {
+              Write-Warning "Second GUI launch restored the primary window but Windows did not make it foreground."
+            }
+            if (-not $appProcess.CloseMainWindow()) {
+              throw "Installed GUI rejected the native close request."
+            }
+            if (-not $appProcess.WaitForExit(15000)) {
+              throw "Installed GUI remained resident after its main window was closed."
+            }
+          }
+          finally {
+            foreach ($name in $environmentBackup.Keys) {
+              [Environment]::SetEnvironmentVariable(
+                $name,
+                $environmentBackup[$name],
+                "Process"
+              )
+            }
+          }
+          $payloadProcessDeadline = [DateTime]::UtcNow.AddSeconds(15)
+          do {
+            $remainingPayloadProcesses = @(
+              Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                Where-Object { $true }
+            )
+          } while ([DateTime]::UtcNow -lt $payloadProcessDeadline)
+          if ($remainingPayloadProcesses.Count -ne 0) {
+            throw "Installed GUI or sidecar processes remained after close"
+          }
+          & $installedSidecars[0].FullName --status --lang en
+          & $installedSidecars[0].FullName --dry-run --lang en
+          if (Compare-Object -ReferenceObject $beforeCodex -DifferenceObject $afterCodex) {
+            throw "Codex snapshot changed"
+          }
+          if (Compare-Object -ReferenceObject $beforeRuntime -DifferenceObject $afterRuntime) {
+            throw "Runtime snapshot changed"
+          }
+          if (@(Get-ChildItem -Filter "uninstall*.exe").Count -ne 1) {
+            throw "Installed NSIS candidate must contain exactly one uninstaller."
+          }
       - uses: actions/upload-artifact@0123456789012345678901234567890123456789
         with:
           retention-days: 14
@@ -161,6 +245,20 @@ def _config_fixture(root: Path, version: str = "0.2.0") -> None:
             },
         },
     )
+    _write_json(
+        root / "gui/src-tauri/capabilities/default.json",
+        {
+            "identifier": "default",
+            "windows": ["main"],
+            "permissions": [
+                "core:default",
+                "core:window:allow-close",
+                "core:window:allow-destroy",
+                "dialog:default",
+                "dialog:allow-open",
+            ],
+        },
+    )
     _write_icns(root / "gui/src-tauri/icons/icon.icns")
     _write_ico(root / "gui/src-tauri/icons/icon.ico")
     for platform, targets in (("macos", ["app", "dmg"]), ("windows", ["nsis"])):
@@ -254,6 +352,32 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "permission",
+    ["core:window:allow-close", "core:window:allow-destroy"],
+)
+def test_validate_config_requires_window_lifecycle_permissions(tmp_path, permission):
+    _config_fixture(tmp_path)
+    path = tmp_path / "gui/src-tauri/capabilities/default.json"
+    capability = json.loads(path.read_text(encoding="utf-8"))
+    capability["permissions"].remove(permission)
+    _write_json(path, capability)
+
+    with pytest.raises(validator.CandidateError, match="window lifecycle permissions"):
+        validator.validate_config(tmp_path)
+
+
+def test_validate_config_requires_window_capability_for_main_window(tmp_path):
+    _config_fixture(tmp_path)
+    path = tmp_path / "gui/src-tauri/capabilities/default.json"
+    capability = json.loads(path.read_text(encoding="utf-8"))
+    capability["windows"] = ["secondary"]
+    _write_json(path, capability)
+
+    with pytest.raises(validator.CandidateError, match="apply to the main window"):
+        validator.validate_config(tmp_path)
+
+
+@pytest.mark.parametrize(
     ("mutation", "message"),
     [
         (
@@ -289,6 +413,59 @@ def test_validate_config_accepts_package_json_version_source(tmp_path):
                 "      - name: Run Rust tests\n        run: echo tested\n      - name: Build pinned PyInstaller sidecar\n        run: echo built",
             ),
             "real sidecar before Rust tests",
+        ),
+        (
+            lambda text: text.replace(
+                "            $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1\n",
+                "            Write-Output '$automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1'\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                '          [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")\n',
+                "",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                "            $secondProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru\n",
+                "            Write-Output 'second launch'\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                "            $primaryFocused = [KeysmithWindowProbe]::GetForegroundWindow() -eq $primaryWindowHandle\n",
+                "            $primaryFocused = $true\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                "            $primaryVisible = [KeysmithWindowProbe]::IsWindowVisible($primaryWindowHandle)\n",
+                "            $primaryVisible = $true\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                "            if (-not $slowAppProcess.CloseMainWindow()) {\n",
+                "            Write-Output 'slow close'\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace(
+                "          $payloadProcessDeadline = [DateTime]::UtcNow.AddSeconds(15)\n",
+                "          Start-Sleep -Seconds 1\n",
+            ),
+            "Windows candidate smoke step",
+        ),
+        (
+            lambda text: text.replace("$environmentBackup[$name]", "$null"),
+            "Windows candidate smoke step",
         ),
     ],
 )

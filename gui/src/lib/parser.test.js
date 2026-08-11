@@ -44,12 +44,14 @@ const STATUS_ABNORMAL = `[Status] Found 1 Codex configuration location(s) (read-
     Config activation: active (the current config loads the managed prompt)
     Transaction residue: none
     Legacy migration: none
-    Hooks status: conflict (both hooks.json and hooks.json.disabled exist)
+    Hooks restore: conflict (restore will overwrite neither file)
     Structural health: blocked (abnormal node types detected)
     Uninstall readiness: blocked (resolve structural issues first)
     Deployability: blocked (resolve structural issues first)
 
-[Warning] Abnormal node types detected; manual inspection recommended.`;
+[Warning] Abnormal node types detected; manual inspection recommended.
+
+[Error] 1 location(s) contain conflicts or abnormal nodes.`;
 
 const STATUS_NOT_INSTALLED = `── Status directory: /tmp/fake-codex ──
     config.toml: regular file (/tmp/fake-codex/config.toml)
@@ -64,7 +66,7 @@ const STATUS_NOT_INSTALLED = `── Status directory: /tmp/fake-codex ──
     Legacy migration: none
     Hooks status: absent
     Structural health: healthy
-    Uninstall readiness: not-installed
+    Uninstall readiness: not-applicable
     Deployability: ready`;
 
 const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
@@ -81,7 +83,7 @@ const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
     Hooks restore: available (restore will overwrite neither file)
     Structural health: healthy
     Uninstall readiness: ready
-    Deployability: inactive-by-config`;
+    Deployability: blocked (switch back to an active profile first)`;
 
 // ── SPEC §5.2 真实 dry-run 输出 ──
 const DRY_RUN_OK = `[Prompt] Source: bundled examples/gpt-unrestricted.md; SHA-256: 2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0
@@ -115,6 +117,11 @@ const CLI_USAGE_ERROR = {
 };
 
 const withLineEnding = (text, ending) => text.replace(/\n/g, ending);
+const withDirectoryError = (text) => text.replace(
+  "    Deployability: blocked (resolve structural issues first)",
+  "    [Error] Abnormal status fixture requires manual review\n"
+    + "    Deployability: blocked (resolve structural issues first)",
+);
 
 describe("parseStatus", () => {
   it("解析 active 状态（SPEC 真实样本）", () => {
@@ -135,7 +142,11 @@ describe("parseStatus", () => {
     expect(d.uninstallReadiness).toBe("ready");
     expect(d.deployability).toBe("ready");
     expect(d.warnings).toEqual([]);
+    expect(d.errors).toEqual([]);
     expect(d.abnormalNodes).toEqual([]);
+    expect(r.declaredDirectoryCount).toBe(1);
+    expect(r.terminator).toMatchObject({ kind: "done", affectedCount: 0 });
+    expect(r.semanticComplete).toBe(true);
   });
 
   it.each(["\n", "\r\n", "\r"])("兼容 %j 换行", (ending) => {
@@ -150,10 +161,38 @@ describe("parseStatus", () => {
       "[Status] Found 2 Codex configuration location(s) (read-only inspection):",
       "",
       "── Status directory: C:\\Users\\Administrator\\.codex ──",
+      "    config.toml: regular file (C:\\Users\\Administrator\\.codex\\config.toml)",
+      "    gpt-unrestricted.md: missing (C:\\Users\\Administrator\\.codex\\gpt-unrestricted.md)",
+      "    gpt5.5-unrestricted.md: missing (C:\\Users\\Administrator\\.codex\\gpt5.5-unrestricted.md)",
+      "    hooks.json: missing (C:\\Users\\Administrator\\.codex\\hooks.json)",
+      "    hooks.json.disabled: missing (C:\\Users\\Administrator\\.codex\\hooks.json.disabled)",
+      "    deployment manifest: missing (C:\\Users\\Administrator\\.codex\\.codex-keysmith-manifest.json)",
+      "    model_instructions_file: <unset or unrecognized>",
       "    Config activation: not-installed",
+      "    Transaction residue: none",
+      "    Legacy migration: none",
+      "    Hooks status: absent",
+      "    Structural health: healthy",
+      "    Uninstall readiness: not-applicable",
+      "    Deployability: ready",
       "",
       "── Status directory: C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex ──",
+      "    config.toml: directory (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\config.toml)",
+      "    gpt-unrestricted.md: missing (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\gpt-unrestricted.md)",
+      "    gpt5.5-unrestricted.md: missing (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\gpt5.5-unrestricted.md)",
+      "    hooks.json: missing (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\hooks.json)",
+      "    hooks.json.disabled: missing (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\hooks.json.disabled)",
+      "    deployment manifest: missing (C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex\\.codex-keysmith-manifest.json)",
+      "    model_instructions_file: <unset or unrecognized>",
       "    Config activation: conflict",
+      "    Transaction residue: none",
+      "    Legacy migration: none",
+      "    Hooks status: absent",
+      "    Structural health: blocked",
+      "    Uninstall readiness: not-applicable",
+      "    Deployability: blocked",
+      "",
+      "[Error] 1 location(s) contain conflicts or abnormal nodes.",
       "",
     ].join("\r\n");
 
@@ -164,6 +203,134 @@ describe("parseStatus", () => {
       "C:\\Users\\Administrator\\AppData\\Local\\OpenAI\\Codex",
     ]);
     expect(result.directories[1].activation).toBe("conflict");
+    expect(result.declaredDirectoryCount).toBe(2);
+    expect(result.terminator).toMatchObject({ kind: "error", affectedCount: 1 });
+    expect(result.semanticComplete).toBe(true);
+  });
+
+  it("只有目录标题的截断报告不标记为语义完整", () => {
+    const out = `[Status] Found 1 Codex configuration location(s) (read-only inspection):
+
+── Status directory: C:\\Users\\Administrator\\.codex ──`;
+    const result = parseStatus(out);
+
+    expect(result.directories).toHaveLength(1);
+    expect(result.terminator).toBeNull();
+    expect(result.semanticComplete).toBe(false);
+  });
+
+  it("有终止句但目录详情不完整时仍失败关闭", () => {
+    const out = `[Status] Found 1 Codex configuration location(s) (read-only inspection):
+
+── Status directory: C:\\Users\\Administrator\\.codex ──
+    Config activation: active
+
+[Done] Status found no blockers; live active/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed.`;
+
+    expect(parseStatus(out, 0).semanticComplete).toBe(false);
+  });
+
+  it.each([
+    "model_instructions_file",
+    "Config activation",
+    "Transaction residue",
+    "Legacy migration",
+    "Hooks status",
+    "Structural health",
+    "Uninstall readiness",
+    "Deployability",
+  ])("缺少固定字段 %s 时不标记为语义完整", (label) => {
+    const line = new RegExp(`^ {4}${label.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}:.*\\n`, "m");
+    const out = STATUS_ACTIVE.replace(line, "");
+
+    expect(parseStatus(out, 0).semanticComplete).toBe(false);
+  });
+
+  it.each([
+    ["Config activation", "future-activation"],
+    ["Legacy migration", "future-migration"],
+    ["Hooks status", "future-hooks"],
+    ["Structural health", "future-health"],
+    ["Uninstall readiness", "future-readiness"],
+    ["Deployability", "future-deployability"],
+  ])("固定字段 %s 的未知值不会被视为完整", (label, value) => {
+    const line = new RegExp(`(^ {4}${label.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}:).*$`, "m");
+    const out = STATUS_ACTIVE.replace(line, `$1 ${value}`);
+
+    expect(parseStatus(out, 0).semanticComplete).toBe(false);
+  });
+
+  it.each([
+    [
+      "hooks",
+      "Hooks restore: conflict (restore will overwrite neither file)",
+      "Hooks status: future-hooks",
+    ],
+    ["legacy", "Legacy migration: none", "Legacy migration: future-migration"],
+  ])("异常目录明确出现未知 %s 状态时仍失败关闭", (_field, current, replacement) => {
+    const out = withDirectoryError(STATUS_ABNORMAL.replace(current, replacement));
+    const result = parseStatus(out, 1);
+
+    expect(result.directories[0].errors).toHaveLength(1);
+    expect(result.semanticComplete).toBe(false);
+  });
+
+  it.each([
+    ["hooks", /^ {4}Hooks restore:.*\n/m],
+    ["legacy", /^ {4}Legacy migration:.*\n/m],
+  ])("异常目录完全缺少 %s 状态时允许保留完整诊断", (_field, line) => {
+    const out = withDirectoryError(STATUS_ABNORMAL.replace(line, ""));
+    const result = parseStatus(out, 1);
+
+    expect(result.directories[0].errors).toHaveLength(1);
+    expect(result.semanticComplete).toBe(true);
+  });
+
+  it("声明目录数与实际目录数不一致时不标记为语义完整", () => {
+    const out = STATUS_ACTIVE.replace(
+      "[Status] Found 1 Codex configuration location(s)",
+      "[Status] Found 2 Codex configuration location(s)",
+    );
+    const result = parseStatus(out);
+
+    expect(result.declaredDirectoryCount).toBe(2);
+    expect(result.directories).toHaveLength(1);
+    expect(result.semanticComplete).toBe(false);
+  });
+
+  it.each([
+    [
+      "error 终止句数量",
+      STATUS_ABNORMAL.replace(
+        "[Error] 1 location(s) contain conflicts or abnormal nodes.",
+        "[Error] 0 location(s) contain conflicts or abnormal nodes.",
+      ),
+    ],
+    [
+      "inactive 终止句数量",
+      `[Status] Found 1 Codex configuration location(s) (read-only inspection):
+
+${STATUS_INACTIVE}
+
+[Done] Status recognized 0 inactive-by-config location(s) and found no other blockers; live active/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed.`,
+    ],
+  ])("%s 与目录状态不一致时不标记为语义完整", (_label, stdout) => {
+    expect(parseStatus(stdout).semanticComplete).toBe(false);
+  });
+
+  it.each([
+    ["exit 0 + error 终止句", STATUS_ABNORMAL, 0],
+    ["非零 exit + done 终止句", STATUS_ACTIVE, 1],
+    [
+      "阻塞目录 + done 终止句",
+      STATUS_ABNORMAL.replace(
+        "[Error] 1 location(s) contain conflicts or abnormal nodes.",
+        "[Done] Status found no blockers; live active/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed.",
+      ),
+      0,
+    ],
+  ])("%s 不标记为语义完整", (_label, stdout, exitCode) => {
+    expect(parseStatus(stdout, exitCode).semanticComplete).toBe(false);
   });
 
   it("异常节点类型（symbolic link / FIFO / socket）不静默丢弃，升级为 warning", () => {
@@ -216,6 +383,33 @@ describe("parseStatus", () => {
     expect(d.health).toBe("blocked");
     expect(d.deployability).toBe("blocked");
     expect(d.warnings.some((w) => w.includes("requires manual review"))).toBe(true);
+    expect(d.errors).toHaveLength(2);
+  });
+
+  it("兼容英文报告中 hooks conflict 后的全角括号", () => {
+    const out = STATUS_ABNORMAL.replace(
+      "Hooks restore: conflict (restore will overwrite neither file)",
+      "Hooks restore: conflict（restore will overwrite neither file）",
+    );
+    const result = parseStatus(out, 1);
+
+    expect(result.directories[0].hooksStatus).toBe("conflict");
+    expect(result.semanticComplete).toBe(true);
+  });
+
+  it("保留不含冒号的目录级 Error 诊断", () => {
+    const out = `[Status] Found 1 Codex configuration location(s) (read-only inspection):
+
+── Status directory: /tmp/unreadable ──
+    [Error] Could not safely inspect the directory
+
+[Error] 1 location(s) contain conflicts or abnormal nodes.`;
+    const result = parseStatus(out, 1);
+
+    expect(result.directories[0].errors).toEqual([
+      "Could not safely inspect the directory",
+    ]);
+    expect(result.semanticComplete).toBe(true);
   });
 
   it("解析 not-installed 状态", () => {
@@ -223,8 +417,19 @@ describe("parseStatus", () => {
     expect(d.activation).toBe("not-installed");
     expect(d.modelInstructionsFile).toBeNull();
     expect(d.nodes.manifest.kind).toBe("missing");
-    expect(d.uninstallReadiness).toBe("not-installed");
+    expect(d.uninstallReadiness).toBe("not-applicable");
     expect(d.deployability).toBe("ready");
+  });
+
+  it.each([
+    ["the next default deployment will archive the legacy file", "archive"],
+    ["unmanaged; the default deployment will preserve it", "unmanaged"],
+  ])("解析当前 CLI legacy 状态 %s", (value, expected) => {
+    const out = STATUS_ACTIVE.replace("Legacy migration: none", `Legacy migration: ${value}`);
+    const result = parseStatus(out, 0);
+
+    expect(result.directories[0].legacyMigration).toBe(expected);
+    expect(result.semanticComplete).toBe(true);
   });
 
   it("解析 inactive-by-config + 事务残留 + Hooks restore 提示行", () => {
@@ -234,6 +439,19 @@ describe("parseStatus", () => {
       "/tmp/fake-codex/.codex-keysmith-transaction-abc123",
     ]);
     expect(d.hooksStatus).toBe("restorable"); // Hooks restore: available → restorable
+    expect(d.deployability).toBe("blocked");
+  });
+
+  it("识别 inactive-by-config 完整报告的终止句", () => {
+    const out = `[Status] Found 1 Codex configuration location(s) (read-only inspection):
+
+${STATUS_INACTIVE}
+
+[Done] Status recognized 1 inactive-by-config location(s) and found no other blockers; live active/disabled hooks were not read or parsed, manifest-referenced backup recovery evidence was read and hashed, and no files were changed.`;
+    const result = parseStatus(out);
+
+    expect(result.terminator).toMatchObject({ kind: "done", affectedCount: 1 });
+    expect(result.semanticComplete).toBe(true);
   });
 
   it("垃圾输入不抛异常", () => {

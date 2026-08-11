@@ -21,6 +21,14 @@
     "summary": "CLI {{cliVer}} · {{runtime}} · 检测到 {{count}} 个 Codex 配置目录",
     "noDirs": "未找到任何 Codex 配置目录。",
     "error": "状态获取失败",
+    "diagnosticTitle": "状态检查已完成，但发现诊断项",
+    "diagnosticSummary": "CLI 以退出码 {{exitCode}} 结束。下方仍显示语义完整的状态报告，执行变更前请先检查诊断信息。",
+    "diagnosticOutput": "查看完整 CLI 输出",
+    "diagnosticStdout": "标准输出：",
+    "diagnosticStderr": "错误输出：",
+    "diagnosticTimeout": "是否超时",
+    "diagnosticExitCode": "退出码",
+    "diagnosticYes": "是",
     "refresh": "刷新",
     "modelInstructions": "model_instructions_file",
     "hooks": "hooks",
@@ -121,6 +129,9 @@
     "confirmRestore": "确认恢复 hooks？",
     "confirmRecover": "确认恢复中断事务？",
     "running": "执行中…",
+    "exitQueued": "操作正在执行，完成后应用将自动退出。",
+    "exitGuardFailed": "关闭保护注册失败，请保持应用开启直到操作完成。",
+    "exitFailed": "应用未能自动退出，请在操作完成后再次关闭。",
     "done": "操作完成",
     "failed": "操作失败",
     "result": "执行结果",
@@ -164,6 +175,7 @@
     "confirm": "确认",
     "close": "关闭",
     "none": "无",
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "operationBusy": "已有 CLI 操作正在执行。"
   }
 }

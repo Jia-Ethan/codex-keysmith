@@ -63,13 +63,14 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo check --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-安装包验收还需验证目标架构、GUI/CLI 版本、设置页 source commit 与发布标签 peeled commit 一致、sidecar `--version`、全流程临时目录测试、最终图标、签名和公证状态。
+安装包验收还需验证目标架构、GUI/CLI 版本、设置页 source commit 与发布标签 peeled commit 一致、sidecar `--version`、全流程临时目录测试、关闭窗口后无 GUI/sidecar 驻留进程、最终图标、签名和公证状态。Windows candidate CI 会额外隔离用户配置目录与 Codex Desktop 运行目录，验证自动发现只报告包含配置证据的目录、活动 sidecar 进程树完成后排队退出、二次启动回到现有窗口，并通过原生关闭请求和截止时间轮询验证无托盘退出语义。
 
 ## 功能
 
-- **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情。
+- **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情；完整的非零状态报告继续显示目录卡片，并保留退出码、stderr 与完整 CLI 输出。
 - **部署向导**：选择内容、dry-run 预览、确认执行；非零退出、超时、空输出和阻塞项全部阻断。
 - **管理**：卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。
+- **窗口生命周期**：单实例运行；所有 Keysmith CLI/status/manifest 后端调用使用生命周期租约，写操作额外使用全局互斥锁，关闭时先建立退出屏障，禁止新调用进入，并在最后一个租约完成后销毁窗口。
 - **设置**：可选 CLI 路径覆盖、默认 `.codex` 目录、中英双语和主题。
 
 ## 目录结构
@@ -94,4 +95,6 @@ gui/
 3. `[Behavior notice]` 必须在部署确认前原样展示。
 4. 部署、卸载和中断恢复必须先通过对应预览门禁。
 5. `--restore-hooks` 与 `--yes` 互斥，恢复 hooks 时不追加 `--yes`。
-6. `--status` 可在输出完整状态的同时返回非零退出码；只有缺少目录列表时才视为真正失败。
+6. `--status` 可在输出完整状态的同时返回非零退出码；GUI 仅在声明目录数、每个目录的核心字段、最终 `[Done]`/`[Error]` 终止句和退出码一致时降级展示，否则失败关闭并保留 stdout/stderr。
+7. 应用不提供托盘驻留：空闲关闭会先建立退出屏障并立即销毁主窗口；任何 Keysmith 后端调用仍在运行时，关闭请求会排队，并在最后一个租约完成后自动退出。
+8. 应用只允许一个 GUI 实例；重复启动必须聚焦现有主窗口，不得并行运行第二个桌面进程。
