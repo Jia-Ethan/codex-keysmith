@@ -326,8 +326,12 @@ jobs:
             }
             $beforeCodex = Get-SmokeSnapshot $codexDir
             $beforeRuntime = Get-SmokeSnapshot $runtimeDir
+            $rustupHome = (& rustup show home | Out-String).Trim()
+            if (-not $rustupHome -or -not (Test-Path -LiteralPath $rustupHome -PathType Container)) {
+              throw "Pinned Rust toolchain home is unavailable before the isolated Windows smoke."
+            }
             $environmentBackup = @{}
-            foreach ($name in @("USERPROFILE", "HOME", "LOCALAPPDATA", "CODEX_HOME")) {
+            foreach ($name in @("USERPROFILE", "HOME", "LOCALAPPDATA", "CODEX_HOME", "RUSTUP_HOME")) {
               $environmentBackup[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
             }
             try {
@@ -335,6 +339,7 @@ jobs:
               [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
               [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
               [Environment]::SetEnvironmentVariable("CODEX_HOME", $null, "Process")
+              [Environment]::SetEnvironmentVariable("RUSTUP_HOME", $rustupHome, "Process")
               $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1
               if ($LASTEXITCODE -ne 0) {
                 throw "Frozen sidecar automatic status smoke failed: $automaticStatusOutput"
@@ -393,7 +398,7 @@ jobs:
               println!("codex-keysmith 0.2.0");
           }
           '@ | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
-              & rustc $slowSidecarSource -O -o $slowSidecarBinary
+              & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
               if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
                 throw "Failed to build the slow sidecar lifecycle fixture."
               }

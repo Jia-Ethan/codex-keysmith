@@ -65,17 +65,19 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "desktop-candidate-install"
           $installer = Start-Process -FilePath $bundles[0].FullName -PassThru
+          $rustupHome = (& rustup show home | Out-String).Trim()
           [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
           [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
           [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
           [Environment]::SetEnvironmentVariable("CODEX_HOME", $null, "Process")
+          [Environment]::SetEnvironmentVariable("RUSTUP_HOME", $rustupHome, "Process")
           try {
             $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1
             $automaticStatusText = $automaticStatusOutput | Out-String
             if ($automaticStatusText -match [Regex]::Escape($runtimeDir)) {
               throw "Automatic discovery reported the Windows runtime directory"
             }
-            & rustc $slowSidecarSource -O -o $slowSidecarBinary
+            & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
             $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
             if (-not $slowAppProcess.CloseMainWindow()) {
               throw "Slow-sidecar GUI rejected the native close request."
