@@ -22,6 +22,8 @@
 - [ ] `python3 -m ruff check codex-instruct.py tests scripts`
 - [ ] 合并后的 branch coverage ≥ 81% / combined branch coverage is at least 81%
 - [ ] `python3 scripts/run_prompt_bank_regression.py --validate-only`
+- [ ] `(cd gui && npm ci && npm test && npm run build)`，或已说明本 PR 不影响 Desktop / or marked not applicable
+- [ ] `cargo fmt --manifest-path gui/src-tauri/Cargo.toml -- --check && cargo test --manifest-path gui/src-tauri/Cargo.toml --locked && cargo check --manifest-path gui/src-tauri/Cargo.toml --locked`，或已说明不适用 / or marked not applicable
 - [ ] `RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"; SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"; python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate`，且 ZIP/tar.gz/独立脚本/`SHA256SUMS` 校验通过，或已说明不适用 / full-commit candidate assets verified or marked not applicable
 - [ ] `git diff --check`
 - [ ] 已按需运行临时目录 status / dry-run / deploy / recover / restore-hooks / uninstall 测试
@@ -30,7 +32,7 @@
 
 - [ ] 改动范围聚焦，没有混入本地配置、备份、缓存、日志或无关重构
 - [ ] 行为变更覆盖成功、硬中断、失败、所有权冲突、final sweep 和必要回滚分支
-- [ ] README 中英文、CLI help、CHANGELOG 和事务文档与实现一致
+- [ ] README 中英文、CLI help、CHANGELOG 和事务文档与实现一致；Desktop 行为变化已同步 `gui/README.md` 与 `gui/SPEC.md`
 - [ ] Release 文档区分 full-SHA `--source-commit` 候选构建与绑定 HEAD tag 的正式构建
 - [ ] Release workflow 复用全部阻断测试，并绑定 VERSION、HEAD、annotated tag peeled SHA、remote tag 与可重现资产来源
 - [ ] 提示词变更已同步内置常量、示例、契约测试和 README，或本 PR 未修改提示词

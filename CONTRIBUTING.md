@@ -24,7 +24,8 @@
 3. 行为变更必须补充成功、错误、并发/所有权冲突和必要回滚测试。
 4. 提示词正文变更必须原子同步 `codex-instruct.py`、`examples/gpt-unrestricted.md`、契约测试和 README。
 5. CLI、durable journal/recover、manifest schema、备份、hooks、迁移、uninstall 或 Release 行为变化必须同步中英文文档和 CHANGELOG。
-6. 在干净工作树上运行完整检查：
+6. Desktop / GUI 行为变化必须同步 `gui/README.md`、`gui/SPEC.md`、相关 Release 文档与 CHANGELOG，并补齐 Vitest、Rust 或原生候选门禁。
+7. 在干净工作树上运行完整检查：
 
 ```bash
 python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py
@@ -35,6 +36,15 @@ python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -
 python3 -m coverage combine
 python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
 python3 scripts/run_prompt_bank_regression.py --validate-only
+(
+  cd gui
+  npm ci
+  npm test
+  npm run build
+  cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+  cargo test --manifest-path src-tauri/Cargo.toml --locked
+  cargo check --manifest-path src-tauri/Cargo.toml --locked
+)
 SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
 RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
 TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
@@ -75,7 +85,8 @@ For a contribution:
 3. Add tests for successful behavior, errors, concurrency/ownership conflicts, and required rollback paths.
 4. A bundled-prompt text change must atomically update `codex-instruct.py`, `examples/gpt-unrestricted.md`, contract tests, and README.
 5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
-6. Run the complete command block above from a clean worktree.
+6. Desktop or GUI behavior changes must update `gui/README.md`, `gui/SPEC.md`, the relevant Release documentation, and CHANGELOG, with matching Vitest, Rust, or native-candidate coverage.
+7. Run the complete command block above from a clean worktree.
 
 The current full suite contains 400+ tests. Do not remove tests, narrow measured source, or lower the combined 81% branch-coverage gate to make CI pass. Release verification requires a complete, non-shallow checkout with all tags. Candidate builds must pass a full `--source-commit` that exactly matches HEAD and must verify the same tag on every configured remote with non-interactive access and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, must fail closed. If `v$VERSION` already exists at another commit, the builder must refuse without generating same-version assets. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, and `SHA256SUMS` assets with complete content and consistent versions. Recovery publication for an immutable tag must not rewrite the tag or reuse an older run; it must start from `main` with the full tag-object and peeled-commit SHAs, make every blocking and publish job check out that tag in the same run, and address the draft by numeric Release ID.
 
