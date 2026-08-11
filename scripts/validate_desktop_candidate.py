@@ -279,6 +279,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "actions/upload-artifact@",
         "--signing-mode unsigned",
         "retention-days: 14",
+        "CODEX_KEYSMITH_SOURCE_COMMIT: ${{ github.sha }}",
     )
     missing = [marker for marker in required_markers if marker not in text]
     if missing:
@@ -616,12 +617,36 @@ def _version_in_filename(path: Path, version: str) -> bool:
     return re.search(rf"(?:^|[_-]){re.escape(version)}(?:[_-]|\.|$)", path.name) is not None
 
 
+def verify_frontend_build_identity(root: Path, source_commit: str) -> None:
+    if not COMMIT_RE.fullmatch(source_commit):
+        raise CandidateError("frontend source commit must be a full lowercase SHA")
+    dist_root = root / "gui/dist"
+    try:
+        if not stat.S_ISDIR(dist_root.lstat().st_mode):
+            raise CandidateError(f"frontend build output must be a directory: {dist_root}")
+    except OSError as exc:
+        raise CandidateError(f"frontend build output is missing: {dist_root}") from exc
+
+    javascript_files = sorted(dist_root.rglob("*.js"))
+    if not javascript_files:
+        raise CandidateError(f"frontend build output contains no JavaScript bundles: {dist_root}")
+    occurrences = 0
+    for path in javascript_files:
+        _require_regular_file(path)
+        occurrences += _read_text(path).count(source_commit)
+    if occurrences == 0:
+        raise CandidateError(
+            "frontend build identity does not contain the candidate source commit"
+        )
+
+
 def stage_candidate(args: argparse.Namespace) -> Path:
     root = args.root.resolve()
     versions = validate_config(root)
     version = versions["desktop_version"]
     if not COMMIT_RE.fullmatch(args.source_commit):
         raise CandidateError("--source-commit must be a full lowercase 40-character SHA")
+    verify_frontend_build_identity(root, args.source_commit)
     expected_triples = {
         ("macos", "arm64"): "aarch64-apple-darwin",
         ("windows", "x86_64"): "x86_64-pc-windows-msvc",
