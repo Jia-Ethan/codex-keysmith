@@ -832,12 +832,35 @@ def find_hook_restore_dirs() -> List[str]:
     return sorted(found)
 
 
+def _status_candidate_has_evidence(codex_root: Path) -> bool:
+    """Return whether an existing candidate contains Codex or Keysmith state."""
+    managed_paths = (
+        codex_root / "config.toml",
+        codex_root / DEFAULT_MD_FILENAME,
+        codex_root / LEGACY_MD_FILENAME,
+        codex_root / "hooks.json",
+        codex_root / "hooks.json.disabled",
+        codex_root / MANIFEST_FILENAME,
+    )
+    return (
+        any(_path_entry_exists(path) for path in managed_paths)
+        or bool(_hooks_transaction_residue(codex_root))
+        or bool(_deployment_cleanup_markers(codex_root))
+    )
+
+
 def find_status_dirs() -> List[str]:
-    """Find existing candidate directories for read-only status inspection."""
+    """Find candidate directories that contain inspectable status evidence."""
     found = set()
     for candidate in _codex_dir_candidates():
         codex_root = _resolve_candidate_directory(candidate)
-        if codex_root is not None and _directory_is_enumerable(codex_root):
+        if codex_root is None or not _directory_is_enumerable(codex_root):
+            continue
+        try:
+            eligible = _status_candidate_has_evidence(codex_root)
+        except OSError:
+            continue
+        if eligible:
             found.add(str(codex_root))
     return sorted(found)
 
