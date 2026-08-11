@@ -28,6 +28,7 @@ ARCHIVE_FILES = (
     "VERSION",
     "codex-instruct.py",
     "docs/agent-install.md",
+    "docs/assets/readme/codex-keysmith-desktop.png",
     "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
     "docs/reference.md",

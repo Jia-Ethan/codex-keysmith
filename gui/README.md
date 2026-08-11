@@ -43,7 +43,9 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-`desktop-v0.2.0-beta.4` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。beta.4 早于 Windows 换行兼容和 Restore hooks 确认门修复，下一版 Desktop Beta 才包含这些修复。
+`desktop-v0.2.0-beta.4` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+
+Beta.4 固定在发布提交 `6910586a`，不包含随后完成的 [PR #21](https://github.com/Jia-Ethan/codex-keysmith/pull/21) Windows CLI 换行/状态/预览识别修复，也不包含 Manage 恢复 hooks 的只读状态计划、全局写操作锁和失败后状态刷新；这些变更需要通过重新构建的后续 Desktop Beta 交付。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
@@ -63,7 +65,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo check --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-安装包验收还需验证目标架构、GUI/CLI 版本、sidecar `--version`、全流程临时目录测试、最终图标、签名和公证状态。
+原生 CI 已核对两平台目标架构、GUI/CLI 版本、sidecar `--version`、候选 manifest 和最终图标，并在 Windows 临时目录完成安装、`status`、只读 `dry-run` 与卸载。正式发布仍需完成签名/公证和实体设备验收。
 
 ## 功能
 

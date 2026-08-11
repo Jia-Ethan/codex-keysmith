@@ -31,6 +31,7 @@ REQUIRED_ARCHIVE_FILES = {
     "VERSION",
     "codex-instruct.py",
     "docs/agent-install.md",
+    "docs/assets/readme/codex-keysmith-desktop.png",
     "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
     "docs/reference.md",
@@ -155,12 +156,20 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-08-09".format(VERSION) in changelog
+    assert "## 0.2.0 source line (not formally released) - 2026-08-09" in changelog
     assert "Source version v0.2.0" in readme
+    assert "### 复制给智能体安装" in readme
+    assert "### Copy to an agent" in english_readme
+    assert "desktop-v0.2.0-beta.4" in readme
+    assert "desktop-v0.2.0-beta.4" in english_readme
     assert "v0.2.0 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
-        assert "codex-instruct-vX.Y.Z.py" in quick_start
+        assert "version='0.1.3'" in quick_start
+        assert 'release_tag="v${version}"' in quick_start
+        assert 'script="codex-instruct-v${version}.py"' in quick_start
+        assert "awk -v file=\"$script\"" in quick_start
+        assert "codex-instruct-vX.Y.Z.py" not in quick_start
         assert "codex-instruct-v0.1.0.py" not in quick_start
         assert "--codex-dir ~/.codex --status" in quick_start
         assert "--codex-dir ~/.codex --dry-run" in quick_start

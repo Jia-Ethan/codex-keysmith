@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Desktop prerelease
 
 - Prepared `desktop-v0.2.0-beta.4` as the unified unsigned Desktop Beta with an Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, deterministic source archives, two platform candidate ZIPs, and one complete `SHA256SUMS`.
+- `desktop-v0.2.0-beta.4` is fixed at release commit `6910586a` and predates PR #21 plus the later Restore hooks management follow-up. The Windows CLI line-ending/output-recognition fixes and the read-only hooks plan/global write lock are not present in the beta.4 assets.
 - Extended the main-only manual publisher to bind both platform manifests, the signed annotated beta tag, current remote `main`, expected commit, draft Release, and all eight public assets before publication. Pull requests remain read-only and the candidate workflow contains no signing secrets.
 - `desktop-v0.2.0-beta.3` remains the earlier unified desktop prerelease, and `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. The application source remains `0.2.0`, and the formal signed release keeps the `v0.2.0` tag.
 - Added code-signing and privacy policies. The application does not proactively collect or upload user data; SignPath Foundation review remains pending and the current beta is not SignPath-signed.
@@ -16,14 +17,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- Normalized desktop CLI output across LF, CRLF, and standalone CR line endings, and made status parsing reject timeouts or unrecognized reports while previews fail closed on incomplete output.
 - Changed Manage's Restore hooks flow to build a read-only plan from the latest status snapshot, execute only after confirmation, invalidate every management preview after any write attempt, and surface status refresh failures with an explicit retry. Desktop writes now share one owner lock across Deploy and Manage, including navigation and window-close protection.
+- Normalized LF, Windows CRLF, and legacy CR before desktop status and preview parsing; timed-out status now fails even after partial output, and semantically incomplete or unrecognized deployment/management previews fail closed before confirmation (PR #21).
 - Fixed the desktop startup flow so it no longer reports that the CLI is missing before CLI resolution finishes.
 - GitHub draft Release updates now resend the complete tag, target commit, name, notes, draft state, prerelease state, and Latest Release policy. A partial PATCH had reset the draft tag to GitHub's internal `untagged-*` placeholder; the fail-closed assertion removed that draft before any asset upload or public publication.
 
-## [0.2.0] - 2026-08-09
+## 0.2.0 source line (not formally released) - 2026-08-09
 
-This release line brings the desktop client source into the canonical repository while keeping the Python CLI as the single owner of deployment, recovery, and uninstall behavior. The CLI and GUI source now share version `0.2.0`; manifest and journal schemas remain at version 1, so existing deployments require no migration. Windows fresh deployment remains `EXPLICIT_BETA`.
+This source line brings the desktop client into the canonical repository while keeping the Python CLI as the single owner of deployment, recovery, and uninstall behavior. It has not been published as a formal `v0.2.0` Release; the current public artifacts are the unsigned `desktop-v0.2.0-beta.4` prerelease. The CLI and GUI source share version `0.2.0`; manifest and journal schemas remain at version 1, so existing deployments require no migration. Windows fresh deployment remains `EXPLICIT_BETA`.
 
 ### Added
 
@@ -151,8 +152,7 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.2.0
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/desktop-v0.2.0-beta.4...HEAD
 [0.1.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.1

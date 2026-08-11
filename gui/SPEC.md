@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.4` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成。beta.4 早于 Windows 换行兼容和 Restore hooks 确认门修复，下一版 Desktop Beta 才包含这些修复
+> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.4` 在发布提交 `6910586a` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成。Beta.4 不包含随后完成的 PR #21 Windows CRLF/输出失败关闭修复，也不包含 Manage 恢复 hooks 的只读状态计划、全局写操作锁和失败后状态刷新
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -305,14 +305,14 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M1 状态展示** ✅ | Dashboard + `--status` 解析 + manifest 展示 | 真实机器上 status 各状态（active/inactive/not-installed/conflict）都能正确渲染 |
 | **M2 部署向导** ✅ | 3 步向导 + dry-run 解析 + 确认执行 | 完整走通「选文件→预览→部署→Dashboard 刷新」 |
 | **M3 管理操作** ✅ | 卸载 / 恢复 hooks / 恢复中断 | 与 CLI 逐层回滚语义一致；残留场景可恢复 |
-| **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
-| **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；正式发布前仍需 Authenticode 与真机生命周期验收 |
+| **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；正式发布前仍需签名、公证与实体设备验收 |
+| **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | Windows x64 原生 CI 已产出并验证 `.exe`；正式发布前仍需 Authenticode 与实体设备生命周期验收 |
 
 ## 10. 交接说明（给接手 Agent）
 
 **起点：** canonical 仓库内的 `gui/` 目录；CLI 源码固定取仓库根目录 `codex-instruct.py`，GUI 与 CLI 可绑定到同一提交。
 
-**已交付（2026-08-07，v0.2.0）：**
+**已交付（2026-08-11，v0.2.0 source / Desktop Beta）：**
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
 - `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
@@ -336,9 +336,9 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 **后续工作（正式发布门禁）：**
 
-1. 在原生 Apple Silicon / Windows x64 runner 上构建对应 PyInstaller sidecar 与 Tauri bundle
-2. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
-3. 验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留后再创建 GitHub Release
+1. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
+2. 在实体 macOS / Windows 设备验收安装、启动、升级/降级、WebView2、Gatekeeper/SmartScreen 与卸载残留
+3. 通过签名和实体设备门禁后，从受控提交重新构建并创建正式 `v0.2.0` Release；保留现有 beta 标签和资产不变
 
 **长期约束（仍需遵守）：**
 
