@@ -1,4 +1,5 @@
 import ctypes
+import errno
 import hashlib
 import importlib.util
 import inspect
@@ -745,7 +746,7 @@ def test_windows_open_existing_maps_missing_errors(
     with pytest.raises(FileNotFoundError) as caught:
         backend._open_handle(missing, backend._FILE_READ_ATTRIBUTES)
 
-    assert caught.value.errno == error
+    assert caught.value.errno == errno.ENOENT
     assert caught.value.filename == str(missing)
 
 
