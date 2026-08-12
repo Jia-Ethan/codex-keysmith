@@ -3898,7 +3898,7 @@ def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
         raise HooksConflict("scenario package aliases its library root")
 
     metadata_path = scenario_root / "scenario.json"
-    content, _fingerprint = _read_regular_bytes_with_fingerprint(
+    content, metadata_fingerprint = _read_regular_bytes_with_fingerprint(
         metadata_path,
         "scenario.json",
     )
@@ -3966,7 +3966,10 @@ def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
     files = {}
     for relative in deploy_files:
         member = scenario_root / Path(*PurePosixPath(relative).parts)
-        files[relative] = _fingerprint_regular_file(member).sha256
+        fingerprint = _fingerprint_regular_file(member)
+        if relative == "scenario.json" and fingerprint != metadata_fingerprint:
+            raise HooksConflict(f"scenario.json changed while loading the package: {metadata_path}")
+        files[relative] = fingerprint.sha256
     for relative, expected in checksums.items():
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise ValueError(f"scenario checksum is invalid: {relative}")
@@ -4015,7 +4018,7 @@ def _scenario_control_paths(target: Path) -> Tuple[Path, Path, Path]:
 def _scenario_journal_paths(control: Path) -> List[Path]:
     try:
         names = _FILESYSTEM.list_directory_names(control)
-    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+    except FileNotFoundError:
         return []
     evidence = []
     for name in names:
@@ -6317,6 +6320,65 @@ def _scenario_complete_cleanup_marker(target: Path, marker: Path) -> None:
     _fsync_directory(claimed.parent)
 
 
+def _scenario_complete_partial_journal_cleanup(
+    target: Path,
+    journal: Path,
+    marker: Path,
+) -> None:
+    data = _scenario_load_cleanup_marker(target, marker)
+    _scenario_validate_terminal_cleanup_state(target, data)
+    expected_identity = _scenario_identity_from_json(
+        data["journal"]["identity"],
+        "scenario cleanup journal",
+    )
+    if not _path_has_directory_identity(journal, expected_identity):
+        raise HooksConflict("scenario cleanup journal identity changed")
+    members = _FILESYSTEM.list_directory_names(journal)
+    allowed = {
+        SCENARIO_INTENT_FILENAME,
+        SCENARIO_JOURNAL_FILENAME,
+        SCENARIO_JOURNAL_PENDING_FILENAME,
+        SCENARIO_INTENT_PENDING_FILENAME,
+        SCENARIO_MANIFEST_BEFORE_FILENAME,
+        SCENARIO_MANIFEST_AFTER_FILENAME,
+        SCENARIO_MANIFEST_INTENT_FILENAME,
+        SCENARIO_MANIFEST_RESTORE_FILENAME,
+        SCENARIO_PAYLOAD_STAGING_DIRNAME,
+        SCENARIO_REMOVED_PAYLOAD_DIRNAME,
+    }
+    if not members <= allowed:
+        raise HooksConflict(f"scenario journal contains unknown cleanup evidence: {journal}")
+    for name in sorted(
+        members,
+        key=lambda member: _classify_node(journal / member).kind == "directory",
+    ):
+        path = journal / name
+        node = _classify_node(path)
+        if node.kind == "directory":
+            if name == SCENARIO_PAYLOAD_STAGING_DIRNAME:
+                _scenario_remove_partial_staging(path, data["payload"]["files"])
+            elif name == SCENARIO_REMOVED_PAYLOAD_DIRNAME:
+                _scenario_finish_partial_removal(path, data["payload"]["files"])
+            else:
+                raise HooksConflict(
+                    f"scenario journal cleanup directory is unexpected: {path}"
+                )
+        elif node.regular:
+            fingerprint = _fingerprint_regular_file(path)
+            _FILESYSTEM.remove_verified_file(path, fingerprint.identity, fingerprint)
+        else:
+            raise HooksConflict(f"scenario journal cleanup member is abnormal: {path}")
+    _fsync_directory(journal)
+    identity = _directory_identity(journal)
+    access = _FILESYSTEM.open_verified_empty_private_directory(journal, identity)
+    try:
+        _FILESYSTEM.remove_verified_directory(access)
+    finally:
+        _FILESYSTEM.close_owned_directory(access)
+    _fsync_directory(journal.parent)
+    _scenario_complete_cleanup_marker(target, marker)
+
+
 def _scenario_pair_recovery_evidence(
     target: Path,
     candidates: List[Path],
@@ -6371,10 +6433,29 @@ def recover_scenario(target: Path, yes: bool) -> None:
         target,
         candidates,
     )
-    candidate = journal_candidate or marker_candidate
-    assert candidate is not None
     marker_only = journal_candidate is None
-    state = _scenario_load_journal(target, candidate)
+    if marker_candidate is not None:
+        marker_data = _scenario_load_cleanup_marker(target, marker_candidate)
+        if journal_candidate is not None and not _path_has_directory_identity(
+            journal_candidate,
+            _scenario_identity_from_json(
+                marker_data["journal"]["identity"],
+                "scenario cleanup journal",
+            ),
+        ):
+            raise HooksConflict("scenario cleanup journal identity changed")
+        state = ScenarioJournalState(
+            control,
+            journal_candidate or marker_candidate,
+            _scenario_identity_from_json(
+                marker_data["journal"]["identity"],
+                "scenario cleanup journal",
+            ),
+            {key: value for key, value in marker_data.items() if not key.startswith("_")},
+        )
+    else:
+        assert journal_candidate is not None
+        state = _scenario_load_journal(target, journal_candidate)
     _print(
         f"[Recovery] operation={state.data['operation']} "
         f"transaction={state.data['transaction_id']} phase={state.data['phase']}"
@@ -6392,29 +6473,21 @@ def recover_scenario(target: Path, yes: bool) -> None:
         if locked_target != target or _directory_identity(locked_target) != _directory_identity(target):
             raise HooksConflict("scenario target changed while acquiring recovery lock")
         if marker_only:
-            _scenario_complete_cleanup_marker(target, candidate)
+            assert marker_candidate is not None
+            _scenario_complete_cleanup_marker(target, marker_candidate)
             _print("[Done] scenario transaction recovery completed")
             return
         if marker_candidate is not None:
-            state = _scenario_load_journal(target, candidate)
-            marker_data = _scenario_load_cleanup_marker(target, marker_candidate)
-            if state.data != {
-                key: value
-                for key, value in marker_data.items()
-                if not key.startswith("_")
-            }:
-                raise HooksConflict(
-                    "scenario cleanup marker does not match its claimed journal"
-                )
-            if state.data["phase"] == "committed":
-                _scenario_complete_committed_cleanup(state)
-            elif state.data["phase"] == "recovered":
-                _scenario_cleanup_journal(state)
-            else:
-                raise HooksConflict("paired scenario cleanup evidence is not terminal")
+            assert journal_candidate is not None
+            _scenario_complete_partial_journal_cleanup(
+                target,
+                journal_candidate,
+                marker_candidate,
+            )
             _print("[Done] scenario transaction recovery completed")
             return
-        state = _scenario_load_journal(target, candidate)
+        assert journal_candidate is not None
+        state = _scenario_load_journal(target, journal_candidate)
         _scenario_reconcile_transaction_pending(state)
         if state.data["phase"] == "committed":
             _scenario_complete_committed_cleanup(state)

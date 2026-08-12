@@ -203,7 +203,7 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 - 源码运行默认从脚本同级 `scenarios/` 读取；`--scenario-root /absolute/library` 可显式覆盖。M1 frozen/sidecar 没有场景资源时会明确要求该参数，不联网下载或猜测其他目录。
 - 同一 `scenario_id` 可在同一或不同 target 重复部署；每次生成独立 32 位十六进制 `deployment_id`。status 和 uninstall 始终以 `deployment_id + target` 精确定位。
 - target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
-- 可验证的中断 journal 报告 `recovery-required`；异常、篡改或不完整 evidence 报告 `conflict` 并原样保留。pre-commit recover 回到事务前态，committed/recovered cleanup 中断只完成前向证据清理。
+- 可验证的中断 journal 报告 `recovery-required`；异常、篡改或证据身份不匹配（如 cleanup marker 与 journal 无法配对、journal 含未知成员）报告 `conflict` 并原样保留。pre-commit recover 回到事务前态；committed/recovered 及其 cleanup 证据中断（含 marker 已发布、journal 成员尚未清完）只完成前向证据清理，不回滚已提交结果。
 - uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
 - M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改检测；部署后在临时目录创建验收输入，不依赖未部署的 `fixtures/`。validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
 

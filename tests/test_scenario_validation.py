@@ -120,6 +120,56 @@ def test_package_audits_abnormal_nodes_inside_bytecode_cache(tmp_path, kind):
         codex_instruct.load_scenario_package(root, "example_fixture")
 
 
+def test_package_rejects_scenario_json_replacement_during_load(tmp_path, monkeypatch):
+    root, package = _copy_package(tmp_path)
+    replacement = _metadata(package)
+    replacement["version"] = "9.9.9"
+    real_file_paths = codex_instruct._scenario_file_paths
+
+    def replace_metadata(scenario_root):
+        paths = real_file_paths(scenario_root)
+        _write_metadata(package, replacement)
+        return paths
+
+    monkeypatch.setattr(codex_instruct, "_scenario_file_paths", replace_metadata)
+
+    with pytest.raises(codex_instruct.HooksConflict, match="scenario.json changed"):
+        codex_instruct.load_scenario_package(root, "example_fixture")
+
+    assert _metadata(package)["version"] == "9.9.9"
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        PermissionError("access denied"),
+        NotADirectoryError("control path is not a directory"),
+        OSError("filesystem unavailable"),
+    ],
+)
+def test_scenario_journal_discovery_preserves_enumeration_errors(
+    tmp_path,
+    monkeypatch,
+    backend_error,
+):
+    control = tmp_path / ".codex-keysmith"
+    control.mkdir()
+
+    def fail_enumeration(_path):
+        raise backend_error
+
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "list_directory_names",
+        fail_enumeration,
+    )
+
+    with pytest.raises(type(backend_error)) as caught:
+        codex_instruct._scenario_journal_paths(control)
+
+    assert caught.value is backend_error
+
+
 @pytest.mark.parametrize(
     "specification,expected",
     [
