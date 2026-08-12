@@ -1479,6 +1479,8 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
     _TOKEN_QUERY = 0x0008
     _TOKEN_USER = 1
     _SDDL_REVISION_1 = 1
+    _ERROR_FILE_NOT_FOUND = 2
+    _ERROR_PATH_NOT_FOUND = 3
     _ERROR_FILE_EXISTS = 80
     _ERROR_ALREADY_EXISTS = 183
     _ERROR_NO_MORE_FILES = 18
@@ -1790,6 +1792,15 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
         )
         if handle == self._INVALID_HANDLE_VALUE:
             error = ctypes.get_last_error()
+            if creation == self._OPEN_EXISTING and error in {
+                self._ERROR_FILE_NOT_FOUND,
+                self._ERROR_PATH_NOT_FOUND,
+            }:
+                raise FileNotFoundError(
+                    error,
+                    ctypes.FormatError(error).strip(),
+                    str(path),
+                )
             if creation == self._CREATE_NEW and error in {
                 self._ERROR_FILE_EXISTS,
                 self._ERROR_ALREADY_EXISTS,
@@ -3682,7 +3693,10 @@ def _scenario_require_absolute_directory(value: str, label: str) -> Path:
         raise ValueError(f"{label} must be an explicit absolute path: {value}")
 
     if _is_windows_platform():
-        canonical = _FILESYSTEM.resolve_directory(raw)
+        try:
+            canonical = _FILESYSTEM.resolve_directory(raw)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"{label} does not exist: {raw}") from exc
     else:
         absolute = Path(os.path.abspath(str(raw)))
         current = Path(absolute.anchor)

@@ -299,6 +299,76 @@ def test_scenario_paths_reject_missing_relative_and_noncanonical_forms(
         resolve(str(existing / "missing"))
 
 
+@pytest.mark.parametrize(
+    ("resolver", "label"),
+    [
+        ("target", "--target-dir"),
+        ("root", "--scenario-root"),
+    ],
+)
+def test_windows_scenario_paths_normalize_missing_directory_errors(
+    tmp_path,
+    monkeypatch,
+    resolver,
+    label,
+):
+    resolve = (
+        codex_instruct.resolve_scenario_target
+        if resolver == "target"
+        else codex_instruct.resolve_scenario_root
+    )
+    missing = (tmp_path / f"missing-{resolver}").resolve()
+    backend_error = FileNotFoundError(2, "native backend detail", str(missing))
+
+    def fail_resolve(_path):
+        raise backend_error
+
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "resolve_directory",
+        fail_resolve,
+    )
+
+    with pytest.raises(FileNotFoundError) as caught:
+        resolve(str(missing))
+
+    assert str(caught.value) == f"{label} does not exist: {missing}"
+    assert caught.value.__cause__ is backend_error
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        PermissionError("access denied"),
+        codex_instruct.HooksConflict("reparse point is not allowed"),
+        OSError("filesystem unavailable"),
+    ],
+)
+def test_windows_scenario_paths_preserve_non_missing_backend_errors(
+    tmp_path,
+    monkeypatch,
+    backend_error,
+):
+    target = (tmp_path / "target").resolve()
+    target.mkdir()
+
+    def fail_resolve(_path):
+        raise backend_error
+
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "resolve_directory",
+        fail_resolve,
+    )
+
+    with pytest.raises(type(backend_error)) as caught:
+        codex_instruct.resolve_scenario_target(str(target))
+
+    assert caught.value is backend_error
+
+
 def test_scenario_root_rejects_symlinked_ancestor(tmp_path):
     real_parent = tmp_path / "real-root"
     real_parent.mkdir()
