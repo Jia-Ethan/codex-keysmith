@@ -641,30 +641,42 @@ def test_uninstall_initializing_recovery_fails_closed_on_live_drift(tmp_path):
         "first-journal",
     )
     assert interrupted.returncode == HARD_EXIT, interrupted.stdout + interrupted.stderr
+    anchors = [path for path in (first, second) if _journal_dirs(path)]
     if os.name == "nt":
         # TerminateProcess can run after ReplaceFileW publishes journal.json but
         # before the parent directory flush. Some Windows filesystems may lose
         # that newest directory entry; this generic fail-closed case cannot
         # require evidence that the platform did not persist. The dedicated
         # Windows lifecycle suite covers durable recovery checkpoints.
-        if not any(_journal_dirs(path) for path in (first, second)):
+        if not anchors:
             pytest.skip("Windows did not persist the interrupted journal entry")
+    assert len(anchors) == 1
+    anchor = anchors[0]
+    drifted = next(path for path in (first, second) if path != anchor)
     user_bytes = b'user-owned config drift\nmodel = "custom"\n'
-    config = second / "config.toml"
+    config = drifted / "config.toml"
     config.write_bytes(user_bytes)
     visible_before = {
         path: _snapshot_tree(path, include_transactions=False)
         for path in (first, second)
     }
+    residue_before = {
+        path: _snapshot_tree(path)
+        for path in (first, second)
+    }
 
-    recovered = _run("--codex-dir", first, "--recover", "--yes")
+    recovered = _run("--codex-dir", anchor, "--recover", "--yes")
 
     assert recovered.returncode == 1
+    output = recovered.stdout + recovered.stderr
+    assert "live path" in output
+    assert str(config) in output
     assert config.read_bytes() == user_bytes
     for codex_dir in (first, second):
         assert _snapshot_tree(codex_dir, include_transactions=False) == visible_before[
             codex_dir
         ]
+        assert _snapshot_tree(codex_dir) == residue_before[codex_dir]
         assert codex_instruct._hooks_transaction_residue(codex_dir)
 
 

@@ -723,6 +723,52 @@ def test_windows_directory_resolution_pins_all_path_components(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("error", [2, 3])
+def test_windows_open_existing_maps_missing_errors(
+    tmp_path,
+    monkeypatch,
+    error,
+):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    backend.kernel32 = types.SimpleNamespace(
+        CreateFileW=lambda *_args: backend._INVALID_HANDLE_VALUE
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
+    monkeypatch.setattr(
+        ctypes,
+        "FormatError",
+        lambda value: f"win32 error {value}",
+        raising=False,
+    )
+    missing = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError) as caught:
+        backend._open_handle(missing, backend._FILE_READ_ATTRIBUTES)
+
+    assert caught.value.errno == error
+    assert caught.value.filename == str(missing)
+
+
+def test_windows_open_existing_preserves_other_errors(tmp_path, monkeypatch):
+    backend = object.__new__(codex_instruct._WindowsFilesystemBackend)
+    backend.kernel32 = types.SimpleNamespace(
+        CreateFileW=lambda *_args: backend._INVALID_HANDLE_VALUE
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(
+        ctypes,
+        "FormatError",
+        lambda value: f"win32 error {value}",
+        raising=False,
+    )
+
+    with pytest.raises(OSError) as caught:
+        backend._open_handle(tmp_path, backend._FILE_READ_ATTRIBUTES)
+
+    assert not isinstance(caught.value, FileNotFoundError)
+    assert caught.value.errno == 5
+
+
 def test_windows_lock_pin_revalidates_reparse_components_after_key_handoff(
     monkeypatch,
 ):
