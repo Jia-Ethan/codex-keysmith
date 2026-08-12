@@ -268,7 +268,12 @@ def test_deploy_rejects_package_root_rebinding_after_load(tmp_path, monkeypatch)
 
     def rebind_after_lock(lock_set):
         entered = real_lock_enter(lock_set)
-        package.root.rename(original)
+        try:
+            package.root.rename(original)
+        except BaseException:
+            # Windows deliberately pins locked directories against rename.
+            lock_set._release()
+            raise
         shutil.copytree(original, package.root)
         return entered
 
@@ -278,11 +283,16 @@ def test_deploy_rejects_package_root_rebinding_after_load(tmp_path, monkeypatch)
         rebind_after_lock,
     )
 
-    with pytest.raises(
-        codex_instruct.HooksConflict,
-        match="package root identity changed",
-    ):
-        codex_instruct.deploy_scenario(target, package, True)
+    if os.name == "nt":
+        with pytest.raises(PermissionError) as caught:
+            codex_instruct.deploy_scenario(target, package, True)
+        assert caught.value.winerror == 32
+    else:
+        with pytest.raises(
+            codex_instruct.HooksConflict,
+            match="package root identity changed",
+        ):
+            codex_instruct.deploy_scenario(target, package, True)
 
     assert not (target / ".codex-keysmith").exists()
 
@@ -377,8 +387,8 @@ def test_scenario_package_match_ignores_equivalent_source_path_spelling(tmp_path
     original = codex_instruct.load_scenario_package(alias, "example_fixture")
     refreshed = codex_instruct.load_scenario_package(root, "example_fixture")
 
-    assert original.library_root != refreshed.library_root
-    assert original.root != refreshed.root
+    assert str(original.library_root) != str(refreshed.library_root)
+    assert str(original.root) != str(refreshed.root)
     assert codex_instruct._scenario_package_matches(refreshed, original)
 
 
@@ -417,7 +427,12 @@ def test_deploy_rejects_library_root_rebinding_after_lock(tmp_path, monkeypatch)
 
     def rebind_after_lock(lock_set):
         entered = real_lock_enter(lock_set)
-        root.rename(original)
+        try:
+            root.rename(original)
+        except BaseException:
+            # Windows deliberately pins locked directories against rename.
+            lock_set._release()
+            raise
         shutil.copytree(original, root)
         return entered
 
@@ -427,11 +442,16 @@ def test_deploy_rejects_library_root_rebinding_after_lock(tmp_path, monkeypatch)
         rebind_after_lock,
     )
 
-    with pytest.raises(
-        codex_instruct.HooksConflict,
-        match="library root identity changed before deployment",
-    ):
-        codex_instruct.deploy_scenario(target, package, True)
+    if os.name == "nt":
+        with pytest.raises(PermissionError) as caught:
+            codex_instruct.deploy_scenario(target, package, True)
+        assert caught.value.winerror == 32
+    else:
+        with pytest.raises(
+            codex_instruct.HooksConflict,
+            match="library root identity changed before deployment",
+        ):
+            codex_instruct.deploy_scenario(target, package, True)
 
     assert not (target / ".codex-keysmith").exists()
 
