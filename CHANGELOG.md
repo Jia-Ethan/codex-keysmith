@@ -23,6 +23,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Fixed Windows scenario path handling so a missing `--target-dir` / `--scenario-root` raises a normalized *does not exist* `FileNotFoundError` with a consistent `ENOENT` errno instead of native `OSError` details; non-missing backend errors remain preserved.
 - Fixed scenario recovery hardening: a `scenario.json` replaced while loading the package is rejected as conflict; scenario journal discovery now preserves `PermissionError` / `NotADirectoryError` / `OSError` instead of treating them as an absent journal; cleanup interrupted after marker publication but before journal removal now forward-completes on `--scenario-recover`, while tampered or unpaired evidence remains `conflict` and preserved.
 - Fixed the shared Desktop confirmation dialog surface so deployment, uninstall, hooks restore, and transaction recovery confirmations remain centered and visible above the blurred overlay.
 - Fixed automatic Windows status discovery so a cache-only `%LOCALAPPDATA%\OpenAI\Codex` directory is ignored while real config, managed files, abnormal managed nodes, transaction residue, and cleanup markers remain inspectable. Explicit `--codex-dir` behavior is unchanged.

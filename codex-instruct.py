@@ -1797,7 +1797,7 @@ class _WindowsFilesystemBackend(_PosixFilesystemBackend):  # pragma: no cover
                 self._ERROR_PATH_NOT_FOUND,
             }:
                 raise FileNotFoundError(
-                    error,
+                    errno.ENOENT,
                     ctypes.FormatError(error).strip(),
                     str(path),
                 )
