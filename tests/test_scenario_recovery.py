@@ -355,6 +355,10 @@ def test_deploy_cleanup_member_interruption_keeps_deployment(tmp_path):
     journal = next(control.glob("scenario-transaction-*.cleanup-*"))
     (journal / "journal.json").unlink(missing_ok=True)
     assert not (journal / "journal.json").exists()
+    status = _run("--scenario-status", "--target-dir", target)
+    assert status.returncode == 1
+    assert "recovery-required" in status.stdout
+    assert "conflict" not in status.stdout
 
     recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr
@@ -432,6 +436,118 @@ def test_partial_journal_symlink_member_is_conflict_and_preserved(tmp_path):
     assert "abnormal" in recovered.stdout
     assert (journal / "journal.json").is_symlink()
     assert list(control.glob("scenario-transaction-*.cleanup-*"))
+    assert list(control.glob("scenario-cleanup-*.json"))
+
+
+def test_partial_journal_tampered_regular_member_is_conflict_and_preserved(tmp_path):
+    target = _target(tmp_path, "partial-journal-tampered-member")
+
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    member = next(path for path in journal.iterdir() if path.is_file())
+    member.write_text("{}\n", encoding="utf-8")
+    marker = next(control.glob("scenario-cleanup-*.json"))
+    marker_before = marker.read_bytes()
+
+    status = _run("--scenario-status", "--target-dir", target)
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+
+    assert status.returncode == 1
+    assert "conflict" in status.stdout
+    assert recovered.returncode == 1
+    assert "cleanup member changed" in recovered.stdout
+    assert member.read_text(encoding="utf-8") == "{}\n"
+    assert marker.read_bytes() == marker_before
+
+
+def test_partial_cleanup_evidence_pair_is_classified_consistently(tmp_path):
+    target = _target(tmp_path, "partial-cleanup-shared-loader")
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    candidates = codex_instruct._scenario_journal_paths(
+        target / ".codex-keysmith"
+    )
+
+    state, journal, marker = codex_instruct._scenario_load_recovery_evidence(
+        target,
+        candidates,
+    )
+
+    assert state.data["phase"] == "committed"
+    assert journal is not None
+    assert marker is not None
+
+
+@pytest.mark.parametrize("operation", ["status", "recover"])
+def test_scenario_read_gate_preserves_control_enumeration_failure(
+    tmp_path,
+    monkeypatch,
+    operation,
+):
+    target = _target(tmp_path, f"{operation}-control-enumeration")
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-phase-prepared",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    real_list = codex_instruct._FILESYSTEM.list_directory_names
+
+    def fail_control(path):
+        if path == control:
+            raise FileNotFoundError("scenario control directory disappeared")
+        return real_list(path)
+
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "list_directory_names",
+        fail_control,
+    )
+
+    with pytest.raises(FileNotFoundError, match="control directory disappeared"):
+        if operation == "status":
+            codex_instruct.show_scenario_status(target)
+        else:
+            codex_instruct.recover_scenario(target, False)
+
+    assert control.is_dir()
+    assert list(control.glob("scenario-transaction-*"))
+
+
+def test_partial_cleanup_bytecode_artifact_is_conflict_and_preserved(tmp_path):
+    target = _target(tmp_path, "partial-cleanup-bytecode")
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    cache = journal / "staging" / "__pycache__"
+    cache.mkdir(parents=True)
+    artifact = cache / "evil.pyc"
+    artifact.write_bytes(b"unowned bytecode\n")
+
+    status = _run("--scenario-status", "--target-dir", target)
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+
+    assert status.returncode == 1
+    assert "conflict" in status.stdout
+    assert recovered.returncode == 1
+    assert "unknown cleanup evidence" in recovered.stdout
+    assert artifact.read_bytes() == b"unowned bytecode\n"
     assert list(control.glob("scenario-cleanup-*.json"))
 
 
@@ -875,6 +991,10 @@ def test_uninstall_cleanup_member_interruption_finishes_removal(tmp_path):
     journal = next(control.glob("scenario-transaction-*.cleanup-*"))
     (journal / "journal.json").unlink(missing_ok=True)
     assert not (journal / "journal.json").exists()
+    status = _run("--scenario-status", "--target-dir", target)
+    assert status.returncode == 1
+    assert "recovery-required" in status.stdout
+    assert "conflict" not in status.stdout
 
     recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
     assert recovered.returncode == 0, recovered.stdout + recovered.stderr

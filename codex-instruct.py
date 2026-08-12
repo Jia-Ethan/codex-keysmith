@@ -1380,7 +1380,7 @@ class _PosixFilesystemBackend:
     def directory_lock_key(self, path: Path) -> Tuple[Tuple[Any, ...], Path]:
         canonical = path.resolve()
         identity = _directory_identity(canonical)
-        return (identity.device, identity.inode, str(canonical)), canonical
+        return (identity.device, identity.inode), canonical
 
     def pin_directory_for_lock(self, path: Path, key: Tuple[Any, ...]) -> int:
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
@@ -3615,7 +3615,10 @@ def _identity_from_portable(value: Any, label: str) -> FileIdentity:
 
 @dataclass(frozen=True)
 class ScenarioPackage:
+    library_root: Path
+    library_root_identity: FileIdentity
     root: Path
+    root_identity: FileIdentity
     scenario_id: str
     version: str
     display_name: str
@@ -3781,7 +3784,11 @@ def _scenario_safe_relative(value: Any, label: str) -> str:
     return value
 
 
-def _scenario_file_paths(root: Path) -> List[str]:
+def _scenario_file_paths(
+    root: Path,
+    *,
+    ignore_bytecode_artifacts: bool = False,
+) -> List[str]:
     relative_paths = []
     seen_casefold = set()
     for directory, directory_names, filenames in os.walk(root, topdown=True, followlinks=False):
@@ -3790,7 +3797,7 @@ def _scenario_file_paths(root: Path) -> List[str]:
             node = _classify_node(directory_path / name)
             if node.kind != "directory":
                 raise OSError(f"scenario member is not a directory: {node.path} ({node.kind})")
-            if name == "__pycache__":
+            if ignore_bytecode_artifacts and name == "__pycache__":
                 for cache_directory, cache_directories, cache_files in os.walk(
                     node.path,
                     topdown=True,
@@ -3811,13 +3818,16 @@ def _scenario_file_paths(root: Path) -> List[str]:
                                 "scenario bytecode cache member is not a regular file: "
                                 f"{cache_node.path} ({cache_node.kind})"
                             )
-        directory_names[:] = [name for name in directory_names if name != "__pycache__"]
+        if ignore_bytecode_artifacts:
+            directory_names[:] = [
+                name for name in directory_names if name != "__pycache__"
+            ]
         for name in sorted(filenames):
             member = directory_path / name
             node = _classify_node(member)
             if not node.regular:
                 raise OSError(f"scenario member is not a regular file: {member} ({node.kind})")
-            if name.endswith((".pyc", ".pyo")):
+            if ignore_bytecode_artifacts and name.endswith((".pyc", ".pyo")):
                 continue
             relative = member.relative_to(root).as_posix()
             _scenario_safe_relative(relative, "scenario member")
@@ -3837,6 +3847,41 @@ def _scenario_source_digest(files: Dict[str, str]) -> str:
         digest.update(sha256.encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _scenario_paths_overlap(left: Path, right: Path) -> bool:
+    left_identity = _directory_identity(left)
+    right_identity = _directory_identity(right)
+    for current, expected in ((left, right_identity), (right, left_identity)):
+        while True:
+            if _directory_identity(current) == expected:
+                return True
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+    return False
+
+
+def _scenario_package_matches(
+    actual: ScenarioPackage,
+    expected: ScenarioPackage,
+) -> bool:
+    return (
+        actual.library_root_identity == expected.library_root_identity
+        and actual.root_identity == expected.root_identity
+        and actual.scenario_id == expected.scenario_id
+        and actual.version == expected.version
+        and actual.display_name == expected.display_name
+        and actual.task == expected.task
+        and actual.validator == expected.validator
+        and actual.verify == expected.verify
+        and actual.platforms == expected.platforms
+        and actual.python_runtime == expected.python_runtime
+        and actual.requires == expected.requires
+        and actual.files == expected.files
+        and actual.source_digest == expected.source_digest
+    )
 
 
 def _scenario_python_version_matches(specification: str) -> bool:
@@ -3894,7 +3939,9 @@ def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
     scenario_root = root / scenario_id
     if _classify_node(scenario_root).kind != "directory":
         raise FileNotFoundError(f"scenario package was not found: {scenario_id}")
-    if _directory_identity(scenario_root) == _directory_identity(root):
+    root_identity = _directory_identity(root)
+    scenario_root_identity = _directory_identity(scenario_root)
+    if scenario_root_identity == root_identity:
         raise HooksConflict("scenario package aliases its library root")
 
     metadata_path = scenario_root / "scenario.json"
@@ -3952,7 +3999,10 @@ def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
     if not isinstance(checksums, dict):
         raise ValueError("scenario checksums must be an object")
 
-    paths = _scenario_file_paths(scenario_root)
+    paths = _scenario_file_paths(
+        scenario_root,
+        ignore_bytecode_artifacts=True,
+    )
     if "scenario.json" not in paths:
         raise ValueError("scenario.json is missing from the package")
     deploy_files = [path for path in paths if not path.startswith("fixtures/")]
@@ -3965,18 +4015,25 @@ def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
 
     files = {}
     for relative in deploy_files:
+        if not _path_has_directory_identity(scenario_root, scenario_root_identity):
+            raise HooksConflict("scenario package root identity changed while loading")
         member = scenario_root / Path(*PurePosixPath(relative).parts)
         fingerprint = _fingerprint_regular_file(member)
         if relative == "scenario.json" and fingerprint != metadata_fingerprint:
             raise HooksConflict(f"scenario.json changed while loading the package: {metadata_path}")
         files[relative] = fingerprint.sha256
+    if not _path_has_directory_identity(scenario_root, scenario_root_identity):
+        raise HooksConflict("scenario package root identity changed while loading")
     for relative, expected in checksums.items():
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise ValueError(f"scenario checksum is invalid: {relative}")
         if files[relative] != expected:
             raise HooksConflict(f"scenario checksum mismatch: {scenario_root / relative}")
     return ScenarioPackage(
+        library_root=root,
+        library_root_identity=root_identity,
         root=scenario_root,
+        root_identity=scenario_root_identity,
         scenario_id=scenario_id,
         version=metadata["version"],
         display_name=metadata["display_name"],
@@ -4016,10 +4073,7 @@ def _scenario_control_paths(target: Path) -> Tuple[Path, Path, Path]:
 
 
 def _scenario_journal_paths(control: Path) -> List[Path]:
-    try:
-        names = _FILESYSTEM.list_directory_names(control)
-    except FileNotFoundError:
-        return []
+    names = _FILESYSTEM.list_directory_names(control)
     evidence = []
     for name in names:
         base = _cleanup_claim_base(name) or name
@@ -5704,15 +5758,16 @@ def show_scenario_status(target: Path) -> int:
         _print("[Blocked] scenario manifest pending lacks transaction evidence")
         return 1
     journals = _scenario_journal_paths(control)
-    journal_conflicts = []
-    recoverable = []
-    for journal in journals:
+    recovery_state = None
+    journal_conflict = None
+    if journals:
         try:
-            state = _scenario_load_journal(target, journal)
+            recovery_state, _journal, _marker = _scenario_load_recovery_evidence(
+                target,
+                journals,
+            )
         except (OSError, ValueError) as exc:
-            journal_conflicts.append(f"{journal.name}: {exc}")
-        else:
-            recoverable.append(state)
+            journal_conflict = str(exc)
     try:
         manifest, _fingerprint = _scenario_load_manifest(target)
         records = _scenario_status_records(target, manifest)
@@ -5720,18 +5775,17 @@ def show_scenario_status(target: Path) -> int:
         _print("[Scenario state] conflict")
         _print(f"[Blocked] {exc}")
         return 1
-    if journal_conflicts:
+    if journal_conflict is not None:
         _print("[Scenario state] conflict")
-        for conflict in journal_conflicts:
-            _print(f"[Blocked] {conflict}")
+        _print(f"[Blocked] {journal_conflict}")
         return 1
-    if recoverable:
+    if recovery_state is not None:
         _print("[Scenario state] recovery-required")
-        for state in recoverable:
-            _print(
-                f"[Recovery] {state.data['operation']} "
-                f"{state.data['transaction_id']} phase={state.data['phase']}"
-            )
+        _print(
+            f"[Recovery] {recovery_state.data['operation']} "
+            f"{recovery_state.data['transaction_id']} "
+            f"phase={recovery_state.data['phase']}"
+        )
         return 1
     if not manifest["deployments"]:
         _print("[Scenario state] not-installed")
@@ -5866,10 +5920,41 @@ def deploy_scenario(
         _print("[Preview] no files were changed; add --yes to deploy")
         return None
 
-    with _DirectoryLockSet([str(target)]) as locks:
-        locked_target = locks.directories[0].path
+    if _scenario_paths_overlap(target, package.library_root):
+        raise HooksConflict("scenario target overlaps the scenario source library")
+    if not _path_has_directory_identity(
+        package.library_root,
+        package.library_root_identity,
+    ):
+        raise HooksConflict("scenario library root identity changed before deployment")
+    if not _path_has_directory_identity(package.root, package.root_identity):
+        raise HooksConflict("scenario package root identity changed before deployment")
+    with _DirectoryLockSet(
+        [str(target), str(package.library_root), str(package.root)]
+    ) as locks:
+        locked_by_path = {item.path: item for item in locks.directories}
+        if target not in locked_by_path:
+            raise HooksConflict("scenario target was not included in the acquired lock set")
+        locked_target = locked_by_path[target].path
         if locked_target != target or _directory_identity(locked_target) != _directory_identity(target):
             raise HooksConflict("scenario target changed while acquiring its lock")
+        if package.root not in locked_by_path:
+            raise HooksConflict("scenario package root was not included in the acquired lock set")
+        if package.library_root not in locked_by_path:
+            raise HooksConflict("scenario library root was not included in the acquired lock set")
+        if not _path_has_directory_identity(
+            package.library_root,
+            package.library_root_identity,
+        ):
+            raise HooksConflict("scenario library root identity changed before deployment")
+        if not _path_has_directory_identity(package.root, package.root_identity):
+            raise HooksConflict("scenario package root identity changed before deployment")
+        refreshed_package = load_scenario_package(
+            package.root.parent,
+            package.scenario_id,
+        )
+        if not _scenario_package_matches(refreshed_package, package):
+            raise HooksConflict("scenario package changed after loading")
         (
             control,
             manifest_path,
@@ -5938,9 +6023,19 @@ def deploy_scenario(
             _scenario_write_journal(state, "initializing")
             _scenario_create_relative_directories(staging, package.files)
             for relative, sha256 in sorted(package.files.items()):
+                if not _path_has_directory_identity(package.root, package.root_identity):
+                    raise HooksConflict("scenario package root identity changed during deployment")
                 source = package.root / Path(*PurePosixPath(relative).parts)
                 destination = staging / Path(*PurePosixPath(relative).parts)
                 _scenario_copy_regular_file(source, destination, sha256)
+            if not _path_has_directory_identity(package.root, package.root_identity):
+                raise HooksConflict("scenario package root identity changed during deployment")
+            staged_package = load_scenario_package(
+                package.library_root,
+                package.scenario_id,
+            )
+            if not _scenario_package_matches(staged_package, package):
+                raise HooksConflict("scenario package changed during deployment")
             _scenario_write_journal(state, "prepared")
             staging_identity = _scenario_identity_from_json(
                 state.data["payload"]["staging_identity"],
@@ -5972,6 +6067,12 @@ def deploy_scenario(
             )
             _scenario_write_journal(state, "final-sweep")
             _scenario_verify_payload(payload_root, payload_identity, package.files)
+            final_package = load_scenario_package(
+                package.library_root,
+                package.scenario_id,
+            )
+            if not _scenario_package_matches(final_package, package):
+                raise HooksConflict("scenario package changed before commit")
             checked_manifest, checked_fingerprint = _scenario_load_manifest(target)
             if checked_manifest != manifest_after or checked_fingerprint != published_manifest:
                 raise HooksConflict("scenario final manifest sweep failed")
@@ -6320,11 +6421,91 @@ def _scenario_complete_cleanup_marker(target: Path, marker: Path) -> None:
     _fsync_directory(claimed.parent)
 
 
-def _scenario_complete_partial_journal_cleanup(
+def _scenario_content_fingerprint(content: bytes) -> Dict[str, Any]:
+    return {
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _scenario_fingerprint_matches_portable(
+    actual: FileFingerprint,
+    expected: Dict[str, Any],
+) -> bool:
+    return (
+        actual.size == expected["size"]
+        and actual.sha256 == expected["sha256"]
+        and (
+            "mtime_ns" not in expected
+            or actual.modified_ns == expected["mtime_ns"]
+        )
+    )
+
+
+def _scenario_partial_cleanup_regular_fingerprints(
+    data: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    persisted = {
+        key: value for key, value in data.items() if not key.startswith("_")
+    }
+    result = {
+        SCENARIO_INTENT_FILENAME: _scenario_content_fingerprint(
+            _scenario_json_bytes(_scenario_journal_intent(persisted))
+        ),
+        SCENARIO_JOURNAL_FILENAME: _scenario_content_fingerprint(
+            _scenario_json_bytes(persisted)
+        ),
+    }
+    manifest = persisted["manifest"]
+    before = manifest.get("before_snapshot_fingerprint")
+    if before is not None:
+        result[SCENARIO_MANIFEST_BEFORE_FILENAME] = before
+        result[SCENARIO_MANIFEST_RESTORE_FILENAME] = {
+            "size": before["size"],
+            "sha256": before["sha256"],
+        }
+    after = manifest.get("after_snapshot_fingerprint")
+    if after is not None:
+        result[SCENARIO_MANIFEST_AFTER_FILENAME] = after
+        result[SCENARIO_MANIFEST_INTENT_FILENAME] = _scenario_content_fingerprint(
+            _scenario_json_bytes(
+                {
+                    "schema_version": SCENARIO_JOURNAL_SCHEMA_VERSION,
+                    "operation": persisted["operation"],
+                    "transaction_id": persisted["transaction_id"],
+                    "deployment_id": persisted["deployment_id"],
+                    "manifest_sha256": after["sha256"],
+                }
+            )
+        )
+    return result
+
+
+def _scenario_validate_partial_cleanup_directory(
+    path: Path,
+    expected_identity: Optional[Dict[str, Any]],
+    expected_files: Dict[str, str],
+    label: str,
+) -> FileIdentity:
+    if expected_identity is None:
+        raise HooksConflict(f"{label} lacks a durable identity: {path}")
+    identity = _scenario_identity_from_json(expected_identity, label)
+    if not _path_has_directory_identity(path, identity):
+        raise HooksConflict(f"{label} identity changed: {path}")
+    actual = _scenario_directory_files(path)
+    if not set(actual) <= set(expected_files):
+        raise HooksConflict(f"{label} contains unknown members: {path}")
+    for relative, fingerprint in actual.items():
+        if fingerprint.sha256 != expected_files[relative]:
+            raise HooksConflict(f"{label} member changed: {path / relative}")
+    return identity
+
+
+def _scenario_validate_partial_journal_cleanup(
     target: Path,
     journal: Path,
     marker: Path,
-) -> None:
+) -> Tuple[Dict[str, Any], Dict[str, FileFingerprint], Dict[str, FileIdentity]]:
     data = _scenario_load_cleanup_marker(target, marker)
     _scenario_validate_terminal_cleanup_state(target, data)
     expected_identity = _scenario_identity_from_json(
@@ -6348,6 +6529,58 @@ def _scenario_complete_partial_journal_cleanup(
     }
     if not members <= allowed:
         raise HooksConflict(f"scenario journal contains unknown cleanup evidence: {journal}")
+    expected_regular = _scenario_partial_cleanup_regular_fingerprints(data)
+    regular = {}
+    directories = {}
+    for name in members:
+        path = journal / name
+        node = _classify_node(path)
+        if node.kind == "directory":
+            if name == SCENARIO_PAYLOAD_STAGING_DIRNAME:
+                directories[name] = _scenario_validate_partial_cleanup_directory(
+                    path,
+                    data["payload"].get("staging_identity"),
+                    data["payload"]["files"],
+                    "scenario cleanup staging",
+                )
+            elif name == SCENARIO_REMOVED_PAYLOAD_DIRNAME:
+                directories[name] = _scenario_validate_partial_cleanup_directory(
+                    path,
+                    data["payload"].get("identity"),
+                    data["payload"]["files"],
+                    "scenario cleanup removed payload",
+                )
+            else:
+                raise HooksConflict(
+                    f"scenario journal cleanup directory is unexpected: {path}"
+                )
+        elif node.regular:
+            fingerprint = _fingerprint_regular_file(path)
+            expected = expected_regular.get(name)
+            if expected is None or not _scenario_fingerprint_matches_portable(
+                fingerprint,
+                expected,
+            ):
+                raise HooksConflict(
+                    f"scenario journal cleanup member changed: {path}"
+                )
+            regular[name] = fingerprint
+        else:
+            raise HooksConflict(f"scenario journal cleanup member is abnormal: {path}")
+    return data, regular, directories
+
+
+def _scenario_complete_partial_journal_cleanup(
+    target: Path,
+    journal: Path,
+    marker: Path,
+) -> None:
+    data, regular, directories = _scenario_validate_partial_journal_cleanup(
+        target,
+        journal,
+        marker,
+    )
+    members = _FILESYSTEM.list_directory_names(journal)
     for name in sorted(
         members,
         key=lambda member: _classify_node(journal / member).kind == "directory",
@@ -6355,6 +6588,14 @@ def _scenario_complete_partial_journal_cleanup(
         path = journal / name
         node = _classify_node(path)
         if node.kind == "directory":
+            expected_identity = directories.get(name)
+            if expected_identity is None or not _path_has_directory_identity(
+                path,
+                expected_identity,
+            ):
+                raise HooksConflict(
+                    f"scenario journal cleanup directory identity changed: {path}"
+                )
             if name == SCENARIO_PAYLOAD_STAGING_DIRNAME:
                 _scenario_remove_partial_staging(path, data["payload"]["files"])
             elif name == SCENARIO_REMOVED_PAYLOAD_DIRNAME:
@@ -6364,8 +6605,12 @@ def _scenario_complete_partial_journal_cleanup(
                     f"scenario journal cleanup directory is unexpected: {path}"
                 )
         elif node.regular:
-            fingerprint = _fingerprint_regular_file(path)
-            _FILESYSTEM.remove_verified_file(path, fingerprint.identity, fingerprint)
+            expected = regular.get(name)
+            if expected is None or not _path_has_fingerprint(path, expected):
+                raise HooksConflict(
+                    f"scenario journal cleanup member changed: {path}"
+                )
+            _FILESYSTEM.remove_verified_file(path, expected.identity, expected)
         else:
             raise HooksConflict(f"scenario journal cleanup member is abnormal: {path}")
     _fsync_directory(journal)
@@ -6411,6 +6656,43 @@ def _scenario_pair_recovery_evidence(
     return journal, marker
 
 
+def _scenario_load_recovery_evidence(
+    target: Path,
+    candidates: List[Path],
+) -> Tuple[ScenarioJournalState, Optional[Path], Optional[Path]]:
+    control, _manifest_path, _scenarios = _scenario_control_paths(target)
+    journal, marker = _scenario_pair_recovery_evidence(target, candidates)
+    if marker is None:
+        assert journal is not None
+        return _scenario_load_journal(target, journal), journal, None
+
+    if journal is None:
+        marker_data = _scenario_load_cleanup_marker(target, marker)
+        _scenario_validate_terminal_cleanup_state(target, marker_data)
+    else:
+        marker_data, _regular, _directories = (
+            _scenario_validate_partial_journal_cleanup(
+                target,
+                journal,
+                marker,
+            )
+        )
+    state = ScenarioJournalState(
+        control,
+        journal or marker,
+        _scenario_identity_from_json(
+            marker_data["journal"]["identity"],
+            "scenario cleanup journal",
+        ),
+        {
+            key: value
+            for key, value in marker_data.items()
+            if not key.startswith("_")
+        },
+    )
+    return state, journal, marker
+
+
 def recover_scenario(target: Path, yes: bool) -> None:
     control = _scenario_validate_control_node(target, allow_absent=True)
     _print(f"[Scenario recover] {target}")
@@ -6429,33 +6711,11 @@ def recover_scenario(target: Path, yes: bool) -> None:
     if not candidates:
         _print("[Scenario state] no recovery required")
         return
-    journal_candidate, marker_candidate = _scenario_pair_recovery_evidence(
+    state, journal_candidate, marker_candidate = _scenario_load_recovery_evidence(
         target,
         candidates,
     )
     marker_only = journal_candidate is None
-    if marker_candidate is not None:
-        marker_data = _scenario_load_cleanup_marker(target, marker_candidate)
-        if journal_candidate is not None and not _path_has_directory_identity(
-            journal_candidate,
-            _scenario_identity_from_json(
-                marker_data["journal"]["identity"],
-                "scenario cleanup journal",
-            ),
-        ):
-            raise HooksConflict("scenario cleanup journal identity changed")
-        state = ScenarioJournalState(
-            control,
-            journal_candidate or marker_candidate,
-            _scenario_identity_from_json(
-                marker_data["journal"]["identity"],
-                "scenario cleanup journal",
-            ),
-            {key: value for key, value in marker_data.items() if not key.startswith("_")},
-        )
-    else:
-        assert journal_candidate is not None
-        state = _scenario_load_journal(target, journal_candidate)
     _print(
         f"[Recovery] operation={state.data['operation']} "
         f"transaction={state.data['transaction_id']} phase={state.data['phase']}"
