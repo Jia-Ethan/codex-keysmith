@@ -34,6 +34,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
     "docs/reference.md",
+    "docs/v0.3-scenario-deployment-design.md",
     "docs/releases/v0.2.0.md",
     "examples/gpt-unrestricted.md",
     "gui/README.md",
@@ -42,6 +43,17 @@ REQUIRED_ARCHIVE_FILES = {
     "gui/src-tauri/icons/Square44x44Logo.png",
     "gui/src-tauri/icons/icon.ico",
     "gui/src-tauri/tauri.windows.conf.json",
+}
+REQUIRED_SCENARIO_FILES = {
+    "scenarios/example_fixture/scenario.json",
+    "scenarios/example_fixture/task.md",
+    "scenarios/example_fixture/validator.py",
+    "scenarios/example_fixture/verify.py",
+    "scenarios/example_fixture/data/input.json",
+    "scenarios/example_fixture/fixtures/positive/output.json",
+    "scenarios/example_fixture/fixtures/negative/output.json",
+    "scenarios/example_fixture/fixtures/tampered/input.json",
+    "scenarios/example_fixture/fixtures/tampered/output.json",
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
@@ -114,6 +126,13 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
         path.write_bytes(data)
         if relative_path.endswith(".mjs"):
             path.chmod(0o755)
+        source_bytes[relative_path] = data
+
+    for relative_path in REQUIRED_SCENARIO_FILES:
+        data = (REPO_ROOT / relative_path).read_bytes()
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
         source_bytes[relative_path] = data
 
     (repo / ".gitattributes").write_bytes((REPO_ROOT / ".gitattributes").read_bytes())
@@ -211,7 +230,8 @@ def test_windows_fresh_deployment_policy_markers_are_complete_and_consistent():
 
 
 def test_release_markdown_relative_links_stay_inside_bundle(release_builder):
-    archive_files = set(release_builder._archive_files(TAG))
+    archive_files = set(release_builder._archive_files(TAG, REPO_ROOT))
+    assert REQUIRED_SCENARIO_FILES <= archive_files
     tracked_gui = _run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "gui"],
         REPO_ROOT,
@@ -242,6 +262,114 @@ def test_release_markdown_relative_links_stay_inside_bundle(release_builder):
             )
             assert not resolved.startswith("../"), (relative_path, raw_target)
             assert resolved in archive_files, (relative_path, raw_target, resolved)
+
+
+def test_scenario_archive_discovery_rejects_abnormal_members(release_builder, tmp_path):
+    repo = tmp_path / "repo"
+    package = repo / "scenarios" / "fixture"
+    package.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    link = package / "linked.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    with pytest.raises(release_builder.ReleaseError, match="not a regular file"):
+        release_builder._scenario_archive_files(repo)
+
+
+def test_scenario_archive_discovery_ignores_python_bytecode_cache(
+    release_builder,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    package = repo / "scenarios" / "fixture"
+    cache = package / "__pycache__"
+    cache.mkdir(parents=True)
+    source = package / "verify.py"
+    source.write_text("print('verify')\n", encoding="utf-8")
+    (cache / "verify.cpython-314.pyc").write_bytes(b"local bytecode\n")
+    (package / "verify.pyc").write_bytes(b"legacy local bytecode\n")
+
+    assert release_builder._scenario_archive_files(repo) == (
+        "scenarios/fixture/verify.py",
+    )
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+def test_scenario_archive_discovery_does_not_ignore_abnormal_bytecode_nodes(
+    release_builder,
+    tmp_path,
+    kind,
+):
+    repo = tmp_path / "repo"
+    package = repo / "scenarios" / "fixture"
+    package.mkdir(parents=True)
+    abnormal = package / "masked.pyc"
+    if kind == "symlink":
+        source = package / "source.txt"
+        source.write_text("source\n", encoding="utf-8")
+        try:
+            abnormal.symlink_to(source)
+        except OSError as exc:
+            pytest.skip(f"symlink unavailable: {exc}")
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO creation unavailable")
+        os.mkfifo(abnormal)
+
+    with pytest.raises(release_builder.ReleaseError, match="not a regular file"):
+        release_builder._scenario_archive_files(repo)
+
+
+def test_scenario_archive_discovery_rejects_symlinked_scenario_root(
+    release_builder,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside-scenarios"
+    package = outside / "fixture"
+    package.mkdir(parents=True)
+    (package / "verify.py").write_text("print('verify')\n", encoding="utf-8")
+    try:
+        (repo / "scenarios").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    with pytest.raises(release_builder.ReleaseError, match="root is not a directory"):
+        release_builder._scenario_archive_files(repo)
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "bad:name.txt",
+        "bad?name.txt",
+        "control\x1f.txt",
+        "delete\x7f.txt",
+        "AUX.txt",
+        "trailing-dot.",
+    ],
+)
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows cannot materialize the unsafe fixture filenames",
+)
+def test_scenario_archive_discovery_rejects_cross_platform_unsafe_paths(
+    release_builder,
+    tmp_path,
+    unsafe_name,
+):
+    repo = tmp_path / "repo"
+    member = repo / "scenarios" / "fixture" / unsafe_name
+    member.parent.mkdir(parents=True)
+    member.write_text("unsafe archive path\n", encoding="utf-8")
+
+    with pytest.raises(release_builder.ReleaseError, match="cross-platform unsafe path"):
+        release_builder._scenario_archive_files(repo)
 
 
 def test_release_build_is_reproducible_and_contains_required_files(
@@ -1063,6 +1191,7 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
         REPO_ROOT / ".github" / "pull_request_template.md"
     ).read_text(encoding="utf-8")
     assert "fail_under = 81" in pyproject
+    assert 'patch = ["_exit", "subprocess"]' in pyproject
     assert "branch coverage ≥ 81%" in pull_request_template
     assert "branch coverage ≥ 80%" not in pull_request_template
     assert "scripts/build_release.py v0.1.0" not in pull_request_template

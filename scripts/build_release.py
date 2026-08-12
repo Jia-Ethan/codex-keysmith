@@ -31,8 +31,68 @@ ARCHIVE_FILES = (
     "docs/assets/readme/codex-keysmith-preview.png",
     "docs/hooks-transactions.md",
     "docs/reference.md",
+    "docs/v0.3-scenario-deployment-design.md",
     "examples/gpt-unrestricted.md",
 )
+
+
+def _validate_scenario_archive_path(relative_path: str) -> None:
+    if relative_path == "scenarios" or not relative_path.startswith("scenarios/"):
+        raise ReleaseError(
+            "scenario archive contains an invalid tree path: {}".format(relative_path)
+        )
+    if "\\" in relative_path or any(
+        ord(character) < 32 or ord(character) == 127 for character in relative_path
+    ):
+        raise ReleaseError(
+            "scenario archive contains a cross-platform unsafe path: {}".format(
+                relative_path
+            )
+        )
+
+    reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    reserved.update("COM{}".format(index) for index in range(1, 10))
+    reserved.update("LPT{}".format(index) for index in range(1, 10))
+    for component in relative_path.split("/"):
+        if (
+            component in {"", ".", ".."}
+            or component.endswith((" ", "."))
+            or any(character in component for character in '<>:"|?*')
+            or component.split(".", 1)[0].upper() in reserved
+        ):
+            raise ReleaseError(
+                "scenario archive contains a cross-platform unsafe path: {}".format(
+                    relative_path
+                )
+            )
+
+
+def _scenario_archive_files(repo_root: Path) -> Tuple[str, ...]:
+    scenario_root = repo_root / "scenarios"
+    try:
+        root_stat = os.lstat(str(scenario_root))
+    except FileNotFoundError:
+        return ()
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise ReleaseError(
+            "scenario archive root is not a directory: {}".format(scenario_root)
+        )
+    files = []
+    for path in sorted(scenario_root.rglob("*")):
+        file_stat = os.lstat(str(path))
+        if stat.S_ISDIR(file_stat.st_mode):
+            continue
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ReleaseError("scenario archive member is not a regular file: {}".format(path))
+        relative_parts = path.relative_to(scenario_root).parts
+        if "__pycache__" in relative_parts or path.name.endswith((".pyc", ".pyo")):
+            continue
+        relative_path = path.relative_to(repo_root).as_posix()
+        _validate_scenario_archive_path(relative_path)
+        files.append(relative_path)
+    return tuple(files)
+
+
 MIT_MARKERS = (
     b"MIT License",
     b"Permission is hereby granted, free of charge",
@@ -48,8 +108,11 @@ ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 TAR_TIMESTAMP = 0
 
 
-def _archive_files(tag: str) -> Tuple[str, ...]:
-    return ARCHIVE_FILES + ("docs/releases/{}.md".format(tag),)
+def _archive_files(tag: str, repo_root: Optional[Path] = None) -> Tuple[str, ...]:
+    files = ARCHIVE_FILES + ("docs/releases/{}.md".format(tag),)
+    if repo_root is not None:
+        files += _scenario_archive_files(repo_root)
+    return files
 
 
 class ReleaseError(RuntimeError):
@@ -137,9 +200,10 @@ def _validate_version(tag: str, sources: Dict[str, bytes]) -> str:
 
 
 def _read_and_validate_sources(repo_root: Path, tag: str) -> Tuple[str, Dict[str, bytes]]:
+    archive_files = ARCHIVE_FILES + _scenario_archive_files(repo_root)
     sources = {
         relative_path: _regular_file_bytes(repo_root / relative_path)
-        for relative_path in ARCHIVE_FILES
+        for relative_path in archive_files
     }
     for marker in MIT_MARKERS:
         if marker not in sources["LICENSE"]:

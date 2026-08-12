@@ -77,6 +77,21 @@ Omitting `--codex-dir` processes every auto-discovered directory; only do this f
 
 Full field list, transaction directories, and edge cases: [`docs/reference.md`](docs/reference.md).
 
+### Scenario deployment (v0.3 M1)
+
+M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`.
+
+```bash
+python3 codex-instruct.py --scenario-list
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-status --target-dir /absolute/project
+python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
+```
+
+`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory by default, while an absolute `--scenario-root` can select another library. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
+
 ### Using CCSwitch profiles as an activation switch
 
 When CCSwitch stores and replaces the complete Codex `config.toml` for each provider, two provider copies can hold separate Keysmith On / Off snapshots:

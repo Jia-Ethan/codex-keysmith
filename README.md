@@ -89,6 +89,21 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 完整字段、临时事务目录和边界条件见 [`docs/reference.md`](docs/reference.md)。
 
+### 场景部署（v0.3 M1）
+
+M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。
+
+```bash
+python3 codex-instruct.py --scenario-list
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-status --target-dir /absolute/project
+python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
+```
+
+`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`，也可用绝对 `--scenario-root` 指定场景库。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
+
 ### 与 CCSwitch 配置切换配合
 
 当 CCSwitch 以 Provider 为单位保存并整体写回 Codex `config.toml` 时，可以让两个 Provider 副本分别保存 Keysmith 的 On / Off 配置：

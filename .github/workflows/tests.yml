@@ -126,6 +126,9 @@ jobs:
           tests/test_uninstall.py::test_uninstall_previews_then_restores_first_deployment
           tests/test_recovery.py::test_recover_reenters_after_remove_claim_interruption
           tests/test_uninstall_recovery.py::test_uninstall_initializing_cleanup_is_reentrant_after_empty_marker_publication
+          tests/test_scenario_cli.py::test_scenario_deploy_status_uninstall_lifecycle
+          tests/test_scenario_recovery.py::test_deploy_committed_cleanup_interruption_keeps_deployment
+          tests/test_scenario_recovery.py::test_uninstall_committed_phase_interruption_finishes_removal
 
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests

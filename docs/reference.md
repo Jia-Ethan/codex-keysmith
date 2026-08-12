@@ -184,6 +184,31 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 
 默认内置部署且目标名为 `gpt-unrestricted.md` 时，工具检查 `gpt5.5-unrestricted.md`。被 config 引用或匹配历史内置哈希的普通文件会事务归档；只有这种 `archive` 动作进入 manifest 所有权。未引用的自定义内容保留并标记为未受管理，manifest 不记录其指纹，uninstall 不检查或改写它。为避免与迁移路径冲突，`--name gpt5.5-unrestricted` 被保留并拒绝。
 
+### 场景部署（v0.3 M1）
+
+场景层与既有指令层完全正交：不读取或修改 `.codex-keysmith-manifest.json`、`config.toml`、`hooks.json` 或 `model_instructions_file`。所有场景写入只发生在显式目标的 `<target>/.codex-keysmith/`：
+
+```bash
+python3 codex-instruct.py --scenario-list
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project
+python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-status --target-dir /absolute/project
+python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project
+python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project --yes
+python3 codex-instruct.py --scenario-recover --target-dir /absolute/project
+python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
+```
+
+- `--target-dir` 必须是存在、可枚举、解析后仍与输入一致的绝对目录；不会回退到 cwd。
+- 源码运行默认从脚本同级 `scenarios/` 读取；`--scenario-root /absolute/library` 可显式覆盖。M1 frozen/sidecar 没有场景资源时会明确要求该参数，不联网下载或猜测其他目录。
+- 同一 `scenario_id` 可在同一或不同 target 重复部署；每次生成独立 32 位十六进制 `deployment_id`。status 和 uninstall 始终以 `deployment_id + target` 精确定位。
+- target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
+- 可验证的中断 journal 报告 `recovery-required`；异常、篡改或不完整 evidence 报告 `conflict` 并原样保留。pre-commit recover 回到事务前态，committed/recovered cleanup 中断只完成前向证据清理。
+- uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
+- M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改 fixture；validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
+
+完整 schema、事务 phase、M1/M2 边界见 [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md)。
+
 ### 参数与退出码
 
 | 参数 | 说明 |
@@ -198,6 +223,13 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 | `--uninstall` | 预览或撤销最新一层受管理部署 |
 | `--recover` | 预览或恢复 durable journal 记录的中断 deploy/uninstall |
 | `--skip-hooks-isolation` | 保持 hooks 活跃；必须显式指定 `--codex-dir` |
+| `--scenario-list` | 静态列出场景 root；不执行 validator/verify |
+| `--deploy-scenario ID` | 预览或部署一个场景；写入必须同时提供 `--yes` 与绝对 `--target-dir` |
+| `--scenario-status` | 只读查看一个 target 的场景状态 |
+| `--scenario-uninstall ID` | 预览或卸载一个精确 `deployment_id` |
+| `--scenario-recover` | 预览或恢复一个 target-local 中断事务 |
+| `--target-dir` | 场景操作的显式绝对目标；不影响 `--codex-dir` |
+| `--scenario-root` | 显式绝对场景库；仅 list/deploy 使用 |
 | `--lang auto\|zh-CN\|en` | 自动或显式选择 CLI 输出语言 |
 | `--version` | 显示脚本版本并退出 |
 
@@ -387,6 +419,14 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 4. Confirm deployment; it creates a new manifest layer.
 5. To roll back, run `--uninstall --yes` for the newest layer with the new script. Use `--restore-hooks` when only hooks need restoration.
 
+### Scenario deployment (v0.3 M1)
+
+Scenario deployment is independent from the instruction layer and writes only under an explicit target's `<target>/.codex-keysmith/`. Use `--scenario-list`, `--deploy-scenario ID`, `--scenario-status`, `--scenario-uninstall DEPLOYMENT_ID`, and `--scenario-recover`; every target operation requires an absolute `--target-dir`, and every write remains preview-first until `--yes` is present.
+
+Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` includes a portable `verify.py`; `--scenario-list` never executes package code.
+
+Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md).
+
 ### Options and exit codes
 
 | Option | Description |
@@ -401,6 +441,13 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 | `--uninstall` | Preview or remove the newest managed layer |
 | `--recover` | Preview or restore an interrupted deploy/uninstall |
 | `--skip-hooks-isolation` | Keep hooks active; requires explicit `--codex-dir` |
+| `--scenario-list` | Statically list packages without running validator/verify code |
+| `--deploy-scenario ID` | Preview or deploy a scenario to an absolute `--target-dir` |
+| `--scenario-status` | Read one target's scenario state |
+| `--scenario-uninstall ID` | Preview or remove one exact deployment ID |
+| `--scenario-recover` | Preview or recover one target-local transaction |
+| `--target-dir` | Explicit absolute scenario target; independent of `--codex-dir` |
+| `--scenario-root` | Explicit absolute scenario library for list/deploy |
 | `--lang auto\|zh-CN\|en` | Auto-detect or explicitly select CLI output language |
 | `--version` | Print the script version and exit |
 

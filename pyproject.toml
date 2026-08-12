@@ -15,7 +15,7 @@ branch = true
 parallel = true
 relative_files = true
 source = ["."]
-patch = ["subprocess"]
+patch = ["_exit", "subprocess"]
 
 [tool.coverage.report]
 include = ["codex-instruct.py", "scripts/run_prompt_bank_regression.py"]
