@@ -106,6 +106,42 @@ def test_status_rejects_extra_payload_member(tmp_path):
     assert (payload / "extra.txt").read_text(encoding="utf-8") == "user\n"
 
 
+@pytest.mark.parametrize(
+    "relative",
+    ["__pycache__/evil.pyc", "generated.pyo"],
+)
+def test_status_and_uninstall_reject_payload_bytecode_artifacts(
+    tmp_path,
+    relative,
+):
+    target = _target(tmp_path)
+    deployment_id, manifest_path, manifest = _deploy(target)
+    payload = target / ".codex-keysmith" / manifest["deployments"][deployment_id][
+        "root"
+    ]
+    artifact = payload / relative
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"unowned bytecode\n")
+    manifest_before = manifest_path.read_bytes()
+
+    status = _run("--scenario-status", "--target-dir", target)
+    uninstall = _run(
+        "--scenario-uninstall",
+        deployment_id,
+        "--target-dir",
+        target,
+        "--yes",
+    )
+
+    assert status.returncode == 1
+    assert "payload members drifted" in status.stdout
+    assert uninstall.returncode == 1
+    assert "payload members drifted" in uninstall.stdout
+    assert artifact.read_bytes() == b"unowned bytecode\n"
+    assert manifest_path.read_bytes() == manifest_before
+    assert not list((target / ".codex-keysmith").glob("scenario-transaction-*"))
+
+
 def test_deploy_fails_closed_when_an_existing_payload_drifted(tmp_path):
     target = _target(tmp_path)
     deployment_id, _manifest_path, manifest = _deploy(target)
@@ -221,6 +257,320 @@ def test_deployment_id_collision_preserves_existing_manifest_and_payload(
         if path.is_file()
     } == before_files
     assert not list((target / ".codex-keysmith").glob("scenario-transaction-*"))
+
+
+def test_deploy_rejects_package_root_rebinding_after_load(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    original = package.root.with_name("original-example-fixture")
+    real_lock_enter = codex_instruct._DirectoryLockSet.__enter__
+
+    def rebind_after_lock(lock_set):
+        entered = real_lock_enter(lock_set)
+        try:
+            package.root.rename(original)
+        except BaseException:
+            # Windows deliberately pins locked directories against rename.
+            lock_set._release()
+            raise
+        shutil.copytree(original, package.root)
+        return entered
+
+    monkeypatch.setattr(
+        codex_instruct._DirectoryLockSet,
+        "__enter__",
+        rebind_after_lock,
+    )
+
+    if os.name == "nt":
+        with pytest.raises(PermissionError) as caught:
+            codex_instruct.deploy_scenario(target, package, True)
+        assert caught.value.winerror == 32
+    else:
+        with pytest.raises(
+            codex_instruct.HooksConflict,
+            match="package root identity changed",
+        ):
+            codex_instruct.deploy_scenario(target, package, True)
+
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_deploy_rejects_package_root_rebinding_before_lock_setup(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    original = package.root.with_name("original-example-fixture")
+    package.root.rename(original)
+    shutil.copytree(original, package.root)
+    lock_attempted = False
+
+    def reject_lock(_paths):
+        nonlocal lock_attempted
+        lock_attempted = True
+        raise AssertionError("stale package root must be rejected before lock setup")
+
+    monkeypatch.setattr(codex_instruct, "_DirectoryLockSet", reject_lock)
+
+    with pytest.raises(
+        codex_instruct.HooksConflict,
+        match="package root identity changed before deployment",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert not lock_attempted
+    assert not (target / ".codex-keysmith").exists()
+
+
+@pytest.mark.parametrize(
+    "relation",
+    ["same", "child", "library-root", "library-child", "library-parent"],
+)
+def test_deploy_rejects_target_overlapping_scenario_source(tmp_path, relation):
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    if relation == "same":
+        target = package.root
+    elif relation == "child":
+        target = package.root / "target"
+        target.mkdir()
+    elif relation == "library-root":
+        target = root
+    elif relation == "library-child":
+        target = root / "another-target"
+        target.mkdir()
+    else:
+        target = root.parent
+
+    with pytest.raises(
+        codex_instruct.HooksConflict,
+        match="target overlaps the scenario source library",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_scenario_overlap_uses_directory_identity_for_path_aliases(tmp_path):
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    alias = Path(str(package.root).swapcase())
+    if not alias.is_dir():
+        pytest.skip("filesystem is case-sensitive")
+
+    assert codex_instruct._directory_identity(alias) == package.root_identity
+    assert codex_instruct._scenario_paths_overlap(alias, package.library_root)
+
+
+def test_deploy_accepts_case_alias_for_scenario_library_path(tmp_path):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    alias = Path(str(root).swapcase())
+    if not alias.is_dir():
+        pytest.skip("filesystem is case-sensitive")
+    package = codex_instruct.load_scenario_package(alias, "example_fixture")
+
+    deployment_id = codex_instruct.deploy_scenario(target, package, True)
+
+    assert deployment_id is not None
+    status = codex_instruct.show_scenario_status(target)
+    assert status == 0
+
+
+def test_scenario_package_match_ignores_equivalent_source_path_spelling(tmp_path):
+    root = _copy_scenario_root(tmp_path)
+    alias = Path(str(root).swapcase())
+    if not alias.is_dir():
+        pytest.skip("filesystem is case-sensitive")
+
+    original = codex_instruct.load_scenario_package(alias, "example_fixture")
+    refreshed = codex_instruct.load_scenario_package(root, "example_fixture")
+
+    assert str(original.library_root) != str(refreshed.library_root)
+    assert str(original.root) != str(refreshed.root)
+    assert codex_instruct._scenario_package_matches(refreshed, original)
+
+
+def test_deploy_rejects_library_root_rebinding_before_lock_setup(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    original = root.with_name("original-scenario-library")
+    root.rename(original)
+    shutil.copytree(original, root)
+    lock_attempted = False
+
+    def reject_lock(_paths):
+        nonlocal lock_attempted
+        lock_attempted = True
+        raise AssertionError("stale library root must be rejected before lock setup")
+
+    monkeypatch.setattr(codex_instruct, "_DirectoryLockSet", reject_lock)
+
+    with pytest.raises(
+        codex_instruct.HooksConflict,
+        match="library root identity changed before deployment",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert not lock_attempted
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_deploy_rejects_library_root_rebinding_after_lock(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    original = root.with_name("original-scenario-library")
+    real_lock_enter = codex_instruct._DirectoryLockSet.__enter__
+
+    def rebind_after_lock(lock_set):
+        entered = real_lock_enter(lock_set)
+        try:
+            root.rename(original)
+        except BaseException:
+            # Windows deliberately pins locked directories against rename.
+            lock_set._release()
+            raise
+        shutil.copytree(original, root)
+        return entered
+
+    monkeypatch.setattr(
+        codex_instruct._DirectoryLockSet,
+        "__enter__",
+        rebind_after_lock,
+    )
+
+    if os.name == "nt":
+        with pytest.raises(PermissionError) as caught:
+            codex_instruct.deploy_scenario(target, package, True)
+        assert caught.value.winerror == 32
+    else:
+        with pytest.raises(
+            codex_instruct.HooksConflict,
+            match="library root identity changed before deployment",
+        ):
+            codex_instruct.deploy_scenario(target, package, True)
+
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_deploy_rejects_package_member_added_after_load(tmp_path):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    added = package.root / "late-added.txt"
+    added.write_text("late\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="checksums must cover every deployed file",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert added.read_text(encoding="utf-8") == "late\n"
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_deploy_rejects_package_member_added_during_staging(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    added = package.root / "late-during-staging.txt"
+    real_copy = codex_instruct._scenario_copy_regular_file
+    copied = False
+
+    def add_member_after_first_copy(source, destination, expected_sha256):
+        nonlocal copied
+        real_copy(source, destination, expected_sha256)
+        if not copied:
+            copied = True
+            added.write_text("late\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_scenario_copy_regular_file",
+        add_member_after_first_copy,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="checksums must cover every deployed file",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert added.read_text(encoding="utf-8") == "late\n"
+    assert not (target / ".codex-keysmith").exists()
+
+
+def test_deploy_rejects_package_member_added_after_staging(tmp_path, monkeypatch):
+    target = _target(tmp_path)
+    root = _copy_scenario_root(tmp_path)
+    package = codex_instruct.load_scenario_package(root, "example_fixture")
+    added = package.root / "late-after-staging.txt"
+    real_verify = codex_instruct._scenario_verify_payload
+    verified_staging = False
+
+    def add_member_after_staging(payload_root, expected_identity, expected_files):
+        nonlocal verified_staging
+        real_verify(payload_root, expected_identity, expected_files)
+        if payload_root.name == codex_instruct.SCENARIO_PAYLOAD_STAGING_DIRNAME:
+            verified_staging = True
+        elif verified_staging and not added.exists():
+            added.write_text("late\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_scenario_verify_payload",
+        add_member_after_staging,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="checksums must cover every deployed file",
+    ):
+        codex_instruct.deploy_scenario(target, package, True)
+
+    assert added.read_text(encoding="utf-8") == "late\n"
+    assert not list((target / ".codex-keysmith").glob("scenario-transaction-*"))
+    scenarios = target / ".codex-keysmith" / "scenarios"
+    assert not scenarios.exists() or not list(scenarios.iterdir())
+
+
+@pytest.mark.parametrize("operation", ["deploy", "uninstall"])
+def test_scenario_write_gate_preserves_control_enumeration_failure(
+    tmp_path,
+    monkeypatch,
+    operation,
+):
+    target = _target(tmp_path, f"{operation}-control-enumeration")
+    deployment_id, _manifest_path, _manifest = _deploy(target)
+    control = target / ".codex-keysmith"
+    real_list = codex_instruct._FILESYSTEM.list_directory_names
+
+    def fail_control(path):
+        if path == control:
+            raise FileNotFoundError("scenario control directory disappeared")
+        return real_list(path)
+
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "list_directory_names",
+        fail_control,
+    )
+
+    with pytest.raises(FileNotFoundError, match="control directory disappeared"):
+        if operation == "deploy":
+            package = codex_instruct.load_scenario_package(
+                SCENARIO_ROOT.resolve(),
+                "example_fixture",
+            )
+            codex_instruct.deploy_scenario(target, package, True)
+        else:
+            codex_instruct.uninstall_scenario(target, deployment_id, True)
+
+    assert control.is_dir()
 
 
 def test_target_path_rebinding_is_rejected_and_preserved(tmp_path):

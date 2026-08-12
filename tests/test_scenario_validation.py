@@ -120,6 +120,77 @@ def test_package_audits_abnormal_nodes_inside_bytecode_cache(tmp_path, kind):
         codex_instruct.load_scenario_package(root, "example_fixture")
 
 
+def test_package_rejects_scenario_json_replacement_during_load(tmp_path, monkeypatch):
+    root, package = _copy_package(tmp_path)
+    replacement = _metadata(package)
+    replacement["version"] = "9.9.9"
+    real_file_paths = codex_instruct._scenario_file_paths
+
+    def replace_metadata(scenario_root, **kwargs):
+        paths = real_file_paths(scenario_root, **kwargs)
+        _write_metadata(package, replacement)
+        return paths
+
+    monkeypatch.setattr(codex_instruct, "_scenario_file_paths", replace_metadata)
+
+    with pytest.raises(codex_instruct.HooksConflict, match="scenario.json changed"):
+        codex_instruct.load_scenario_package(root, "example_fixture")
+
+    assert _metadata(package)["version"] == "9.9.9"
+
+
+def test_package_rejects_root_rebinding_during_load(tmp_path, monkeypatch):
+    root, package = _copy_package(tmp_path)
+    original = package.with_name("original-example-fixture")
+    real_file_paths = codex_instruct._scenario_file_paths
+
+    def rebind_package(scenario_root, **kwargs):
+        paths = real_file_paths(scenario_root, **kwargs)
+        package.rename(original)
+        shutil.copytree(original, package)
+        return paths
+
+    monkeypatch.setattr(codex_instruct, "_scenario_file_paths", rebind_package)
+
+    with pytest.raises(
+        codex_instruct.HooksConflict,
+        match="package root identity changed while loading",
+    ):
+        codex_instruct.load_scenario_package(root, "example_fixture")
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        FileNotFoundError("control directory disappeared"),
+        PermissionError("access denied"),
+        NotADirectoryError("control path is not a directory"),
+        OSError("filesystem unavailable"),
+    ],
+)
+def test_scenario_journal_discovery_preserves_enumeration_errors(
+    tmp_path,
+    monkeypatch,
+    backend_error,
+):
+    control = tmp_path / ".codex-keysmith"
+    control.mkdir()
+
+    def fail_enumeration(_path):
+        raise backend_error
+
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "list_directory_names",
+        fail_enumeration,
+    )
+
+    with pytest.raises(type(backend_error)) as caught:
+        codex_instruct._scenario_journal_paths(control)
+
+    assert caught.value is backend_error
+
+
 @pytest.mark.parametrize(
     "specification,expected",
     [
@@ -297,6 +368,76 @@ def test_scenario_paths_reject_missing_relative_and_noncanonical_forms(
         resolve(existing.name)
     with pytest.raises(FileNotFoundError, match="does not exist"):
         resolve(str(existing / "missing"))
+
+
+@pytest.mark.parametrize(
+    ("resolver", "label"),
+    [
+        ("target", "--target-dir"),
+        ("root", "--scenario-root"),
+    ],
+)
+def test_windows_scenario_paths_normalize_missing_directory_errors(
+    tmp_path,
+    monkeypatch,
+    resolver,
+    label,
+):
+    resolve = (
+        codex_instruct.resolve_scenario_target
+        if resolver == "target"
+        else codex_instruct.resolve_scenario_root
+    )
+    missing = (tmp_path / f"missing-{resolver}").resolve()
+    backend_error = FileNotFoundError(2, "native backend detail", str(missing))
+
+    def fail_resolve(_path):
+        raise backend_error
+
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "resolve_directory",
+        fail_resolve,
+    )
+
+    with pytest.raises(FileNotFoundError) as caught:
+        resolve(str(missing))
+
+    assert str(caught.value) == f"{label} does not exist: {missing}"
+    assert caught.value.__cause__ is backend_error
+
+
+@pytest.mark.parametrize(
+    "backend_error",
+    [
+        PermissionError("access denied"),
+        codex_instruct.HooksConflict("reparse point is not allowed"),
+        OSError("filesystem unavailable"),
+    ],
+)
+def test_windows_scenario_paths_preserve_non_missing_backend_errors(
+    tmp_path,
+    monkeypatch,
+    backend_error,
+):
+    target = (tmp_path / "target").resolve()
+    target.mkdir()
+
+    def fail_resolve(_path):
+        raise backend_error
+
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        codex_instruct._FILESYSTEM,
+        "resolve_directory",
+        fail_resolve,
+    )
+
+    with pytest.raises(type(backend_error)) as caught:
+        codex_instruct.resolve_scenario_target(str(target))
+
+    assert caught.value is backend_error
 
 
 def test_scenario_root_rejects_symlinked_ancestor(tmp_path):
