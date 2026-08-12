@@ -206,7 +206,6 @@ body {
 
 /* ===== 玻璃卡片系统 ===== */
 .card-glass {
-  position: relative;
   background-color: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(16px) saturate(1.4);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
