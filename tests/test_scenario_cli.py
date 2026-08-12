@@ -186,6 +186,20 @@ def test_scenario_deploy_status_uninstall_lifecycle(tmp_path):
     assert instruction_manifest.read_text(encoding="utf-8") == '{"schema_version":1}\n'
     assert (target / "project.txt").read_text(encoding="utf-8") == "keep\n"
 
+    deployed_verify = (
+        target / ".codex-keysmith" / record["root"] / "verify.py"
+    )
+    verify_cwd = tmp_path / "deployed verify cwd 中文"
+    verify_cwd.mkdir()
+    verified = subprocess.run(
+        [sys.executable, str(deployed_verify)],
+        cwd=verify_cwd,
+        text=True,
+        capture_output=True,
+    )
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "verify passed" in verified.stdout
+
     status = _run("--scenario-status", "--target-dir", target)
     assert status.returncode == 0, status.stdout + status.stderr
     assert f"[Deployment] {deployment_id}" in status.stdout

@@ -205,7 +205,7 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 - target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
 - 可验证的中断 journal 报告 `recovery-required`；异常、篡改或不完整 evidence 报告 `conflict` 并原样保留。pre-commit recover 回到事务前态，committed/recovered cleanup 中断只完成前向证据清理。
 - uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
-- M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改 fixture；validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
+- M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改检测；部署后在临时目录创建验收输入，不依赖未部署的 `fixtures/`。validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
 
 完整 schema、事务 phase、M1/M2 边界见 [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md)。
 
