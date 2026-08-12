@@ -596,7 +596,7 @@ def test_prerelease_release_notes_match_approved_compact_copy():
         """\
         # codex-keysmith v0.2.0 Desktop Beta
 
-        修复了部署和管理确认操作只显示模糊遮罩、确认弹窗移出视口的问题。
+        修复了部署和管理确认弹窗移出视口、Windows 状态报告被折叠为通用失败，以及关闭或重复启动时的桌面生命周期问题。
 
         ## 下载
 
