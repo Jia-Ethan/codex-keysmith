@@ -356,11 +356,11 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 - `Hooks restore: available …` 是提示行不是状态，解析时映射为 `restorable`
 - kv 区可能出现 `[Error] config.toml …` 中文诊断行，需转成 warning 展示而非吞掉
 
-**后续工作（正式发布门禁）：**
+**发布状态与正式版门禁：**
 
-1. 从最终发布提交在原生 Apple Silicon / Windows x64 runner 上重跑阻断构建与安装包验证，并绑定标签、source commit、build manifest 和资产校验和
-2. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
-3. 验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留后再创建 GitHub Release
+- `desktop-v0.2.0-beta.6` 已从最终 `main` 提交完成原生 Apple Silicon / Windows x64 构建、安装包验证、签名标签绑定与 8 项资产发布。
+- 正式 `v0.2.0` 仍需 Apple Developer ID 签名、公证和 stapling，以及 Windows Authenticode 签名与时间戳。
+- 正式发布前仍需在实体设备验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留。
 
 **长期约束（仍需遵守）：**
 
