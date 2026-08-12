@@ -402,8 +402,22 @@ def test_partial_journal_identity_swap_is_conflict_and_preserved(tmp_path):
     assert interrupted.returncode == HARD_EXIT
     control = target / ".codex-keysmith"
     journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    marker = next(control.glob("scenario-cleanup-*.json"))
+    expected_identity = codex_instruct._scenario_identity_from_json(
+        json.loads(marker.read_text(encoding="utf-8"))["journal"]["identity"],
+        "scenario cleanup journal",
+    )
     shutil.rmtree(journal)
-    journal.mkdir()
+    for _attempt in range(128):
+        journal.mkdir()
+        if codex_instruct._directory_identity(journal) != expected_identity:
+            break
+        # Some filesystems immediately reuse the removed directory inode. Keep
+        # the replacement node occupied before retrying with a fresh allocation.
+        filler = tmp_path / f"identity-swap-filler-{_attempt}"
+        journal.rename(filler)
+    else:
+        pytest.skip("filesystem repeatedly reused the removed journal identity")
     (journal / "intent.json").write_text("{}\n", encoding="utf-8")
 
     preview = _run("--scenario-recover", "--target-dir", target)
