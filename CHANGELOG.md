@@ -23,6 +23,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Fixed scenario recovery hardening: a `scenario.json` replaced while loading the package is rejected as conflict; scenario journal discovery now preserves `PermissionError` / `NotADirectoryError` / `OSError` instead of treating them as an absent journal; cleanup interrupted after marker publication but before journal removal now forward-completes on `--scenario-recover`, while tampered or unpaired evidence remains `conflict` and preserved.
 - Fixed the shared Desktop confirmation dialog surface so deployment, uninstall, hooks restore, and transaction recovery confirmations remain centered and visible above the blurred overlay.
 - Fixed automatic Windows status discovery so a cache-only `%LOCALAPPDATA%\OpenAI\Codex` directory is ignored while real config, managed files, abnormal managed nodes, transaction residue, and cleanup markers remain inspectable. Explicit `--codex-dir` behavior is unchanged.
 - Fixed Desktop status handling so a semantically complete non-zero CLI report keeps its directory cards, exit code, stderr, and full stdout diagnostics instead of collapsing into a generic page failure. Truncated, field-incomplete, timed-out, or exit-inconsistent reports fail closed with structured diagnostics.

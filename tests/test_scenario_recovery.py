@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -337,6 +338,101 @@ def test_deploy_cleanup_claim_interruption_keeps_deployment(tmp_path):
     assert status.returncode == 0, status.stdout + status.stderr
     assert "state=active" in status.stdout
     assert not list(control.glob("scenario-transaction-*.cleanup-*"))
+
+
+def test_deploy_cleanup_member_interruption_keeps_deployment(tmp_path):
+    target = _target(tmp_path, "deploy-cleanup-member")
+
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    assert list(control.glob("scenario-transaction-*.cleanup-*"))
+    assert list(control.glob("scenario-cleanup-*.json"))
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    (journal / "journal.json").unlink(missing_ok=True)
+    assert not (journal / "journal.json").exists()
+
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    status = _run("--scenario-status", "--target-dir", target)
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "state=active" in status.stdout
+    assert not list(control.glob("scenario-transaction-*"))
+    assert not list(control.glob("scenario-cleanup-*.json"))
+
+
+def test_partial_journal_unknown_member_is_conflict_and_preserved(tmp_path):
+    target = _target(tmp_path, "partial-journal-unknown-member")
+
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    (journal / "intruder.txt").write_text("not owned\n", encoding="utf-8")
+
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+
+    assert recovered.returncode == 1
+    assert "unknown cleanup evidence" in recovered.stdout
+    assert (journal / "intruder.txt").read_text(encoding="utf-8") == "not owned\n"
+    assert list(control.glob("scenario-transaction-*.cleanup-*"))
+    assert list(control.glob("scenario-cleanup-*.json"))
+
+
+def test_partial_journal_identity_swap_is_conflict_and_preserved(tmp_path):
+    target = _target(tmp_path, "partial-journal-identity-swap")
+
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    shutil.rmtree(journal)
+    journal.mkdir()
+    (journal / "intent.json").write_text("{}\n", encoding="utf-8")
+
+    preview = _run("--scenario-recover", "--target-dir", target)
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+
+    assert preview.returncode == 1
+    assert recovered.returncode == 1
+    assert "identity changed" in recovered.stdout
+    assert (journal / "intent.json").read_text(encoding="utf-8") == "{}\n"
+    assert list(control.glob("scenario-cleanup-*.json"))
+
+
+def test_partial_journal_symlink_member_is_conflict_and_preserved(tmp_path):
+    target = _target(tmp_path, "partial-journal-symlink-member")
+
+    interrupted = _interrupt_deploy(
+        tmp_path,
+        target,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    (journal / "journal.json").unlink(missing_ok=True)
+    (journal / "journal.json").symlink_to(target / "project.txt")
+
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+
+    assert recovered.returncode == 1
+    assert "abnormal" in recovered.stdout
+    assert (journal / "journal.json").is_symlink()
+    assert list(control.glob("scenario-transaction-*.cleanup-*"))
+    assert list(control.glob("scenario-cleanup-*.json"))
 
 
 def test_deploy_cleanup_marker_interruption_keeps_deployment(tmp_path):
@@ -760,6 +856,59 @@ def test_uninstall_cleanup_marker_interruption_finishes_removal(tmp_path):
     assert status.returncode == 0
     assert "not-installed" in status.stdout
     assert not list((target / ".codex-keysmith").glob("scenario-cleanup-*.json"))
+
+
+def test_uninstall_cleanup_member_interruption_finishes_removal(tmp_path):
+    target = _target(tmp_path, "uninstall-cleanup-member")
+    deployment_id = _deploy(target)
+
+    interrupted = _interrupt_uninstall(
+        tmp_path,
+        target,
+        deployment_id,
+        "scenario-journal-cleanup-member-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    assert list(control.glob("scenario-transaction-*.cleanup-*"))
+    assert list(control.glob("scenario-cleanup-*.json"))
+    journal = next(control.glob("scenario-transaction-*.cleanup-*"))
+    (journal / "journal.json").unlink(missing_ok=True)
+    assert not (journal / "journal.json").exists()
+
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    status = _run("--scenario-status", "--target-dir", target)
+    assert status.returncode == 0
+    assert "not-installed" in status.stdout
+    assert not list(control.glob("scenario-transaction-*"))
+    assert not list(control.glob("scenario-cleanup-*.json"))
+
+
+def test_uninstall_cleanup_payload_partial_removal_finishes_forward(tmp_path):
+    target = _target(tmp_path, "uninstall-cleanup-payload-partial")
+    deployment_id = _deploy(target)
+
+    interrupted = _interrupt_uninstall(
+        tmp_path,
+        target,
+        deployment_id,
+        "scenario-owned-file-removed",
+    )
+    assert interrupted.returncode == HARD_EXIT
+    control = target / ".codex-keysmith"
+    journal = next(control.glob("scenario-transaction-*"))
+    removed = journal / "removed-payload"
+    assert removed.is_dir()
+    assert os.listdir(removed)
+
+    recovered = _run("--scenario-recover", "--target-dir", target, "--yes")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    status = _run("--scenario-status", "--target-dir", target)
+    assert status.returncode == 0
+    assert "not-installed" in status.stdout
+    assert not list(control.glob("scenario-transaction-*"))
+    assert not list(control.glob("scenario-cleanup-*.json"))
 
 
 def test_recovery_fails_closed_when_payload_path_is_recreated_after_uninstall_claim(

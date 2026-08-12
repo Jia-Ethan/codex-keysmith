@@ -129,6 +129,8 @@ jobs:
           tests/test_scenario_cli.py::test_scenario_deploy_status_uninstall_lifecycle
           tests/test_scenario_recovery.py::test_deploy_committed_cleanup_interruption_keeps_deployment
           tests/test_scenario_recovery.py::test_uninstall_committed_phase_interruption_finishes_removal
+          tests/test_scenario_recovery.py::test_deploy_cleanup_member_interruption_keeps_deployment
+          tests/test_scenario_recovery.py::test_uninstall_cleanup_member_interruption_finishes_removal
 
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests
