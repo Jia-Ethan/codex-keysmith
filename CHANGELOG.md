@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Fixed the shared Desktop confirmation dialog surface so deployment, uninstall, hooks restore, and transaction recovery confirmations remain centered and visible above the blurred overlay.
 - Fixed automatic Windows status discovery so a cache-only `%LOCALAPPDATA%\OpenAI\Codex` directory is ignored while real config, managed files, abnormal managed nodes, transaction residue, and cleanup markers remain inspectable. Explicit `--codex-dir` behavior is unchanged.
 - Fixed Desktop status handling so a semantically complete non-zero CLI report keeps its directory cards, exit code, stderr, and full stdout diagnostics instead of collapsing into a generic page failure. Truncated, field-incomplete, timed-out, or exit-inconsistent reports fail closed with structured diagnostics.
 - Fixed Desktop close lifecycle handling so every Keysmith CLI/status/manifest backend call is covered by an operation lease; all close requests establish an exit barrier, active status/version checks, previews, deploy, uninstall, hooks restore, or transaction recovery finish before automatic exit, and no late CLI process can start during window destruction. Exit failures remain retryable, navigation and write entries stay locked, and idle close still exits immediately with no tray residency.
