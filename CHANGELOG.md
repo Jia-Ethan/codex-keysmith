@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Scenario deployment M1
+
+- Added preview-first target-local scenario list, deploy, status, exact `deployment_id` uninstall, and interrupted recovery commands without changing the existing instruction-layer schema v1 or command semantics.
+- Added per-target scenario manifest/journal ownership under `<target>/.codex-keysmith`, explicit absolute `--target-dir`, identity-bound payload roots, drift and abnormal-node fail-closed checks, cross-process target locking, and pre-commit rollback versus committed cleanup recovery.
+- Added the dependency-free `example_fixture` scenario with a cross-platform `verify.py`, validator exit-code contracts, multi-target/repeated deployment coverage, path-rebinding and tamper tests, concurrency tests, and deploy/uninstall hard-interruption recovery matrices.
+- Kept hooks, GUI, bundle packaging, real model runs, and the first three production scenarios outside M1.
+
 ### Desktop prerelease
 
 - Prepared `desktop-v0.2.0-beta.6` as the unified unsigned Desktop Beta with an Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, deterministic source archives, two platform candidate ZIPs, and one complete `SHA256SUMS`.

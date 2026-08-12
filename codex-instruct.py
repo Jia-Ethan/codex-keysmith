@@ -40,7 +40,7 @@ import uuid
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # ─── 内置 GPT 破限指令内容 ──────────────────────────────────────────────────
@@ -176,6 +176,33 @@ MANIFEST_INTENT_PENDING_FILENAME = "manifest-intent.pending.json"
 CLEANUP_MARKER_PREFIX = ".codex-keysmith-cleanup-"
 CLEANUP_MARKER_SUFFIX = ".intent.json"
 CLEANUP_CLAIM_SEPARATOR = ".cleanup-"
+SCENARIO_CONTROL_DIRNAME = ".codex-keysmith"
+SCENARIO_MANIFEST_FILENAME = "scenario-manifest.json"
+SCENARIO_MANIFEST_SCHEMA_VERSION = 1
+SCENARIO_JOURNAL_SCHEMA_VERSION = 1
+SCENARIO_JOURNAL_PREFIX = "scenario-transaction-"
+SCENARIO_CLEANUP_PREFIX = "scenario-cleanup-"
+SCENARIO_CLEANUP_SUFFIX = ".json"
+SCENARIO_INTENT_FILENAME = "intent.json"
+SCENARIO_INTENT_PENDING_FILENAME = "intent.pending.json"
+SCENARIO_JOURNAL_FILENAME = "journal.json"
+SCENARIO_JOURNAL_PENDING_FILENAME = "journal.pending.json"
+SCENARIO_MANIFEST_INTENT_FILENAME = "manifest-intent.json"
+SCENARIO_MANIFEST_INTENT_PENDING_FILENAME = "manifest-intent.pending.json"
+SCENARIO_PAYLOAD_STAGING_DIRNAME = "payload-staging"
+SCENARIO_REMOVED_PAYLOAD_DIRNAME = "removed-payload"
+SCENARIO_MANIFEST_BEFORE_FILENAME = "manifest-before"
+SCENARIO_MANIFEST_AFTER_FILENAME = "manifest-after"
+SCENARIO_MANIFEST_RESTORE_FILENAME = "manifest-restore"
+SCENARIO_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+SCENARIO_DEPLOYMENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+SCENARIO_SEMVER_RE = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+SCENARIO_RFC3339_UTC_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$"
+)
 DEFAULT_MD_NAME = "gpt-unrestricted"
 DEFAULT_MD_FILENAME = f"{DEFAULT_MD_NAME}.md"
 LEGACY_MD_FILENAME = "gpt5.5-unrestricted.md"
@@ -3402,6 +3429,14 @@ def _path_has_identity(path: Path, identity: FileIdentity) -> bool:
     return stat.S_ISREG(file_stat.st_mode) and _identity_from_stat(file_stat) == identity
 
 
+def _path_has_directory_identity(path: Path, identity: FileIdentity) -> bool:
+    try:
+        file_stat = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(file_stat.st_mode) and _identity_from_stat(file_stat) == identity
+
+
 def _fingerprint_descriptor(
     file_descriptor: int,
     before: os.stat_result,
@@ -3562,6 +3597,2832 @@ def _identity_from_portable(value: Any, label: str) -> FileIdentity:
     ):
         raise ValueError(f"{label} identity 无效")
     return FileIdentity(value["device"], value["inode"])
+
+
+# ─── Target-local scenario deployment ───────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ScenarioPackage:
+    root: Path
+    scenario_id: str
+    version: str
+    display_name: str
+    task: str
+    validator: str
+    verify: str
+    platforms: Tuple[str, ...]
+    python_runtime: str
+    requires: Tuple[Dict[str, Any], ...]
+    files: Dict[str, str]
+    source_digest: str
+
+
+@dataclass(frozen=True)
+class ScenarioStatusRecord:
+    deployment_id: str
+    scenario_id: str
+    scenario_version: str
+    state: str
+    root: str
+    detail: str
+
+
+@dataclass
+class ScenarioJournalState:
+    control_dir: Path
+    journal_dir: Path
+    journal_identity: FileIdentity
+    data: Dict[str, Any]
+    journal_fingerprint: Optional[FileFingerprint] = None
+    intent_fingerprint: Optional[FileFingerprint] = None
+    journal_pending: Optional[FileFingerprint] = None
+    intent_pending: Optional[FileFingerprint] = None
+    manifest_pending: Optional[FileFingerprint] = None
+
+
+def _scenario_json_bytes(value: Dict[str, Any]) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def _scenario_identity(identity: FileIdentity) -> Dict[str, Any]:
+    return {
+        "platform": "windows" if _is_windows_platform() else sys.platform,
+        "device": identity.device,
+        "inode_or_file_id": str(identity.inode),
+    }
+
+
+def _scenario_identity_from_json(value: Any, label: str) -> FileIdentity:
+    if not isinstance(value, dict) or set(value) != {
+        "platform",
+        "device",
+        "inode_or_file_id",
+    }:
+        raise ValueError(f"{label} identity structure is invalid")
+    if not isinstance(value["platform"], str) or not value["platform"]:
+        raise ValueError(f"{label} identity platform is invalid")
+    expected_platform = "windows" if _is_windows_platform() else sys.platform
+    if value["platform"] != expected_platform:
+        raise HooksConflict(f"{label} identity platform does not match this runtime")
+    if not isinstance(value["device"], int):
+        raise ValueError(f"{label} identity device is invalid")
+    try:
+        inode = int(value["inode_or_file_id"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} identity file id is invalid") from exc
+    return FileIdentity(value["device"], inode)
+
+
+def _scenario_require_absolute_directory(value: str, label: str) -> Path:
+    raw = Path(value)
+    if not raw.is_absolute():
+        raise ValueError(f"{label} must be an explicit absolute path: {value}")
+
+    if _is_windows_platform():
+        canonical = _FILESYSTEM.resolve_directory(raw)
+    else:
+        absolute = Path(os.path.abspath(str(raw)))
+        current = Path(absolute.anchor)
+        components = [current]
+        for part in absolute.parts[1:]:
+            current /= part
+            components.append(current)
+        canonical = absolute.resolve()
+        canonical_components = [Path(canonical.anchor)]
+        current_canonical = Path(canonical.anchor)
+        for part in canonical.parts[1:]:
+            current_canonical /= part
+            canonical_components.append(current_canonical)
+        if len(components) != len(canonical_components):
+            raise HooksConflict(
+                f"{label} resolves through an indirect path; use the canonical path: {canonical}"
+            )
+        for current in components:
+            try:
+                node_stat = os.lstat(current)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(f"{label} does not exist: {current}") from exc
+            if stat.S_ISLNK(node_stat.st_mode):
+                raise HooksConflict(f"{label} contains a symbolic link: {current}")
+            if not stat.S_ISDIR(node_stat.st_mode):
+                raise NotADirectoryError(f"{label} component is not a directory: {current}")
+
+    requested_path = Path(os.path.abspath(str(raw)))
+    if not _is_windows_platform():
+        requested_path = requested_path.resolve()
+    requested = os.path.normcase(os.path.normpath(str(requested_path)))
+    resolved = os.path.normcase(os.path.normpath(str(canonical)))
+    if requested != resolved:
+        raise HooksConflict(
+            f"{label} resolves to a different path; use the canonical absolute path: "
+            f"{canonical}"
+        )
+    if not _directory_is_enumerable(canonical):
+        raise OSError(f"{label} is not enumerable: {canonical}")
+    return canonical
+
+
+def resolve_scenario_target(value: str) -> Path:
+    return _scenario_require_absolute_directory(value, "--target-dir")
+
+
+def resolve_scenario_root(value: Optional[str]) -> Path:
+    if value:
+        return _scenario_require_absolute_directory(value, "--scenario-root")
+    if getattr(sys, "frozen", False):
+        raise FileNotFoundError(
+            "this build has no embedded scenario library; provide --scenario-root"
+        )
+    root = Path(__file__).resolve().parent / "scenarios"
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"source scenario library was not found; provide --scenario-root: {root}"
+        )
+    return _scenario_require_absolute_directory(str(root), "scenario library")
+
+
+def _scenario_safe_relative(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty relative path")
+    if "\\" in value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f"{label} must use portable forward-slash paths")
+    path = PurePosixPath(value)
+    if path.is_absolute() or value != path.as_posix():
+        raise ValueError(f"{label} is not a normalized relative path: {value}")
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"{label} contains an unsafe path component: {value}")
+    for part in path.parts:
+        stem = part.split(".", 1)[0].upper()
+        if (
+            stem in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+            or re.fullmatch(r"COM[1-9]", stem)
+            or re.fullmatch(r"LPT[1-9]", stem)
+            or any(character in part for character in '<>:"|?*')
+            or part.endswith((".", " "))
+        ):
+            raise ValueError(f"{label} uses a reserved path component: {value}")
+    return value
+
+
+def _scenario_file_paths(root: Path) -> List[str]:
+    relative_paths = []
+    seen_casefold = set()
+    for directory, directory_names, filenames in os.walk(root, topdown=True, followlinks=False):
+        directory_path = Path(directory)
+        for name in sorted(directory_names):
+            node = _classify_node(directory_path / name)
+            if node.kind != "directory":
+                raise OSError(f"scenario member is not a directory: {node.path} ({node.kind})")
+            if name == "__pycache__":
+                for cache_directory, cache_directories, cache_files in os.walk(
+                    node.path,
+                    topdown=True,
+                    followlinks=False,
+                ):
+                    cache_path = Path(cache_directory)
+                    for cache_name in sorted(cache_directories):
+                        cache_node = _classify_node(cache_path / cache_name)
+                        if cache_node.kind != "directory":
+                            raise OSError(
+                                "scenario bytecode cache member is not a directory: "
+                                f"{cache_node.path} ({cache_node.kind})"
+                            )
+                    for cache_name in sorted(cache_files):
+                        cache_node = _classify_node(cache_path / cache_name)
+                        if not cache_node.regular:
+                            raise OSError(
+                                "scenario bytecode cache member is not a regular file: "
+                                f"{cache_node.path} ({cache_node.kind})"
+                            )
+        directory_names[:] = [name for name in directory_names if name != "__pycache__"]
+        for name in sorted(filenames):
+            member = directory_path / name
+            node = _classify_node(member)
+            if not node.regular:
+                raise OSError(f"scenario member is not a regular file: {member} ({node.kind})")
+            if name.endswith((".pyc", ".pyo")):
+                continue
+            relative = member.relative_to(root).as_posix()
+            _scenario_safe_relative(relative, "scenario member")
+            folded = relative.casefold()
+            if folded in seen_casefold:
+                raise ValueError(f"scenario members collide case-insensitively: {relative}")
+            seen_casefold.add(folded)
+            relative_paths.append(relative)
+    return sorted(relative_paths)
+
+
+def _scenario_source_digest(files: Dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for relative, sha256 in sorted(files.items()):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _scenario_python_version_matches(specification: str) -> bool:
+    match = re.fullmatch(
+        r">=(\d+)\.(\d+)(?:\.(\d+))?,<(\d+)\.(\d+)(?:\.(\d+))?",
+        specification,
+    )
+    if not match:
+        raise ValueError(f"unsupported Python runtime constraint: {specification}")
+    values = [int(item or 0) for item in match.groups()]
+    lower = tuple(values[:3])
+    upper = tuple(values[3:])
+    current = (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
+    return lower <= current < upper
+
+
+def _scenario_validate_requires(value: Any) -> Tuple[Dict[str, Any], ...]:
+    if not isinstance(value, list):
+        raise ValueError("scenario requires must be a list")
+    result = []
+    names = set()
+    for index, requirement in enumerate(value):
+        label = f"requires[{index}]"
+        if not isinstance(requirement, dict) or set(requirement) != {
+            "name",
+            "type",
+            "version",
+            "probe",
+        }:
+            raise ValueError(f"{label} must contain name, type, version, and probe")
+        name = requirement["name"]
+        kind = requirement["type"]
+        version = requirement["version"]
+        probe = requirement["probe"]
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError(f"{label}.name is invalid or duplicated")
+        if kind not in {"command", "python-module"}:
+            raise ValueError(f"{label}.type is unsupported")
+        if not isinstance(version, str) or not version:
+            raise ValueError(f"{label}.version is required")
+        if (
+            not isinstance(probe, list)
+            or not probe
+            or not all(isinstance(item, str) and item for item in probe)
+        ):
+            raise ValueError(f"{label}.probe must be a non-empty argv list")
+        names.add(name)
+        result.append(dict(requirement))
+    return tuple(result)
+
+
+def load_scenario_package(root: Path, scenario_id: str) -> ScenarioPackage:
+    if not SCENARIO_ID_RE.fullmatch(scenario_id):
+        raise ValueError(f"invalid scenario id: {scenario_id}")
+    scenario_root = root / scenario_id
+    if _classify_node(scenario_root).kind != "directory":
+        raise FileNotFoundError(f"scenario package was not found: {scenario_id}")
+    if _directory_identity(scenario_root) == _directory_identity(root):
+        raise HooksConflict("scenario package aliases its library root")
+
+    metadata_path = scenario_root / "scenario.json"
+    content, _fingerprint = _read_regular_bytes_with_fingerprint(
+        metadata_path,
+        "scenario.json",
+    )
+    try:
+        metadata = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"scenario.json is invalid: {metadata_path}") from exc
+    expected_fields = {
+        "schema_version",
+        "id",
+        "version",
+        "display_name",
+        "task",
+        "validator",
+        "verify",
+        "platforms",
+        "runtime",
+        "requires",
+        "checksums",
+    }
+    if not isinstance(metadata, dict) or set(metadata) != expected_fields:
+        raise ValueError("scenario.json root fields are invalid")
+    if metadata["schema_version"] != 1 or metadata["id"] != scenario_id:
+        raise ValueError("scenario.json schema or id does not match the package")
+    if not isinstance(metadata["version"], str) or not SCENARIO_SEMVER_RE.fullmatch(
+        metadata["version"]
+    ):
+        raise ValueError("scenario version must be semantic")
+    if not isinstance(metadata["display_name"], str) or not metadata["display_name"]:
+        raise ValueError("scenario display_name is required")
+    task = _scenario_safe_relative(metadata["task"], "scenario task")
+    validator = _scenario_safe_relative(metadata["validator"], "scenario validator")
+    verify = _scenario_safe_relative(metadata["verify"], "scenario verify")
+    platforms = metadata["platforms"]
+    if (
+        not isinstance(platforms, list)
+        or not platforms
+        or not all(item in {"darwin", "linux", "win32"} for item in platforms)
+        or len(platforms) != len(set(platforms))
+    ):
+        raise ValueError("scenario platforms are invalid")
+    runtime = metadata["runtime"]
+    if not isinstance(runtime, dict) or set(runtime) != {"python"}:
+        raise ValueError("scenario runtime must define only python")
+    python_runtime = runtime["python"]
+    if not isinstance(python_runtime, str):
+        raise ValueError("scenario Python runtime is invalid")
+    _scenario_python_version_matches(python_runtime)
+    requires = _scenario_validate_requires(metadata["requires"])
+    checksums = metadata["checksums"]
+    if not isinstance(checksums, dict):
+        raise ValueError("scenario checksums must be an object")
+
+    paths = _scenario_file_paths(scenario_root)
+    if "scenario.json" not in paths:
+        raise ValueError("scenario.json is missing from the package")
+    deploy_files = [path for path in paths if not path.startswith("fixtures/")]
+    expected_checksums = set(deploy_files) - {"scenario.json"}
+    if set(checksums) != expected_checksums:
+        raise ValueError("scenario checksums must cover every deployed file except scenario.json")
+    for required in (task, validator, verify):
+        if required not in deploy_files:
+            raise ValueError(f"scenario entrypoint is not a deployed regular file: {required}")
+
+    files = {}
+    for relative in deploy_files:
+        member = scenario_root / Path(*PurePosixPath(relative).parts)
+        files[relative] = _fingerprint_regular_file(member).sha256
+    for relative, expected in checksums.items():
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ValueError(f"scenario checksum is invalid: {relative}")
+        if files[relative] != expected:
+            raise HooksConflict(f"scenario checksum mismatch: {scenario_root / relative}")
+    return ScenarioPackage(
+        root=scenario_root,
+        scenario_id=scenario_id,
+        version=metadata["version"],
+        display_name=metadata["display_name"],
+        task=task,
+        validator=validator,
+        verify=verify,
+        platforms=tuple(platforms),
+        python_runtime=python_runtime,
+        requires=requires,
+        files=files,
+        source_digest=_scenario_source_digest(files),
+    )
+
+
+def discover_scenario_packages(root: Path) -> List[Tuple[str, Optional[ScenarioPackage], str]]:
+    packages = []
+    for name in sorted(_FILESYSTEM.list_directory_names(root)):
+        if not SCENARIO_ID_RE.fullmatch(name):
+            packages.append((name, None, "invalid scenario directory name"))
+            continue
+        node = _classify_node(root / name)
+        if node.kind != "directory":
+            packages.append((name, None, f"invalid node: {node.kind}"))
+            continue
+        try:
+            package = load_scenario_package(root, name)
+        except (OSError, ValueError) as exc:
+            packages.append((name, None, str(exc)))
+        else:
+            packages.append((name, package, "ready"))
+    return packages
+
+
+def _scenario_control_paths(target: Path) -> Tuple[Path, Path, Path]:
+    control = target / SCENARIO_CONTROL_DIRNAME
+    return control, control / SCENARIO_MANIFEST_FILENAME, control / "scenarios"
+
+
+def _scenario_journal_paths(control: Path) -> List[Path]:
+    try:
+        names = _FILESYSTEM.list_directory_names(control)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return []
+    evidence = []
+    for name in names:
+        base = _cleanup_claim_base(name) or name
+        if base.startswith(SCENARIO_JOURNAL_PREFIX) or (
+            base.startswith(SCENARIO_CLEANUP_PREFIX)
+            and base.endswith(SCENARIO_CLEANUP_SUFFIX)
+        ):
+            evidence.append(control / name)
+    return sorted(evidence)
+
+
+def _scenario_control_unknown_members(control: Path) -> List[str]:
+    names = _FILESYSTEM.list_directory_names(control)
+    allowed = {
+        SCENARIO_MANIFEST_FILENAME,
+        SCENARIO_MANIFEST_INTENT_PENDING_FILENAME,
+        "scenarios",
+    }
+    unknown = []
+    for name in names:
+        base = _cleanup_claim_base(name) or name
+        if name in allowed:
+            continue
+        if base.startswith(SCENARIO_JOURNAL_PREFIX):
+            continue
+        if base.startswith(SCENARIO_CLEANUP_PREFIX) and base.endswith(
+            SCENARIO_CLEANUP_SUFFIX
+        ):
+            continue
+        unknown.append(name)
+    return sorted(unknown)
+
+
+def _scenario_unpaired_manifest_pending(control: Path) -> bool:
+    pending = control / SCENARIO_MANIFEST_INTENT_PENDING_FILENAME
+    if not _path_entry_exists(pending):
+        return False
+    for journal in _scenario_journal_paths(control):
+        base = _cleanup_claim_base(journal.name) or journal.name
+        if base.startswith(SCENARIO_JOURNAL_PREFIX):
+            return False
+    return True
+
+
+def _scenario_validate_control_node(target: Path, *, allow_absent: bool) -> Optional[Path]:
+    control, _manifest, scenarios = _scenario_control_paths(target)
+    node = _classify_node(control)
+    if not node.exists:
+        if allow_absent:
+            return None
+        raise FileNotFoundError(f"scenario control directory does not exist: {control}")
+    if node.kind != "directory":
+        raise HooksConflict(f"scenario control path is not a directory: {control} ({node.kind})")
+    scenarios_node = _classify_node(scenarios)
+    if scenarios_node.exists and scenarios_node.kind != "directory":
+        raise HooksConflict(
+            f"scenario payload parent is not a directory: {scenarios} "
+            f"({scenarios_node.kind})"
+        )
+    return control
+
+
+def _scenario_empty_manifest(target: Path) -> Dict[str, Any]:
+    control, _manifest, scenarios = _scenario_control_paths(target)
+    identity = _directory_identity(target)
+    return {
+        "schema_version": SCENARIO_MANIFEST_SCHEMA_VERSION,
+        "target": {
+            "path": str(target),
+            "relative": ".",
+            "identity": _scenario_identity(identity),
+        },
+        "storage": {
+            "root": SCENARIO_CONTROL_DIRNAME,
+            "root_identity": _scenario_identity(_directory_identity(control)),
+            "scenarios": "scenarios",
+            "scenarios_identity": _scenario_identity(_directory_identity(scenarios)),
+        },
+        "deployments": {},
+    }
+
+
+def _scenario_is_rfc3339_utc(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    match = SCENARIO_RFC3339_UTC_RE.fullmatch(value)
+    if match is None:
+        return False
+    year, month, day, hour, minute, second = (int(item) for item in match.groups()[:6])
+    try:
+        datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return True
+
+
+def _scenario_validate_manifest(data: Any, target: Path) -> Dict[str, Any]:
+    if not isinstance(data, dict) or set(data) != {
+        "schema_version",
+        "target",
+        "storage",
+        "deployments",
+    }:
+        raise ValueError("scenario manifest root fields are invalid")
+    if data["schema_version"] != SCENARIO_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("unsupported scenario manifest schema")
+    target_data = data["target"]
+    if not isinstance(target_data, dict) or set(target_data) != {
+        "path",
+        "relative",
+        "identity",
+    }:
+        raise ValueError("scenario manifest target fields are invalid")
+    if target_data["path"] != str(target) or target_data["relative"] != ".":
+        raise HooksConflict("scenario manifest is bound to a different target path")
+    target_identity = _scenario_identity_from_json(
+        target_data["identity"],
+        "scenario manifest target",
+    )
+    if not _path_has_directory_identity(target, target_identity):
+        raise HooksConflict("scenario target identity changed or path was rebound")
+    control, _manifest, scenarios = _scenario_control_paths(target)
+    storage = data["storage"]
+    if not isinstance(storage, dict) or set(storage) != {
+        "root",
+        "root_identity",
+        "scenarios",
+        "scenarios_identity",
+    }:
+        raise ValueError("scenario manifest storage fields are invalid")
+    if storage["root"] != SCENARIO_CONTROL_DIRNAME or storage["scenarios"] != "scenarios":
+        raise ValueError("scenario manifest storage paths are not canonical")
+    control_identity = _scenario_identity_from_json(
+        storage["root_identity"],
+        "scenario control root",
+    )
+    scenarios_identity = _scenario_identity_from_json(
+        storage["scenarios_identity"],
+        "scenario payload parent",
+    )
+    if not _path_has_directory_identity(control, control_identity):
+        raise HooksConflict("scenario control directory identity changed")
+    if not _path_has_directory_identity(scenarios, scenarios_identity):
+        raise HooksConflict("scenario payload parent identity changed")
+    deployments = data["deployments"]
+    if not isinstance(deployments, dict):
+        raise ValueError("scenario manifest deployments must be an object")
+    for key, record in deployments.items():
+        if not isinstance(key, str) or not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(key):
+            raise ValueError("scenario manifest deployment id is invalid")
+        expected_fields = {
+            "deployment_id",
+            "scenario_id",
+            "scenario_version",
+            "source_digest",
+            "deployed_at",
+            "root",
+            "root_identity",
+            "files",
+        }
+        if not isinstance(record, dict) or set(record) != expected_fields:
+            raise ValueError(f"scenario deployment record fields are invalid: {key}")
+        if record["deployment_id"] != key:
+            raise ValueError(f"scenario deployment id does not match its key: {key}")
+        if not SCENARIO_ID_RE.fullmatch(record["scenario_id"]):
+            raise ValueError(f"scenario deployment scenario id is invalid: {key}")
+        if not SCENARIO_SEMVER_RE.fullmatch(record["scenario_version"]):
+            raise ValueError(f"scenario deployment version is invalid: {key}")
+        if not re.fullmatch(r"[0-9a-f]{64}", record["source_digest"]):
+            raise ValueError(f"scenario deployment source digest is invalid: {key}")
+        root = _scenario_safe_relative(record["root"], "scenario deployment root")
+        if root != f"scenarios/{key}":
+            raise ValueError(f"scenario deployment root is not canonical: {key}")
+        _scenario_identity_from_json(record["root_identity"], "scenario deployment root")
+        if not _scenario_is_rfc3339_utc(record["deployed_at"]):
+            raise ValueError(f"scenario deployment timestamp is invalid: {key}")
+        files = record["files"]
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"scenario deployment files are invalid: {key}")
+        seen = set()
+        for relative, sha256 in files.items():
+            normalized = _scenario_safe_relative(relative, "scenario deployed file")
+            if normalized.casefold() in seen:
+                raise ValueError(f"scenario deployment files collide: {key}")
+            seen.add(normalized.casefold())
+            if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                raise ValueError(f"scenario deployment file digest is invalid: {key}")
+        if record["source_digest"] != _scenario_source_digest(files):
+            raise ValueError(f"scenario deployment source digest does not match files: {key}")
+    return data
+
+
+def _scenario_load_manifest(
+    target: Path,
+) -> Tuple[Dict[str, Any], Optional[FileFingerprint]]:
+    control, manifest_path, scenarios = _scenario_control_paths(target)
+    node = _classify_node(manifest_path)
+    if not node.exists:
+        if _classify_node(control).kind == "directory" and not _classify_node(
+            scenarios
+        ).exists:
+            return {
+                "schema_version": SCENARIO_MANIFEST_SCHEMA_VERSION,
+                "target": {
+                    "path": str(target),
+                    "relative": ".",
+                    "identity": _scenario_identity(_directory_identity(target)),
+                },
+                "storage": {
+                    "root": SCENARIO_CONTROL_DIRNAME,
+                    "root_identity": _scenario_identity(_directory_identity(control)),
+                    "scenarios": "scenarios",
+                    "scenarios_identity": None,
+                },
+                "deployments": {},
+            }, None
+        return _scenario_empty_manifest(target), None
+    if not node.regular:
+        raise HooksConflict(f"scenario manifest is not a regular file: {manifest_path}")
+    content, fingerprint = _read_regular_bytes_with_fingerprint(
+        manifest_path,
+        "scenario manifest",
+    )
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"scenario manifest is invalid JSON: {manifest_path}") from exc
+    return _scenario_validate_manifest(data, target), fingerprint
+
+
+def _scenario_ensure_directory(path: Path, parent: Path) -> FileIdentity:
+    node = _classify_node(path)
+    if node.exists:
+        if node.kind != "directory":
+            raise HooksConflict(f"scenario path is not a directory: {path} ({node.kind})")
+        return _directory_identity(path)
+    _FILESYSTEM.create_private_directory(path)
+    _fsync_directory(parent)
+    return _directory_identity(path)
+
+
+def _scenario_remove_empty_created_directory(path: Path, identity: FileIdentity) -> None:
+    if not _path_entry_exists(path):
+        return
+    access = _FILESYSTEM.open_verified_empty_private_directory(path, identity)
+    try:
+        _FILESYSTEM.remove_verified_directory(access)
+    finally:
+        _FILESYSTEM.close_owned_directory(access)
+    _fsync_directory(path.parent)
+
+
+def _scenario_write_private_bytes(path: Path, content: bytes) -> FileFingerprint:
+    descriptor = _open_exclusive_private_file(path)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+            _FILESYSTEM.apply_private_file_security(stream.fileno())
+        return _fingerprint_regular_file(path)
+    except BaseException:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _scenario_write_exclusive_json(path: Path, data: Dict[str, Any]) -> FileFingerprint:
+    fingerprint = _scenario_write_private_bytes(path, _scenario_json_bytes(data))
+    _fsync_directory(path.parent)
+    return fingerprint
+
+
+def _scenario_publish_json(
+    path: Path,
+    data: Dict[str, Any],
+    expected: Optional[FileFingerprint],
+    pending_name: str,
+) -> FileFingerprint:
+    pending = path.parent / pending_name
+    if _path_entry_exists(pending):
+        raise HooksConflict(f"scenario pending file already exists: {pending}")
+    fingerprint = _scenario_write_private_bytes(pending, _scenario_json_bytes(data))
+    _filesystem_checkpoint("scenario-json-pending-published")
+    try:
+        if expected is None:
+            if not _atomic_rename_no_replace(pending, path):
+                raise HooksConflict(f"scenario JSON was concurrently created: {path}")
+        else:
+            current = _fingerprint_regular_file(path)
+            if current != expected:
+                raise HooksConflict(f"scenario JSON changed before publication: {path}")
+            _transactional_replace_existing(path, pending, expected)
+        _filesystem_checkpoint("scenario-json-file-published")
+        _fsync_directory(path.parent)
+    finally:
+        if _path_entry_exists(pending):
+            try:
+                pending.unlink()
+            except OSError:
+                pass
+    actual = _fingerprint_regular_file(path)
+    if actual.sha256 != fingerprint.sha256 or actual.size != fingerprint.size:
+        raise HooksConflict(f"published scenario JSON does not match prepared content: {path}")
+    return actual
+
+
+def _scenario_reconcile_pending_json(
+    pending_path: Path,
+    live_path: Path,
+    pending_fingerprint: FileFingerprint,
+    expected_live: Optional[FileFingerprint],
+    allowed_content: set,
+) -> None:
+    if not _path_entry_exists(pending_path):
+        return
+    node = _classify_node(pending_path)
+    if not node.regular:
+        raise HooksConflict(f"scenario pending file is not regular: {pending_path}")
+    pending = _fingerprint_regular_file(pending_path)
+    if pending != pending_fingerprint:
+        raise HooksConflict(f"scenario pending file changed during recovery: {pending_path}")
+    if (pending.size, pending.sha256) not in allowed_content:
+        raise HooksConflict(
+            f"scenario pending file is not authorized by durable evidence: {pending_path}"
+        )
+    if expected_live is None:
+        if _path_entry_exists(live_path):
+            raise HooksConflict(
+                f"scenario JSON was concurrently created while pending: {live_path}"
+            )
+    elif not _path_has_fingerprint(live_path, expected_live):
+        raise HooksConflict(f"scenario JSON changed while pending existed: {live_path}")
+    _FILESYSTEM.remove_verified_file(pending_path, pending.identity, pending)
+    _fsync_directory(pending_path.parent)
+
+
+def _scenario_reconcile_journal_pending(state: ScenarioJournalState) -> None:
+    pending = state.journal_dir / SCENARIO_JOURNAL_PENDING_FILENAME
+    if state.journal_pending is None:
+        return
+    if state.journal_fingerprint is None:
+        raise HooksConflict("scenario journal fingerprint is missing")
+    live_fingerprint = _fingerprint_regular_file(
+        state.journal_dir / SCENARIO_JOURNAL_FILENAME
+    )
+    _scenario_reconcile_pending_json(
+        pending,
+        state.journal_dir / SCENARIO_JOURNAL_FILENAME,
+        state.journal_pending,
+        live_fingerprint,
+        {(state.journal_pending.size, state.journal_pending.sha256)},
+    )
+    state.journal_pending = None
+
+
+def _scenario_reconcile_transaction_pending(state: ScenarioJournalState) -> None:
+    _scenario_reconcile_journal_pending(state)
+    if state.intent_pending is not None:
+        if state.intent_fingerprint is None:
+            raise HooksConflict("scenario intent fingerprint is missing")
+        live_intent = _fingerprint_regular_file(
+            state.journal_dir / SCENARIO_INTENT_FILENAME
+        )
+        _scenario_reconcile_pending_json(
+            state.journal_dir / SCENARIO_INTENT_PENDING_FILENAME,
+            state.journal_dir / SCENARIO_INTENT_FILENAME,
+            state.intent_pending,
+            live_intent,
+            {(state.intent_pending.size, state.intent_pending.sha256)},
+        )
+        state.intent_pending = None
+    if state.manifest_pending is not None:
+        target = Path(state.data["target"]["path"])
+        _control, manifest_path, _scenarios = _scenario_control_paths(target)
+        before = state.data["manifest"]["before"]
+        expected_live = None
+        if before is not None:
+            try:
+                current = _fingerprint_regular_file(manifest_path)
+            except OSError as exc:
+                raise HooksConflict(
+                    "scenario manifest disappeared while its pending file existed"
+                ) from exc
+            if not (
+                current.size == before["size"]
+                and current.modified_ns == before["mtime_ns"]
+                and current.sha256 == before["sha256"]
+            ):
+                raise HooksConflict(
+                    "scenario manifest changed while its pending file existed"
+                )
+            expected_live = current
+        _scenario_reconcile_pending_json(
+            state.control_dir / SCENARIO_MANIFEST_INTENT_PENDING_FILENAME,
+            manifest_path,
+            state.manifest_pending,
+            expected_live,
+            {(state.manifest_pending.size, state.manifest_pending.sha256)},
+        )
+        state.manifest_pending = None
+
+
+def _scenario_copy_regular_file(source: Path, destination: Path, expected_sha256: str) -> None:
+    content, source_fingerprint = _read_regular_bytes_with_fingerprint(source, "scenario source")
+    if source_fingerprint.sha256 != expected_sha256:
+        raise HooksConflict(f"scenario source changed before staging: {source}")
+    if _classify_node(destination.parent).kind != "directory":
+        raise HooksConflict(f"scenario staging parent is not a directory: {destination.parent}")
+    staged = _scenario_write_private_bytes(destination, content)
+    if staged.sha256 != expected_sha256:
+        raise HooksConflict(f"staged scenario member has the wrong digest: {destination}")
+    _filesystem_checkpoint("scenario-staging-member-published")
+    _fsync_directory(destination.parent)
+
+
+def _scenario_directory_files(root: Path) -> Dict[str, FileFingerprint]:
+    files = {}
+    for relative in _scenario_file_paths(root):
+        files[relative] = _fingerprint_regular_file(
+            root / Path(*PurePosixPath(relative).parts)
+        )
+    return files
+
+
+def _scenario_verify_payload(
+    root: Path,
+    expected_identity: FileIdentity,
+    expected_files: Dict[str, str],
+) -> None:
+    if not _path_has_directory_identity(root, expected_identity):
+        raise HooksConflict(f"scenario payload root identity changed: {root}")
+    actual = _scenario_directory_files(root)
+    if set(actual) != set(expected_files):
+        raise HooksConflict(f"scenario payload members drifted: {root}")
+    for relative, fingerprint in actual.items():
+        if fingerprint.sha256 != expected_files[relative]:
+            raise HooksConflict(f"scenario payload file drifted: {root / relative}")
+
+
+def _scenario_status_records(
+    target: Path,
+    manifest: Dict[str, Any],
+) -> List[ScenarioStatusRecord]:
+    _control, _manifest_path, scenarios = _scenario_control_paths(target)
+    records = []
+    for deployment_id, record in sorted(manifest["deployments"].items()):
+        payload = scenarios / deployment_id
+        try:
+            identity = _scenario_identity_from_json(
+                record["root_identity"],
+                "scenario deployment root",
+            )
+            _scenario_verify_payload(payload, identity, record["files"])
+        except (OSError, ValueError) as exc:
+            state = "conflict"
+            detail = str(exc)
+        else:
+            state = "active"
+            detail = "all owned files and identities match"
+        records.append(
+            ScenarioStatusRecord(
+                deployment_id=deployment_id,
+                scenario_id=record["scenario_id"],
+                scenario_version=record["scenario_version"],
+                state=state,
+                root=record["root"],
+                detail=detail,
+            )
+        )
+    return records
+
+
+def _scenario_verify_manifest_payloads(
+    target: Path,
+    manifest: Dict[str, Any],
+) -> None:
+    conflicts = [
+        record for record in _scenario_status_records(target, manifest)
+        if record.state == "conflict"
+    ]
+    if conflicts:
+        details = "; ".join(
+            f"{record.deployment_id}: {record.detail}" for record in conflicts
+        )
+        raise HooksConflict(f"existing scenario deployment drifted: {details}")
+
+
+def _scenario_create_relative_directories(root: Path, files: Dict[str, str]) -> None:
+    directories = set()
+    for relative in files:
+        parent = PurePosixPath(relative).parent
+        while parent != PurePosixPath("."):
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    for relative in sorted(directories, key=lambda item: (item.count("/"), item)):
+        path = root / Path(*PurePosixPath(relative).parts)
+        if _classify_node(path).exists:
+            raise HooksConflict(f"scenario staging path already exists: {path}")
+        _FILESYSTEM.create_private_directory(path)
+        _fsync_directory(path.parent)
+
+
+def _scenario_journal_intent(data: Dict[str, Any]) -> Dict[str, Any]:
+    deployment = json.loads(json.dumps(data["deployment"]))
+    deployment["root_identity"] = None
+    return {
+        "schema_version": data["schema_version"],
+        "operation": data["operation"],
+        "transaction_id": data["transaction_id"],
+        "target": json.loads(json.dumps(data["target"])),
+        "control": json.loads(json.dumps(data["control"])),
+        "journal": json.loads(json.dumps(data["journal"])),
+        "deployment_id": data["deployment_id"],
+        "deployment": deployment,
+        "manifest": {
+            "path": data["manifest"]["path"],
+            "before": data["manifest"]["before"],
+            "before_snapshot": data["manifest"]["before_snapshot"],
+            "before_snapshot_fingerprint": data["manifest"][
+                "before_snapshot_fingerprint"
+            ],
+        },
+        "payload": {
+            "live": data["payload"]["live"],
+            "identity": data["payload"]["identity"],
+            "files": data["payload"]["files"],
+            "staging": data["payload"]["staging"],
+            "staging_identity": data["payload"]["staging_identity"],
+            "removed": data["payload"]["removed"],
+            "scenarios_existed_before": data["payload"][
+                "scenarios_existed_before"
+            ],
+        },
+    }
+
+
+def _scenario_intent_is_allowed_update(
+    durable: Dict[str, Any],
+    candidate: Dict[str, Any],
+) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    durable_copy = json.loads(json.dumps(durable))
+    candidate_copy = json.loads(json.dumps(candidate))
+    for intent in (durable_copy, candidate_copy):
+        if not isinstance(intent.get("deployment"), dict) or not isinstance(
+            intent.get("payload"), dict
+        ):
+            return False
+    candidate_identity = candidate_copy["payload"].get("identity")
+    candidate_staging = candidate_copy["payload"].get("staging_identity")
+    if durable_copy["payload"].get("identity") is None:
+        durable_copy["payload"]["identity"] = candidate_identity
+    if candidate_copy["payload"].get("identity") is None:
+        candidate_copy["payload"]["identity"] = durable_copy["payload"].get(
+            "identity"
+        )
+    if durable_copy["payload"].get("staging_identity") is None:
+        durable_copy["payload"]["staging_identity"] = candidate_staging
+    if durable_copy["deployment"].get("root_identity") is None:
+        durable_copy["deployment"]["root_identity"] = candidate_copy[
+            "deployment"
+        ].get("root_identity")
+    if candidate_copy["deployment"].get("root_identity") is None:
+        candidate_copy["deployment"]["root_identity"] = durable_copy[
+            "deployment"
+        ].get("root_identity")
+    return durable_copy == candidate_copy
+
+
+def _scenario_journal_is_allowed_next_state(
+    durable: Dict[str, Any],
+    candidate: Dict[str, Any],
+) -> bool:
+    if not isinstance(candidate, dict) or set(candidate) != set(durable):
+        return False
+    phase_order = {
+        "initializing": 0,
+        "prepared": 1,
+        "payload-intent": 2,
+        "payload-remove-intent": 2,
+        "manifest-intent": 3,
+        "final-sweep": 4,
+        "committed": 5,
+        "recovering": 6,
+        "recovered": 7,
+    }
+    durable_phase = durable.get("phase")
+    candidate_phase = candidate.get("phase")
+    if not _scenario_phase_matches_operation(durable.get("operation"), durable_phase):
+        return False
+    if not _scenario_phase_matches_operation(candidate.get("operation"), candidate_phase):
+        return False
+    if durable_phase not in phase_order or candidate_phase not in phase_order:
+        return False
+    if phase_order[candidate_phase] < phase_order[durable_phase]:
+        return False
+    if phase_order[candidate_phase] > phase_order[durable_phase] + 1:
+        return False
+    durable_copy = json.loads(json.dumps(durable))
+    candidate_copy = json.loads(json.dumps(candidate))
+    durable_copy["phase"] = candidate_phase
+    if durable_copy["deployment"].get("root_identity") is None:
+        durable_copy["deployment"]["root_identity"] = candidate_copy[
+            "deployment"
+        ].get("root_identity")
+    candidate_identity = candidate_copy["payload"].get("identity")
+    candidate_staging = candidate_copy["payload"].get("staging_identity")
+    if candidate_identity is not None and candidate_staging is not None:
+        if candidate_identity != candidate_staging:
+            return False
+    for field in ("identity", "staging_identity"):
+        if durable_copy["payload"].get(field) is None:
+            durable_copy["payload"][field] = candidate_copy["payload"].get(field)
+    if durable_copy["manifest"].get("after") is None:
+        for field in (
+            "after",
+            "after_snapshot",
+            "after_snapshot_fingerprint",
+            "published",
+        ):
+            if field in durable_copy["manifest"] or field in candidate_copy["manifest"]:
+                durable_copy["manifest"][field] = candidate_copy["manifest"].get(
+                    field
+                )
+    elif durable_copy["manifest"].get("published") is None:
+        if "published" in candidate_copy["manifest"]:
+            durable_copy["manifest"]["published"] = candidate_copy["manifest"].get(
+                "published"
+            )
+    return durable_copy == candidate_copy
+
+
+def _scenario_phase_matches_operation(operation: Any, phase: Any) -> bool:
+    common = {
+        "initializing",
+        "prepared",
+        "manifest-intent",
+        "final-sweep",
+        "committed",
+        "recovering",
+        "recovered",
+    }
+    if operation == "deploy":
+        return phase in common | {"payload-intent"}
+    if operation == "uninstall":
+        return phase in common | {"payload-remove-intent"}
+    return False
+
+
+def _scenario_write_journal(state: ScenarioJournalState, phase: str) -> None:
+    if not _scenario_phase_matches_operation(state.data.get("operation"), phase):
+        raise ValueError("scenario journal phase does not match its operation")
+    state.data["phase"] = phase
+    persisted = {
+        key: value for key, value in state.data.items() if not key.startswith("_")
+    }
+    _scenario_publish_json(
+        state.journal_dir / SCENARIO_JOURNAL_FILENAME,
+        persisted,
+        (
+            _fingerprint_regular_file(state.journal_dir / SCENARIO_JOURNAL_FILENAME)
+            if _path_entry_exists(state.journal_dir / SCENARIO_JOURNAL_FILENAME)
+            else None
+        ),
+        SCENARIO_JOURNAL_PENDING_FILENAME,
+    )
+    _filesystem_checkpoint(f"scenario-phase-{phase}")
+
+
+def _scenario_snapshot_manifest_before(
+    journal_dir: Path,
+    manifest_path: Path,
+    manifest_before: Optional[FileFingerprint],
+) -> Optional[Dict[str, Any]]:
+    before_portable = None
+    if manifest_before is not None:
+        before_content, actual = _read_regular_bytes_with_fingerprint(
+            manifest_path,
+            "scenario manifest before snapshot",
+        )
+        if actual != manifest_before:
+            raise HooksConflict("scenario manifest changed before snapshot")
+        before_fingerprint = _scenario_write_private_bytes(
+            journal_dir / SCENARIO_MANIFEST_BEFORE_FILENAME,
+            before_content,
+        )
+        before_portable = _portable_fingerprint(before_fingerprint)
+    _fsync_directory(journal_dir)
+    return before_portable
+
+
+def _scenario_create_journal(
+    target: Path,
+    operation: str,
+    deployment_id: str,
+    manifest_before: Optional[FileFingerprint],
+    deployment_record: Dict[str, Any],
+    control_existed_before: bool = True,
+    scenarios_existed_before: bool = True,
+) -> ScenarioJournalState:
+    control, manifest_path, _scenarios = _scenario_control_paths(target)
+    transaction_id = uuid.uuid4().hex
+    journal_dir = control / f"{SCENARIO_JOURNAL_PREFIX}{transaction_id}"
+    _FILESYSTEM.create_private_directory(journal_dir)
+    journal_identity = _directory_identity(journal_dir)
+    _fsync_directory(control)
+
+    before_portable = _scenario_snapshot_manifest_before(
+        journal_dir,
+        manifest_path,
+        manifest_before,
+    )
+    data = {
+        "schema_version": SCENARIO_JOURNAL_SCHEMA_VERSION,
+        "operation": operation,
+        "transaction_id": transaction_id,
+        "phase": "initializing",
+        "target": {
+            "path": str(target),
+            "relative": ".",
+            "identity": _scenario_identity(_directory_identity(target)),
+        },
+        "control": {
+            "path": SCENARIO_CONTROL_DIRNAME,
+            "identity": _scenario_identity(_directory_identity(control)),
+            "existed_before": control_existed_before,
+        },
+        "journal": {
+            "path": journal_dir.name,
+            "identity": _scenario_identity(journal_identity),
+        },
+        "deployment_id": deployment_id,
+        "deployment": deployment_record,
+        "manifest": {
+            "path": SCENARIO_MANIFEST_FILENAME,
+            "before": _portable_fingerprint(manifest_before),
+            "before_snapshot": (
+                SCENARIO_MANIFEST_BEFORE_FILENAME if manifest_before is not None else None
+            ),
+            "before_snapshot_fingerprint": before_portable,
+            "after": None,
+            "after_snapshot": None,
+            "after_snapshot_fingerprint": None,
+        },
+        "payload": {
+            "live": f"scenarios/{deployment_id}",
+            "identity": deployment_record.get("root_identity"),
+            "files": deployment_record["files"],
+            "staging": SCENARIO_PAYLOAD_STAGING_DIRNAME,
+            "staging_identity": None,
+            "removed": SCENARIO_REMOVED_PAYLOAD_DIRNAME,
+            "scenarios_existed_before": scenarios_existed_before,
+        },
+    }
+    state = ScenarioJournalState(control, journal_dir, journal_identity, data)
+    _scenario_write_exclusive_json(
+        journal_dir / SCENARIO_INTENT_FILENAME,
+        _scenario_journal_intent(data),
+    )
+    _scenario_write_exclusive_json(
+        journal_dir / SCENARIO_JOURNAL_FILENAME,
+        data,
+    )
+    _filesystem_checkpoint("scenario-journal-intent-published")
+    _filesystem_checkpoint("scenario-journal-directory-created")
+    _filesystem_checkpoint("scenario-phase-initializing")
+    return state
+
+
+def _scenario_publish_manifest_intent(
+    state: ScenarioJournalState,
+    manifest_after: Dict[str, Any],
+) -> None:
+    content = _scenario_json_bytes(manifest_after)
+    snapshot_path = state.journal_dir / SCENARIO_MANIFEST_AFTER_FILENAME
+    fingerprint = _scenario_write_private_bytes(snapshot_path, content)
+    _fsync_directory(state.journal_dir)
+    state.data["manifest"]["after"] = {
+        "size": fingerprint.size,
+        "sha256": fingerprint.sha256,
+    }
+    state.data["manifest"]["after_snapshot"] = SCENARIO_MANIFEST_AFTER_FILENAME
+    state.data["manifest"]["after_snapshot_fingerprint"] = _portable_fingerprint(
+        fingerprint
+    )
+    deployment = json.loads(json.dumps(state.data["deployment"]))
+    deployment["root_identity"] = None
+    intent_path = state.journal_dir / SCENARIO_INTENT_FILENAME
+    intent_content, intent_fingerprint = _read_regular_bytes_with_fingerprint(
+        intent_path,
+        "scenario journal intent",
+    )
+    intent_data = json.loads(intent_content.decode("utf-8"))
+    intent_data["deployment"] = deployment
+    intent_data["payload"]["identity"] = state.data["payload"]["identity"]
+    intent_data["payload"]["files"] = state.data["payload"]["files"]
+    _scenario_publish_json(
+        intent_path,
+        intent_data,
+        intent_fingerprint,
+        SCENARIO_INTENT_PENDING_FILENAME,
+    )
+    intent = {
+        "schema_version": SCENARIO_JOURNAL_SCHEMA_VERSION,
+        "operation": state.data["operation"],
+        "transaction_id": state.data["transaction_id"],
+        "deployment_id": state.data["deployment_id"],
+        "manifest_sha256": fingerprint.sha256,
+    }
+    _scenario_write_exclusive_json(
+        state.journal_dir / SCENARIO_MANIFEST_INTENT_FILENAME,
+        intent,
+    )
+    _filesystem_checkpoint("scenario-manifest-intent-published")
+    _scenario_write_journal(state, "manifest-intent")
+
+
+def _scenario_remove_tree(root: Path, expected_files: Dict[str, str]) -> None:
+    actual = _scenario_directory_files(root)
+    if set(actual) != set(expected_files):
+        raise HooksConflict(f"scenario owned directory member set changed: {root}")
+    for relative, fingerprint in actual.items():
+        if fingerprint.sha256 != expected_files[relative]:
+            raise HooksConflict(f"scenario owned file changed: {root / relative}")
+    for relative in sorted(actual, key=lambda item: (item.count("/"), item), reverse=True):
+        path = root / Path(*PurePosixPath(relative).parts)
+        fingerprint = actual[relative]
+        _FILESYSTEM.remove_verified_file(path, fingerprint.identity, fingerprint)
+        _filesystem_checkpoint("scenario-owned-file-removed")
+    directories = []
+    for directory, names, _files in os.walk(root, topdown=False, followlinks=False):
+        if names:
+            for name in names:
+                node = _classify_node(Path(directory) / name)
+                if node.kind != "directory":
+                    raise HooksConflict(f"scenario owned directory contains an abnormal node: {node.path}")
+        directories.append(Path(directory))
+    for directory in directories:
+        if directory == root:
+            continue
+        identity = _directory_identity(directory)
+        access = _FILESYSTEM.open_verified_empty_private_directory(directory, identity)
+        try:
+            _FILESYSTEM.remove_verified_directory(access)
+        finally:
+            _FILESYSTEM.close_owned_directory(access)
+        _fsync_directory(directory.parent)
+    identity = _directory_identity(root)
+    access = _FILESYSTEM.open_verified_empty_private_directory(root, identity)
+    try:
+        _FILESYSTEM.remove_verified_directory(access)
+    finally:
+        _FILESYSTEM.close_owned_directory(access)
+    _fsync_directory(root.parent)
+
+
+def _scenario_remove_partial_staging(root: Path, expected_files: Dict[str, str]) -> None:
+    actual = _scenario_directory_files(root)
+    if not set(actual) <= set(expected_files):
+        raise HooksConflict(f"scenario staging contains unknown members: {root}")
+    for relative, fingerprint in actual.items():
+        if fingerprint.sha256 != expected_files[relative]:
+            raise HooksConflict(f"scenario staging member changed: {root / relative}")
+    _scenario_remove_tree(root, {relative: expected_files[relative] for relative in actual})
+
+
+def _scenario_finish_partial_removal(root: Path, expected_files: Dict[str, str]) -> None:
+    actual = _scenario_directory_files(root)
+    if not set(actual) <= set(expected_files):
+        raise HooksConflict(f"scenario removal residue contains unknown members: {root}")
+    for relative, fingerprint in actual.items():
+        if fingerprint.sha256 != expected_files[relative]:
+            raise HooksConflict(f"scenario removal residue changed: {root / relative}")
+    if actual:
+        _scenario_remove_tree(root, {relative: expected_files[relative] for relative in actual})
+    else:
+        for directory, names, files in os.walk(root, topdown=False, followlinks=False):
+            if files:
+                raise HooksConflict(f"scenario removal residue has unknown files: {directory}")
+            for name in names:
+                _scenario_remove_empty_directory(Path(directory) / name)
+        _scenario_remove_empty_directory(root)
+
+
+def _scenario_remove_empty_directory(path: Path) -> None:
+    identity = _directory_identity(path)
+    access = _FILESYSTEM.open_verified_empty_private_directory(path, identity)
+    try:
+        _FILESYSTEM.remove_verified_directory(access)
+    finally:
+        _FILESYSTEM.close_owned_directory(access)
+    _fsync_directory(path.parent)
+
+
+def _scenario_journal_expected_members(state: ScenarioJournalState) -> set:
+    members = {
+        SCENARIO_INTENT_FILENAME,
+        SCENARIO_JOURNAL_FILENAME,
+    }
+    if _path_entry_exists(state.journal_dir / SCENARIO_JOURNAL_PENDING_FILENAME):
+        members.add(SCENARIO_JOURNAL_PENDING_FILENAME)
+    if _path_entry_exists(state.journal_dir / SCENARIO_INTENT_PENDING_FILENAME):
+        members.add(SCENARIO_INTENT_PENDING_FILENAME)
+    if state.data["manifest"]["before"] is not None:
+        members.add(SCENARIO_MANIFEST_BEFORE_FILENAME)
+    if _path_entry_exists(state.journal_dir / SCENARIO_MANIFEST_AFTER_FILENAME):
+        members.add(SCENARIO_MANIFEST_AFTER_FILENAME)
+    if _path_entry_exists(state.journal_dir / SCENARIO_MANIFEST_INTENT_FILENAME):
+        members.add(SCENARIO_MANIFEST_INTENT_FILENAME)
+    for name in (
+        SCENARIO_PAYLOAD_STAGING_DIRNAME,
+        SCENARIO_REMOVED_PAYLOAD_DIRNAME,
+        SCENARIO_MANIFEST_RESTORE_FILENAME,
+    ):
+        if _path_entry_exists(state.journal_dir / name):
+            members.add(name)
+    return members
+
+
+def _scenario_validate_journal_intent(data: Dict[str, Any], intent: Any) -> None:
+    expected = _scenario_journal_intent(data)
+    if intent != expected:
+        raise HooksConflict("scenario journal immutable intent does not match journal")
+
+
+def _scenario_load_cleanup_marker(target: Path, path: Path) -> Dict[str, Any]:
+    content, fingerprint = _read_regular_bytes_with_fingerprint(
+        path,
+        "scenario cleanup marker",
+    )
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"scenario cleanup marker JSON is invalid: {path}") from exc
+    required = {
+        "schema_version",
+        "operation",
+        "transaction_id",
+        "phase",
+        "target",
+        "control",
+        "journal",
+        "deployment_id",
+        "deployment",
+        "manifest",
+        "payload",
+    }
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("scenario cleanup marker root fields are invalid")
+    if data["schema_version"] != SCENARIO_JOURNAL_SCHEMA_VERSION:
+        raise ValueError("unsupported scenario cleanup marker schema")
+    if data["operation"] not in {"deploy", "uninstall"}:
+        raise ValueError("scenario cleanup marker operation is invalid")
+    if data["phase"] not in {"committed", "recovered"}:
+        raise ValueError("scenario cleanup marker phase is not terminal")
+    transaction_id = data["transaction_id"]
+    deployment_id = data["deployment_id"]
+    if not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(transaction_id):
+        raise ValueError("scenario cleanup marker transaction id is invalid")
+    if not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(deployment_id):
+        raise ValueError("scenario cleanup marker deployment id is invalid")
+    target_data = data["target"]
+    if not isinstance(target_data, dict) or set(target_data) != {
+        "path",
+        "relative",
+        "identity",
+    }:
+        raise ValueError("scenario cleanup marker target fields are invalid")
+    if target_data["path"] != str(target) or target_data["relative"] != ".":
+        raise HooksConflict("scenario cleanup marker is bound to a different target")
+    target_identity = _scenario_identity_from_json(
+        target_data["identity"],
+        "scenario cleanup marker target",
+    )
+    if not _path_has_directory_identity(target, target_identity):
+        raise HooksConflict("scenario cleanup marker target identity changed")
+    control, _manifest_path, _scenarios = _scenario_control_paths(target)
+    control_data = data["control"]
+    if not isinstance(control_data, dict) or set(control_data) != {
+        "path",
+        "identity",
+        "existed_before",
+    }:
+        raise ValueError("scenario cleanup marker control fields are invalid")
+    if (
+        control_data["path"] != SCENARIO_CONTROL_DIRNAME
+        or not isinstance(control_data["existed_before"], bool)
+    ):
+        raise ValueError("scenario cleanup marker control metadata is invalid")
+    control_identity = _scenario_identity_from_json(
+        control_data["identity"],
+        "scenario cleanup marker control",
+    )
+    if not _path_has_directory_identity(control, control_identity):
+        raise HooksConflict("scenario cleanup marker control identity changed")
+    journal_data = data["journal"]
+    if not isinstance(journal_data, dict) or set(journal_data) != {"path", "identity"}:
+        raise ValueError("scenario cleanup marker journal fields are invalid")
+    if journal_data["path"] != f"{SCENARIO_JOURNAL_PREFIX}{transaction_id}":
+        raise ValueError("scenario cleanup marker journal path is invalid")
+    _scenario_identity_from_json(
+        journal_data["identity"],
+        "scenario cleanup marker journal",
+    )
+    payload = data["payload"]
+    if not isinstance(payload, dict) or set(payload) != {
+        "live",
+        "identity",
+        "files",
+        "staging",
+        "staging_identity",
+        "removed",
+        "scenarios_existed_before",
+    }:
+        raise ValueError("scenario cleanup marker payload fields are invalid")
+    if (
+        payload["live"] != f"scenarios/{deployment_id}"
+        or payload["staging"] != SCENARIO_PAYLOAD_STAGING_DIRNAME
+        or payload["removed"] != SCENARIO_REMOVED_PAYLOAD_DIRNAME
+        or not isinstance(payload["scenarios_existed_before"], bool)
+    ):
+        raise ValueError("scenario cleanup marker payload metadata is invalid")
+    if payload["identity"] is not None:
+        _scenario_identity_from_json(
+            payload["identity"],
+            "scenario cleanup marker payload",
+        )
+    if payload["staging_identity"] is not None:
+        _scenario_identity_from_json(
+            payload["staging_identity"],
+            "scenario cleanup marker staging",
+        )
+    files = payload["files"]
+    if not isinstance(files, dict) or not files:
+        raise ValueError("scenario cleanup marker files are invalid")
+    for relative, sha256 in files.items():
+        _scenario_safe_relative(relative, "scenario cleanup marker file")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise ValueError("scenario cleanup marker file digest is invalid")
+    deployment = data["deployment"]
+    deployment_fields = {
+        "deployment_id",
+        "scenario_id",
+        "scenario_version",
+        "source_digest",
+        "deployed_at",
+        "root",
+        "root_identity",
+        "files",
+    }
+    if not isinstance(deployment, dict) or set(deployment) != deployment_fields:
+        raise ValueError("scenario cleanup marker deployment fields are invalid")
+    if (
+        deployment["deployment_id"] != deployment_id
+        or not SCENARIO_ID_RE.fullmatch(deployment["scenario_id"])
+        or not SCENARIO_SEMVER_RE.fullmatch(deployment["scenario_version"])
+        or not re.fullmatch(r"[0-9a-f]{64}", deployment["source_digest"])
+        or not isinstance(deployment["deployed_at"], str)
+        or not deployment["deployed_at"]
+        or deployment["root"] != f"scenarios/{deployment_id}"
+        or deployment["files"] != files
+    ):
+        raise ValueError("scenario cleanup marker deployment is invalid")
+    if data["phase"] == "committed" and deployment["root_identity"] is None:
+        raise ValueError("committed cleanup marker deployment identity is missing")
+    if (deployment["root_identity"] is None) != (payload["identity"] is None):
+        raise HooksConflict(
+            "scenario cleanup marker deployment and payload identities differ"
+        )
+    if deployment["root_identity"] is not None:
+        deployment_identity = _scenario_identity_from_json(
+            deployment["root_identity"],
+            "scenario cleanup marker deployment root",
+        )
+        payload_identity = _scenario_identity_from_json(
+            payload["identity"],
+            "scenario cleanup marker payload",
+        )
+        if deployment_identity != payload_identity:
+            raise HooksConflict(
+                "scenario cleanup marker deployment and payload identities differ"
+            )
+    manifest = data["manifest"]
+    manifest_fields = {
+        "path",
+        "before",
+        "before_snapshot",
+        "before_snapshot_fingerprint",
+        "after",
+        "after_snapshot",
+        "after_snapshot_fingerprint",
+    }
+    if not isinstance(manifest, dict) or set(manifest) not in {
+        frozenset(manifest_fields),
+        frozenset(manifest_fields | {"published"}),
+    }:
+        raise ValueError("scenario cleanup marker manifest fields are invalid")
+    if manifest["path"] != SCENARIO_MANIFEST_FILENAME:
+        raise ValueError("scenario cleanup marker manifest path is invalid")
+    for label in ("before", "before_snapshot_fingerprint", "after_snapshot_fingerprint"):
+        _validate_portable_fingerprint(manifest[label], f"scenario cleanup marker {label}")
+    published = _validate_portable_fingerprint(
+        manifest.get("published"),
+        "scenario cleanup marker published",
+    )
+    after = manifest["after"]
+    before = manifest["before"]
+    if before is None:
+        if (
+            manifest["before_snapshot"] is not None
+            or manifest["before_snapshot_fingerprint"] is not None
+        ):
+            raise ValueError("scenario cleanup marker before-state is inconsistent")
+    elif (
+        manifest["before_snapshot"] != SCENARIO_MANIFEST_BEFORE_FILENAME
+        or manifest["before_snapshot_fingerprint"] is None
+    ):
+        raise ValueError("scenario cleanup marker before snapshot is invalid")
+    if data["phase"] == "recovered" and after is None:
+        if (
+            manifest["after_snapshot"] is not None
+            or manifest["after_snapshot_fingerprint"] is not None
+            or published is not None
+        ):
+            raise ValueError("recovered cleanup marker has inconsistent manifest evidence")
+        after = None
+    elif (
+        not isinstance(after, dict)
+        or set(after) != {"size", "sha256"}
+        or not isinstance(after["size"], int)
+        or after["size"] < 0
+        or not isinstance(after["sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", after["sha256"])
+        or manifest["after_snapshot"] != SCENARIO_MANIFEST_AFTER_FILENAME
+        or manifest["after_snapshot_fingerprint"] is None
+        or manifest["after_snapshot_fingerprint"]["size"] != after["size"]
+        or manifest["after_snapshot_fingerprint"]["sha256"] != after["sha256"]
+        or published is None
+        or published["size"] != after["size"]
+        or published["sha256"] != after["sha256"]
+    ):
+        raise ValueError("scenario cleanup marker manifest after-state is invalid")
+    expected_name = f"{SCENARIO_CLEANUP_PREFIX}{transaction_id}{SCENARIO_CLEANUP_SUFFIX}"
+    if (_cleanup_claim_base(path.name) or path.name) != expected_name:
+        raise HooksConflict("scenario cleanup marker name does not match its transaction")
+    data["_marker_fingerprint"] = _portable_fingerprint(fingerprint)
+    return data
+
+
+def _scenario_load_journal(target: Path, path: Path) -> ScenarioJournalState:
+    control, _manifest_path, _scenarios = _scenario_control_paths(target)
+    node = _classify_node(path)
+    base_name = _cleanup_claim_base(path.name) or path.name
+    if base_name.startswith(SCENARIO_CLEANUP_PREFIX):
+        if not node.regular:
+            raise HooksConflict(f"scenario cleanup marker is not a regular file: {path}")
+        data = _scenario_load_cleanup_marker(target, path)
+        _scenario_validate_terminal_cleanup_state(target, data)
+        journal_identity = _directory_identity(control)
+        return ScenarioJournalState(control, path, journal_identity, data)
+    if node.kind != "directory":
+        raise HooksConflict(f"scenario journal is not a directory: {path} ({node.kind})")
+    members = _FILESYSTEM.list_directory_names(path)
+    if SCENARIO_INTENT_FILENAME not in members or SCENARIO_JOURNAL_FILENAME not in members:
+        raise HooksConflict(f"scenario journal lacks durable intent or journal data: {path}")
+    journal_content, journal_fingerprint = _read_regular_bytes_with_fingerprint(
+        path / SCENARIO_JOURNAL_FILENAME,
+        "scenario journal",
+    )
+    intent_content, intent_fingerprint = _read_regular_bytes_with_fingerprint(
+        path / SCENARIO_INTENT_FILENAME,
+        "scenario journal intent",
+    )
+    try:
+        data = json.loads(journal_content.decode("utf-8"))
+        intent = json.loads(intent_content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"scenario journal JSON is invalid: {path}") from exc
+    journal_pending = None
+    pending_data = None
+    if SCENARIO_JOURNAL_PENDING_FILENAME in members:
+        pending_content, journal_pending = _read_regular_bytes_with_fingerprint(
+            path / SCENARIO_JOURNAL_PENDING_FILENAME,
+            "scenario journal pending",
+        )
+        try:
+            pending_data = json.loads(pending_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"scenario journal pending JSON is invalid: {path}") from exc
+    intent_pending = None
+    pending_intent = None
+    if SCENARIO_INTENT_PENDING_FILENAME in members:
+        pending_intent_content, intent_pending = _read_regular_bytes_with_fingerprint(
+            path / SCENARIO_INTENT_PENDING_FILENAME,
+            "scenario journal intent pending",
+        )
+        try:
+            pending_intent = json.loads(pending_intent_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"scenario intent pending JSON is invalid: {path}") from exc
+    required = {
+        "schema_version",
+        "operation",
+        "transaction_id",
+        "phase",
+        "target",
+        "control",
+        "journal",
+        "deployment_id",
+        "deployment",
+        "manifest",
+        "payload",
+    }
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("scenario journal root fields are invalid")
+    if data["schema_version"] != SCENARIO_JOURNAL_SCHEMA_VERSION:
+        raise ValueError("unsupported scenario journal schema")
+    if data["operation"] not in {"deploy", "uninstall"}:
+        raise ValueError("scenario journal operation is invalid")
+    if not _scenario_phase_matches_operation(data["operation"], data["phase"]):
+        raise ValueError("scenario journal phase does not match its operation")
+    if not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(data["transaction_id"]):
+        raise ValueError("scenario journal transaction id is invalid")
+    if base_name != f"{SCENARIO_JOURNAL_PREFIX}{data['transaction_id']}":
+        raise HooksConflict("scenario journal directory name does not match its transaction")
+    if not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(data["deployment_id"]):
+        raise ValueError("scenario journal deployment id is invalid")
+    if data["target"]["path"] != str(target):
+        raise HooksConflict("scenario journal is bound to a different target path")
+    target_identity = _scenario_identity_from_json(
+        data["target"]["identity"],
+        "scenario journal target",
+    )
+    control_identity = _scenario_identity_from_json(
+        data["control"]["identity"],
+        "scenario journal control",
+    )
+    journal_identity = _scenario_identity_from_json(
+        data["journal"]["identity"],
+        "scenario journal directory",
+    )
+    if not _path_has_directory_identity(target, target_identity):
+        raise HooksConflict("scenario journal target identity changed")
+    if not _path_has_directory_identity(control, control_identity):
+        raise HooksConflict("scenario journal control identity changed")
+    if not _path_has_directory_identity(path, journal_identity):
+        raise HooksConflict("scenario journal directory identity changed")
+    durable_intent_matches = False
+    try:
+        _scenario_validate_journal_intent(data, intent)
+    except HooksConflict:
+        pass
+    else:
+        durable_intent_matches = True
+    if not durable_intent_matches and _scenario_intent_is_allowed_update(
+        _scenario_journal_intent(data),
+        intent,
+    ):
+        # intent.json may be durably replaced immediately before its matching
+        # journal update; only the pre-authorized identity fields may advance.
+        durable_intent_matches = True
+    if pending_data is not None:
+        if not isinstance(pending_data, dict) or set(pending_data) != required:
+            raise ValueError("scenario journal pending root fields are invalid")
+        if not _scenario_phase_matches_operation(
+            pending_data.get("operation"), pending_data.get("phase")
+        ):
+            raise ValueError("scenario journal pending phase does not match its operation")
+        if _scenario_journal_intent(pending_data) == intent:
+            data = pending_data
+            journal_content = pending_content
+            journal_fingerprint = journal_pending
+            durable_intent_matches = True
+        elif pending_intent is not None and _scenario_intent_is_allowed_update(
+            _scenario_journal_intent(pending_data),
+            pending_intent,
+        ):
+            data = pending_data
+            journal_content = pending_content
+            journal_fingerprint = journal_pending
+            intent = pending_intent
+            intent_content = pending_intent_content
+            intent_fingerprint = intent_pending
+            durable_intent_matches = True
+        elif _scenario_journal_is_allowed_next_state(data, pending_data):
+            data = pending_data
+            journal_content = pending_content
+            journal_fingerprint = journal_pending
+            durable_intent_matches = True
+        elif pending_data != data:
+            raise HooksConflict(
+                "scenario journal pending is not an authorized next state"
+            )
+    elif pending_intent is not None:
+        if not _scenario_intent_is_allowed_update(
+            _scenario_journal_intent(data),
+            pending_intent,
+        ):
+            raise HooksConflict("scenario intent pending is not authorized by the journal")
+        intent = pending_intent
+        intent_content = pending_intent_content
+        intent_fingerprint = intent_pending
+        durable_intent_matches = True
+    if not durable_intent_matches:
+        raise HooksConflict("scenario journal immutable intent does not match journal")
+    if data["payload"].get("staging_identity") is None:
+        durable_staging_identity = intent.get("payload", {}).get(
+            "staging_identity"
+        )
+        if durable_staging_identity is not None:
+            data["payload"]["staging_identity"] = durable_staging_identity
+    if pending_intent is not None and intent_pending is not None:
+        if not _scenario_intent_is_allowed_update(
+            _scenario_journal_intent(data),
+            pending_intent,
+        ):
+            raise HooksConflict("scenario intent pending is not authorized by the journal")
+        data["payload"]["staging_identity"] = pending_intent["payload"].get(
+            "staging_identity"
+        )
+        intent = pending_intent
+        intent_content = pending_intent_content
+        intent_fingerprint = intent_pending
+        durable_intent_matches = True
+    effective_after = data["manifest"].get("after")
+    after_path = path / SCENARIO_MANIFEST_AFTER_FILENAME
+    manifest_intent_path = path / SCENARIO_MANIFEST_INTENT_FILENAME
+    if effective_after is None and SCENARIO_MANIFEST_AFTER_FILENAME in members:
+        after_fingerprint = _fingerprint_regular_file(after_path)
+        effective_after = {
+            "size": after_fingerprint.size,
+            "sha256": after_fingerprint.sha256,
+        }
+        data["manifest"]["after"] = effective_after
+        data["manifest"]["after_snapshot"] = SCENARIO_MANIFEST_AFTER_FILENAME
+        data["manifest"]["after_snapshot_fingerprint"] = _portable_fingerprint(
+            after_fingerprint
+        )
+    if SCENARIO_MANIFEST_INTENT_FILENAME in members:
+        if effective_after is None:
+            raise HooksConflict("scenario manifest intent lacks an after snapshot")
+        intent_content, _manifest_intent_fingerprint = (
+            _read_regular_bytes_with_fingerprint(
+                manifest_intent_path,
+                "scenario manifest intent",
+            )
+        )
+        try:
+            manifest_intent = json.loads(intent_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("scenario manifest intent JSON is invalid") from exc
+        if manifest_intent != {
+            "schema_version": SCENARIO_JOURNAL_SCHEMA_VERSION,
+            "operation": data["operation"],
+            "transaction_id": data["transaction_id"],
+            "deployment_id": data["deployment_id"],
+            "manifest_sha256": effective_after["sha256"],
+        }:
+            raise HooksConflict("scenario manifest intent does not match its snapshot")
+
+    expected_members = {
+        SCENARIO_INTENT_FILENAME,
+        SCENARIO_JOURNAL_FILENAME,
+    }
+    if SCENARIO_JOURNAL_PENDING_FILENAME in members:
+        expected_members.add(SCENARIO_JOURNAL_PENDING_FILENAME)
+    if SCENARIO_INTENT_PENDING_FILENAME in members:
+        expected_members.add(SCENARIO_INTENT_PENDING_FILENAME)
+    if data["manifest"]["before"] is not None:
+        expected_members.add(SCENARIO_MANIFEST_BEFORE_FILENAME)
+    if SCENARIO_MANIFEST_AFTER_FILENAME in members:
+        expected_members.add(SCENARIO_MANIFEST_AFTER_FILENAME)
+    if SCENARIO_MANIFEST_INTENT_FILENAME in members:
+        expected_members.add(SCENARIO_MANIFEST_INTENT_FILENAME)
+    for directory_name in (
+        SCENARIO_PAYLOAD_STAGING_DIRNAME,
+        SCENARIO_REMOVED_PAYLOAD_DIRNAME,
+        SCENARIO_MANIFEST_RESTORE_FILENAME,
+    ):
+        if directory_name in members:
+            expected_members.add(directory_name)
+    staging_path = path / SCENARIO_PAYLOAD_STAGING_DIRNAME
+    if _path_entry_exists(staging_path):
+        staging_identity = data["payload"].get("staging_identity")
+        if staging_identity is None:
+            raise HooksConflict(
+                "scenario staging exists without a durable recorded identity"
+            )
+        expected_staging_identity = _scenario_identity_from_json(
+            staging_identity,
+            "scenario staging",
+        )
+        if not _path_has_directory_identity(staging_path, expected_staging_identity):
+            raise HooksConflict("scenario staging directory identity changed")
+    if members != expected_members:
+        raise HooksConflict(f"scenario journal contains unknown evidence: {path}")
+    manifest_pending = None
+    manifest_pending_path = control / SCENARIO_MANIFEST_INTENT_PENDING_FILENAME
+    if _path_entry_exists(manifest_pending_path):
+        manifest_pending = _fingerprint_regular_file(manifest_pending_path)
+        after = data["manifest"].get("after")
+        if after is None or (
+            manifest_pending.size != after["size"]
+            or manifest_pending.sha256 != after["sha256"]
+        ):
+            raise HooksConflict(
+                "scenario manifest pending does not match the journal after-state"
+            )
+    return ScenarioJournalState(
+        control,
+        path,
+        journal_identity,
+        data,
+        journal_fingerprint=journal_fingerprint,
+        intent_fingerprint=intent_fingerprint,
+        journal_pending=journal_pending,
+        intent_pending=intent_pending,
+        manifest_pending=manifest_pending,
+    )
+
+
+def _scenario_cleanup_journal(state: ScenarioJournalState) -> None:
+    _scenario_reconcile_transaction_pending(state)
+    journal_dir = state.journal_dir
+    transaction_id = state.data["transaction_id"]
+    marker = state.control_dir / (
+        f"{SCENARIO_CLEANUP_PREFIX}{transaction_id}{SCENARIO_CLEANUP_SUFFIX}"
+    )
+    if _path_entry_exists(marker):
+        marker_data = _scenario_load_cleanup_marker(
+            Path(state.data["target"]["path"]),
+            marker,
+        )
+        expected = {
+            key: value for key, value in state.data.items() if not key.startswith("_")
+        }
+        actual = {
+            key: value for key, value in marker_data.items() if not key.startswith("_")
+        }
+        if actual != expected:
+            raise HooksConflict(f"scenario cleanup marker conflicts with journal: {marker}")
+        marker_fingerprint = _fingerprint_regular_file(marker)
+    else:
+        marker_fingerprint = None
+    if _cleanup_claim_base(journal_dir.name) is None:
+        claimed = journal_dir.with_name(
+            journal_dir.name + CLEANUP_CLAIM_SEPARATOR + uuid.uuid4().hex
+        )
+        if not _atomic_rename_no_replace(journal_dir, claimed):
+            raise HooksConflict(f"scenario journal could not be claimed for cleanup: {journal_dir}")
+        _filesystem_checkpoint("scenario-journal-cleanup-claimed")
+        _fsync_directory(state.control_dir)
+        state.journal_dir = claimed
+        state.journal_identity = _directory_identity(claimed)
+    else:
+        claimed = journal_dir
+    members = _FILESYSTEM.list_directory_names(claimed)
+    expected = _scenario_journal_expected_members(state)
+    if members != expected:
+        raise HooksConflict(f"scenario journal members changed before cleanup: {claimed}")
+    marker_data = {
+        key: value for key, value in state.data.items() if not key.startswith("_")
+    }
+    if marker_fingerprint is None:
+        marker_fingerprint = _scenario_write_exclusive_json(marker, marker_data)
+        _filesystem_checkpoint("scenario-journal-cleanup-marker-published")
+    ordered_members = sorted(
+        members,
+        key=lambda name: _classify_node(claimed / name).kind == "directory",
+    )
+    for name in ordered_members:
+        path = claimed / name
+        node = _classify_node(path)
+        if node.kind == "directory":
+            _scenario_remove_tree(path, state.data["payload"]["files"])
+        elif node.regular:
+            fingerprint = _fingerprint_regular_file(path)
+            _FILESYSTEM.remove_verified_file(path, fingerprint.identity, fingerprint)
+        else:
+            raise HooksConflict(f"scenario journal cleanup member is abnormal: {path}")
+        _filesystem_checkpoint("scenario-journal-cleanup-member-removed")
+    _fsync_directory(claimed)
+    identity = _directory_identity(claimed)
+    access = _FILESYSTEM.open_verified_empty_private_directory(claimed, identity)
+    try:
+        _FILESYSTEM.remove_verified_directory(access)
+    finally:
+        _FILESYSTEM.close_owned_directory(access)
+    _filesystem_checkpoint("scenario-journal-cleanup-directory-removed")
+    _fsync_directory(state.control_dir)
+    actual_marker = _fingerprint_regular_file(marker)
+    if actual_marker != marker_fingerprint:
+        raise HooksConflict(f"scenario cleanup marker changed: {marker}")
+    _FILESYSTEM.remove_verified_file(marker, actual_marker.identity, actual_marker)
+    _filesystem_checkpoint("scenario-journal-cleanup-marker-removed")
+    _fsync_directory(state.control_dir)
+
+
+def _scenario_platform_name() -> str:
+    if _is_windows_platform():
+        return "win32"
+    if sys.platform == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def _scenario_static_blockers(package: ScenarioPackage) -> List[str]:
+    blockers = []
+    platform = _scenario_platform_name()
+    if platform not in package.platforms:
+        blockers.append(
+            f"platform {platform} is not declared; supported: {', '.join(package.platforms)}"
+        )
+    try:
+        runtime_matches = _scenario_python_version_matches(package.python_runtime)
+    except ValueError as exc:
+        blockers.append(str(exc))
+    else:
+        if not runtime_matches:
+            blockers.append(
+                "Python {}.{}.{} does not satisfy {}".format(
+                    sys.version_info.major,
+                    sys.version_info.minor,
+                    sys.version_info.micro,
+                    package.python_runtime,
+                )
+            )
+    for requirement in package.requires:
+        blockers.append(
+            "dependency probe is required before deployment: {} {} ({})".format(
+                requirement["name"],
+                requirement["version"],
+                " ".join(requirement["probe"]),
+            )
+        )
+    return blockers
+
+
+def _scenario_load_snapshot_bytes(
+    state: ScenarioJournalState,
+    name: str,
+    expected: Optional[Dict[str, Any]],
+) -> bytes:
+    if expected is None:
+        raise HooksConflict(f"scenario journal snapshot metadata is missing: {name}")
+    path = state.journal_dir / name
+    content, fingerprint = _read_regular_bytes_with_fingerprint(path, name)
+    if not (
+        fingerprint.size == expected["size"]
+        and fingerprint.modified_ns == expected["mtime_ns"]
+        and fingerprint.sha256 == expected["sha256"]
+    ):
+        raise HooksConflict(f"scenario journal snapshot changed: {path}")
+    return content
+
+
+def _scenario_restore_manifest_before(state: ScenarioJournalState) -> None:
+    target = Path(state.data["target"]["path"])
+    _control, manifest_path, _scenarios = _scenario_control_paths(target)
+    before = state.data["manifest"]["before"]
+    after = state.data["manifest"].get("after")
+    if before is None:
+        if not _path_entry_exists(manifest_path):
+            return
+        current = _fingerprint_regular_file(manifest_path)
+        if after is None or not (
+            current.size == after["size"] and current.sha256 == after["sha256"]
+        ):
+            raise HooksConflict("scenario manifest contains unknown concurrent content")
+        _FILESYSTEM.remove_verified_file(manifest_path, current.identity, current)
+        return
+    if _portable_matches(manifest_path, before):
+        return
+    current = _fingerprint_regular_file(manifest_path)
+    if after is None or not (
+        current.size == after["size"] and current.sha256 == after["sha256"]
+    ):
+        raise HooksConflict("scenario manifest drifted outside transaction ownership")
+    content = _scenario_load_snapshot_bytes(
+        state,
+        state.data["manifest"]["before_snapshot"],
+        state.data["manifest"]["before_snapshot_fingerprint"],
+    )
+    temporary = state.journal_dir / SCENARIO_MANIFEST_RESTORE_FILENAME
+    _scenario_write_private_bytes(temporary, content)
+    _transactional_replace_existing(manifest_path, temporary, current)
+
+
+def _scenario_rollback_deploy(state: ScenarioJournalState) -> List[str]:
+    errors = []
+    target = Path(state.data["target"]["path"])
+    _control, _manifest_path, scenarios = _scenario_control_paths(target)
+    try:
+        _scenario_restore_manifest_before(state)
+    except (OSError, ValueError) as exc:
+        errors.append(f"manifest rollback failed: {exc}")
+    payload_root = scenarios / state.data["deployment_id"]
+    staging = state.journal_dir / SCENARIO_PAYLOAD_STAGING_DIRNAME
+    for path in (payload_root, staging):
+        if not _path_entry_exists(path):
+            continue
+        try:
+            if path == staging:
+                staging_identity_data = state.data["payload"].get("staging_identity")
+                if staging_identity_data is None:
+                    raise HooksConflict(
+                        "scenario staging exists without a durable recorded identity"
+                    )
+                staging_identity = _scenario_identity_from_json(
+                    staging_identity_data,
+                    "scenario staging",
+                )
+                if not _path_has_directory_identity(path, staging_identity):
+                    raise HooksConflict("scenario staging directory identity changed")
+                _scenario_remove_partial_staging(path, state.data["payload"]["files"])
+            else:
+                payload_identity_data = state.data["payload"].get("identity")
+                if payload_identity_data is None:
+                    payload_identity_data = state.data["payload"].get(
+                        "staging_identity"
+                    )
+                if payload_identity_data is None:
+                    raise HooksConflict("scenario live payload lacks a durable identity")
+                payload_identity = _scenario_identity_from_json(
+                    payload_identity_data,
+                    "scenario live payload",
+                )
+                if not _path_has_directory_identity(path, payload_identity):
+                    raise HooksConflict("scenario live payload directory identity changed")
+                _scenario_remove_tree(path, state.data["payload"]["files"])
+        except (OSError, ValueError) as exc:
+            errors.append(f"payload rollback failed for {path}: {exc}")
+    return errors
+
+
+def show_scenario_list(scenario_root_value: Optional[str]) -> None:
+    root = resolve_scenario_root(scenario_root_value)
+    packages = discover_scenario_packages(root)
+    _print(f"[Scenario library] {root}")
+    if not packages:
+        _print("[Scenario state] empty")
+        return
+    invalid = 0
+    for scenario_id, package, detail in packages:
+        if package is None:
+            invalid += 1
+            _print(f"- {scenario_id}: invalid ({detail})")
+            continue
+        blockers = _scenario_static_blockers(package)
+        state = "ready" if not blockers else "blocked"
+        _print(
+            f"- {package.scenario_id} {package.version}: {state}; "
+            f"platforms={','.join(package.platforms)}; "
+            f"python={package.python_runtime}; verify={package.verify}"
+        )
+        for blocker in blockers:
+            _print(f"    [Blocked] {blocker}")
+    if invalid:
+        raise HooksConflict(f"scenario library contains {invalid} invalid package(s)")
+
+
+def show_scenario_status(target: Path) -> int:
+    _print(f"[Scenario target] {target}")
+    control = _scenario_validate_control_node(target, allow_absent=True)
+    if control is None:
+        _print("[Scenario state] not-installed")
+        return 0
+    unknown = _scenario_control_unknown_members(control)
+    if unknown:
+        _print("[Scenario state] conflict")
+        _print(
+            "[Blocked] scenario control directory contains unknown members: "
+            + ", ".join(unknown)
+        )
+        return 1
+    if _scenario_unpaired_manifest_pending(control):
+        _print("[Scenario state] conflict")
+        _print("[Blocked] scenario manifest pending lacks transaction evidence")
+        return 1
+    journals = _scenario_journal_paths(control)
+    journal_conflicts = []
+    recoverable = []
+    for journal in journals:
+        try:
+            state = _scenario_load_journal(target, journal)
+        except (OSError, ValueError) as exc:
+            journal_conflicts.append(f"{journal.name}: {exc}")
+        else:
+            recoverable.append(state)
+    try:
+        manifest, _fingerprint = _scenario_load_manifest(target)
+        records = _scenario_status_records(target, manifest)
+    except (OSError, ValueError) as exc:
+        _print("[Scenario state] conflict")
+        _print(f"[Blocked] {exc}")
+        return 1
+    if journal_conflicts:
+        _print("[Scenario state] conflict")
+        for conflict in journal_conflicts:
+            _print(f"[Blocked] {conflict}")
+        return 1
+    if recoverable:
+        _print("[Scenario state] recovery-required")
+        for state in recoverable:
+            _print(
+                f"[Recovery] {state.data['operation']} "
+                f"{state.data['transaction_id']} phase={state.data['phase']}"
+            )
+        return 1
+    if not manifest["deployments"]:
+        _print("[Scenario state] not-installed")
+        return 0
+    conflicts = 0
+    for record in records:
+        if record.state == "conflict":
+            conflicts += 1
+        _print(
+            f"[Deployment] {record.deployment_id} scenario={record.scenario_id} "
+            f"version={record.scenario_version} state={record.state} root={record.root}"
+        )
+        _print(f"    {record.detail}")
+    _print(f"[Scenario state] {'conflict' if conflicts else 'active'}")
+    return 1 if conflicts else 0
+
+
+def _scenario_prepare_control_for_deploy(
+    target: Path,
+) -> Tuple[Path, Path, Path, bool, bool, Optional[FileFingerprint], Dict[str, Any]]:
+    control, manifest_path, scenarios = _scenario_control_paths(target)
+    control_created = False
+    scenarios_created = False
+    control_node = _classify_node(control)
+    if control_node.exists and control_node.kind != "directory":
+        raise HooksConflict(f"scenario control path is not a directory: {control}")
+    if not control_node.exists:
+        _FILESYSTEM.create_private_directory(control)
+        control_created = True
+        _fsync_directory(target)
+    try:
+        unknown = _scenario_control_unknown_members(control)
+        if unknown:
+            raise HooksConflict(
+                "scenario control directory contains unknown members: "
+                + ", ".join(unknown)
+            )
+        scenarios_node = _classify_node(scenarios)
+        if scenarios_node.exists and scenarios_node.kind != "directory":
+            raise HooksConflict(f"scenario payload parent is not a directory: {scenarios}")
+        if not scenarios_node.exists:
+            _FILESYSTEM.create_private_directory(scenarios)
+            scenarios_created = True
+            _fsync_directory(control)
+        if _scenario_journal_paths(control):
+            raise HooksConflict("scenario target has unfinished transaction evidence; recover first")
+        if _path_entry_exists(control / SCENARIO_MANIFEST_INTENT_PENDING_FILENAME):
+            raise HooksConflict(
+                "scenario target has unfinished manifest pending evidence; recover first"
+            )
+        manifest, fingerprint = _scenario_load_manifest(target)
+        _scenario_verify_manifest_payloads(target, manifest)
+        actual_payloads = _FILESYSTEM.list_directory_names(scenarios)
+        expected_payloads = set(manifest["deployments"])
+        if actual_payloads != expected_payloads:
+            raise HooksConflict(
+                "scenario payload storage contains unowned or missing roots"
+            )
+    except BaseException:
+        if scenarios_created:
+            _scenario_remove_empty_created_directory(scenarios, _directory_identity(scenarios))
+        if control_created:
+            _scenario_remove_empty_created_directory(control, _directory_identity(control))
+        raise
+    return (
+        control,
+        manifest_path,
+        scenarios,
+        control_created,
+        scenarios_created,
+        fingerprint,
+        manifest,
+    )
+
+
+def _scenario_cleanup_empty_storage(target: Path) -> None:
+    control, _manifest, scenarios = _scenario_control_paths(target)
+    if _path_entry_exists(scenarios):
+        try:
+            _scenario_remove_empty_directory(scenarios)
+        except OSError:
+            return
+    if _path_entry_exists(control):
+        try:
+            _scenario_remove_empty_directory(control)
+        except OSError:
+            return
+
+
+def _scenario_preflight_existing_target(target: Path) -> None:
+    control = _scenario_validate_control_node(target, allow_absent=True)
+    if control is None:
+        return
+    unknown = _scenario_control_unknown_members(control)
+    if unknown:
+        raise HooksConflict(
+            "scenario control directory contains unknown members: "
+            + ", ".join(unknown)
+        )
+    if _scenario_unpaired_manifest_pending(control):
+        raise HooksConflict("scenario manifest pending lacks transaction evidence")
+    if _scenario_journal_paths(control):
+        raise HooksConflict("scenario target has unfinished transaction evidence; recover first")
+    manifest, _fingerprint = _scenario_load_manifest(target)
+    _scenario_verify_manifest_payloads(target, manifest)
+    _control, _manifest_path, scenarios = _scenario_control_paths(target)
+    if _path_entry_exists(scenarios):
+        actual_payloads = _FILESYSTEM.list_directory_names(scenarios)
+    else:
+        actual_payloads = []
+    expected_payloads = set(manifest["deployments"])
+    if set(actual_payloads) != expected_payloads:
+        raise HooksConflict("scenario payload storage contains unowned or missing roots")
+
+
+def deploy_scenario(
+    target: Path,
+    package: ScenarioPackage,
+    yes: bool,
+) -> Optional[str]:
+    blockers = _scenario_static_blockers(package)
+    _print(f"[Scenario deploy] {package.scenario_id} {package.version}")
+    _print(f"[Target] {target}")
+    _print(f"[Source] {package.root}")
+    _print(f"[Files] {len(package.files)}")
+    if blockers:
+        for blocker in blockers:
+            _print(f"[Blocked] {blocker}")
+        raise HooksConflict("scenario deployment preflight is blocked")
+    if not yes:
+        _scenario_preflight_existing_target(target)
+        _print("[Preview] no files were changed; add --yes to deploy")
+        return None
+
+    with _DirectoryLockSet([str(target)]) as locks:
+        locked_target = locks.directories[0].path
+        if locked_target != target or _directory_identity(locked_target) != _directory_identity(target):
+            raise HooksConflict("scenario target changed while acquiring its lock")
+        (
+            control,
+            manifest_path,
+            scenarios,
+            control_created,
+            scenarios_created,
+            manifest_before,
+            manifest,
+        ) = _scenario_prepare_control_for_deploy(target)
+        deployment_id = uuid.uuid4().hex
+        payload_root = scenarios / deployment_id
+        if deployment_id in manifest["deployments"] or _path_entry_exists(payload_root):
+            raise HooksConflict(
+                f"scenario deployment id or root already exists: {deployment_id}"
+            )
+        manifest["storage"]["root_identity"] = _scenario_identity(
+            _directory_identity(control)
+        )
+        manifest["storage"]["scenarios_identity"] = _scenario_identity(
+            _directory_identity(scenarios)
+        )
+        record = {
+            "deployment_id": deployment_id,
+            "scenario_id": package.scenario_id,
+            "scenario_version": package.version,
+            "source_digest": package.source_digest,
+            "deployed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "root": f"scenarios/{deployment_id}",
+            "root_identity": None,
+            "files": dict(package.files),
+        }
+        state = None
+        published = False
+        committed = False
+        try:
+            state = _scenario_create_journal(
+                target,
+                "deploy",
+                deployment_id,
+                manifest_before,
+                record,
+                control_existed_before=not control_created,
+                scenarios_existed_before=not scenarios_created,
+            )
+            staging = state.journal_dir / SCENARIO_PAYLOAD_STAGING_DIRNAME
+            _FILESYSTEM.create_private_directory(staging)
+            _fsync_directory(state.journal_dir)
+            state.data["payload"]["staging_identity"] = _scenario_identity(
+                _directory_identity(staging)
+            )
+            intent_path = state.journal_dir / SCENARIO_INTENT_FILENAME
+            intent_content, intent_fingerprint = _read_regular_bytes_with_fingerprint(
+                intent_path,
+                "scenario journal intent",
+            )
+            intent_data = json.loads(intent_content.decode("utf-8"))
+            intent_data["payload"]["staging_identity"] = state.data["payload"][
+                "staging_identity"
+            ]
+            _scenario_publish_json(
+                intent_path,
+                intent_data,
+                intent_fingerprint,
+                SCENARIO_INTENT_PENDING_FILENAME,
+            )
+            _scenario_write_journal(state, "initializing")
+            _scenario_create_relative_directories(staging, package.files)
+            for relative, sha256 in sorted(package.files.items()):
+                source = package.root / Path(*PurePosixPath(relative).parts)
+                destination = staging / Path(*PurePosixPath(relative).parts)
+                _scenario_copy_regular_file(source, destination, sha256)
+            _scenario_write_journal(state, "prepared")
+            staging_identity = _scenario_identity_from_json(
+                state.data["payload"]["staging_identity"],
+                "scenario staging",
+            )
+            _scenario_verify_payload(staging, staging_identity, package.files)
+            if not _atomic_rename_no_replace(staging, payload_root):
+                raise HooksConflict(f"scenario deployment root already exists: {payload_root}")
+            published = True
+            payload_identity = _directory_identity(payload_root)
+            record["root_identity"] = _scenario_identity(payload_identity)
+            state.data["deployment"] = record
+            state.data["payload"]["identity"] = record["root_identity"]
+            _filesystem_checkpoint("scenario-payload-published")
+            _fsync_directory(scenarios)
+            _scenario_write_journal(state, "payload-intent")
+            manifest_after = json.loads(json.dumps(manifest))
+            manifest_after["deployments"][deployment_id] = record
+            _scenario_validate_manifest(manifest_after, target)
+            _scenario_publish_manifest_intent(state, manifest_after)
+            published_manifest = _scenario_publish_json(
+                manifest_path,
+                manifest_after,
+                manifest_before,
+                SCENARIO_MANIFEST_INTENT_PENDING_FILENAME,
+            )
+            state.data["manifest"]["published"] = _portable_fingerprint(
+                published_manifest
+            )
+            _scenario_write_journal(state, "final-sweep")
+            _scenario_verify_payload(payload_root, payload_identity, package.files)
+            checked_manifest, checked_fingerprint = _scenario_load_manifest(target)
+            if checked_manifest != manifest_after or checked_fingerprint != published_manifest:
+                raise HooksConflict("scenario final manifest sweep failed")
+            _scenario_write_journal(state, "committed")
+            committed = True
+            _scenario_cleanup_journal(state)
+        except BaseException:
+            if state is not None and not committed:
+                rollback_errors = _scenario_rollback_deploy(state)
+                if not rollback_errors:
+                    try:
+                        for transient in (
+                            state.journal_dir / SCENARIO_PAYLOAD_STAGING_DIRNAME,
+                            state.journal_dir / SCENARIO_MANIFEST_RESTORE_FILENAME,
+                        ):
+                            if _path_entry_exists(transient):
+                                if _classify_node(transient).kind == "directory":
+                                    try:
+                                        _scenario_remove_tree(
+                                            transient,
+                                            state.data["payload"]["files"],
+                                        )
+                                    except HooksConflict:
+                                        _scenario_remove_empty_directory(transient)
+                                else:
+                                    fingerprint = _fingerprint_regular_file(transient)
+                                    _FILESYSTEM.remove_verified_file(
+                                        transient,
+                                        fingerprint.identity,
+                                        fingerprint,
+                                    )
+                        _scenario_write_journal(state, "recovered")
+                        _scenario_cleanup_journal(state)
+                        if control_created:
+                            _scenario_cleanup_empty_storage(target)
+                    except BaseException as exc:
+                        rollback_errors.append(str(exc))
+                for error in rollback_errors:
+                    _print(f"[Rollback warning] {error}", file=sys.stderr)
+            if state is None:
+                if scenarios_created and _path_entry_exists(scenarios):
+                    try:
+                        _scenario_remove_empty_created_directory(
+                            scenarios,
+                            _directory_identity(scenarios),
+                        )
+                    except OSError:
+                        pass
+                if control_created and _path_entry_exists(control):
+                    try:
+                        _scenario_remove_empty_created_directory(
+                            control,
+                            _directory_identity(control),
+                        )
+                    except OSError:
+                        pass
+            raise
+        if published and not _path_entry_exists(payload_root):
+            raise HooksConflict("scenario payload disappeared after commit")
+    _print(f"[Done] deployed scenario as {deployment_id}")
+    return deployment_id
+
+
+def _scenario_uninstall_after_manifest(
+    manifest: Dict[str, Any],
+    deployment_id: str,
+) -> Dict[str, Any]:
+    result = json.loads(json.dumps(manifest))
+    del result["deployments"][deployment_id]
+    return result
+
+
+def _scenario_rollback_uninstall(state: ScenarioJournalState) -> List[str]:
+    errors = []
+    target = Path(state.data["target"]["path"])
+    _control, _manifest_path, scenarios = _scenario_control_paths(target)
+    live = scenarios / state.data["deployment_id"]
+    removed = state.journal_dir / SCENARIO_REMOVED_PAYLOAD_DIRNAME
+    try:
+        _scenario_restore_manifest_before(state)
+    except (OSError, ValueError) as exc:
+        errors.append(f"manifest rollback failed: {exc}")
+    if _path_entry_exists(removed):
+        try:
+            expected_identity = _scenario_identity_from_json(
+                state.data["payload"]["identity"],
+                "scenario removed payload",
+            )
+            _scenario_verify_payload(removed, expected_identity, state.data["payload"]["files"])
+            if _path_entry_exists(live):
+                raise HooksConflict(f"scenario payload path was recreated during rollback: {live}")
+            if not _atomic_rename_no_replace(removed, live):
+                raise HooksConflict(f"scenario payload could not be restored: {live}")
+            _fsync_directory(scenarios)
+        except (OSError, ValueError) as exc:
+            errors.append(f"payload rollback failed: {exc}")
+    elif not _path_entry_exists(live):
+        errors.append("scenario payload is absent from both live and removed locations")
+    return errors
+
+
+def uninstall_scenario(target: Path, deployment_id: str, yes: bool) -> None:
+    if not SCENARIO_DEPLOYMENT_ID_RE.fullmatch(deployment_id):
+        raise ValueError("--scenario-uninstall requires a 32-character hex deployment_id")
+    _print(f"[Scenario uninstall] {deployment_id}")
+    _print(f"[Target] {target}")
+    control = _scenario_validate_control_node(target, allow_absent=True)
+    if control is None:
+        _print("[Scenario state] not-installed")
+        return
+    unknown = _scenario_control_unknown_members(control)
+    if unknown:
+        raise HooksConflict(
+            "scenario control directory contains unknown members: "
+            + ", ".join(unknown)
+        )
+    if _scenario_unpaired_manifest_pending(control):
+        raise HooksConflict("scenario manifest pending lacks transaction evidence")
+    if _scenario_journal_paths(control):
+        raise HooksConflict("scenario target has unfinished transaction evidence; recover first")
+    manifest, manifest_before = _scenario_load_manifest(target)
+    record = manifest["deployments"].get(deployment_id)
+    if record is None:
+        _print(f"[Scenario state] deployment not installed: {deployment_id}")
+        return
+    _control, manifest_path, scenarios = _scenario_control_paths(target)
+    payload_root = scenarios / deployment_id
+    payload_identity = _scenario_identity_from_json(
+        record["root_identity"],
+        "scenario deployment root",
+    )
+    _scenario_verify_payload(payload_root, payload_identity, record["files"])
+    if not yes:
+        _print(f"[Preview] remove {record['root']} and its exact manifest entry")
+        _print("[Preview] no files were changed; add --yes to uninstall")
+        return
+
+    with _DirectoryLockSet([str(target)]) as locks:
+        locked_target = locks.directories[0].path
+        if locked_target != target or _directory_identity(locked_target) != _directory_identity(target):
+            raise HooksConflict("scenario target changed while acquiring its lock")
+        if _scenario_journal_paths(control):
+            raise HooksConflict("scenario target gained transaction evidence while locking")
+        manifest, manifest_before = _scenario_load_manifest(target)
+        record = manifest["deployments"].get(deployment_id)
+        if record is None:
+            _print(f"[Scenario state] deployment not installed: {deployment_id}")
+            return
+        payload_identity = _scenario_identity_from_json(
+            record["root_identity"],
+            "scenario deployment root",
+        )
+        _scenario_verify_payload(payload_root, payload_identity, record["files"])
+        manifest_after = _scenario_uninstall_after_manifest(manifest, deployment_id)
+        state = _scenario_create_journal(
+            target,
+            "uninstall",
+            deployment_id,
+            manifest_before,
+            record,
+        )
+        committed = False
+        try:
+            _scenario_write_journal(state, "prepared")
+            removed = state.journal_dir / SCENARIO_REMOVED_PAYLOAD_DIRNAME
+            if not _atomic_rename_no_replace(payload_root, removed):
+                raise HooksConflict(f"scenario payload could not be claimed: {payload_root}")
+            _filesystem_checkpoint("scenario-payload-claimed-for-uninstall")
+            _fsync_directory(scenarios)
+            _scenario_verify_payload(removed, payload_identity, record["files"])
+            _scenario_write_journal(state, "payload-remove-intent")
+            _scenario_publish_manifest_intent(state, manifest_after)
+            published_manifest = _scenario_publish_json(
+                manifest_path,
+                manifest_after,
+                manifest_before,
+                SCENARIO_MANIFEST_INTENT_PENDING_FILENAME,
+            )
+            state.data["manifest"]["published"] = _portable_fingerprint(
+                published_manifest
+            )
+            _scenario_write_journal(state, "final-sweep")
+            checked_manifest, checked_fingerprint = _scenario_load_manifest(target)
+            if checked_manifest != manifest_after or checked_fingerprint != published_manifest:
+                raise HooksConflict("scenario uninstall manifest sweep failed")
+            _scenario_verify_payload(removed, payload_identity, record["files"])
+            _scenario_write_journal(state, "committed")
+            committed = True
+            _scenario_remove_tree(removed, record["files"])
+            _scenario_cleanup_journal(state)
+        except BaseException:
+            if not committed:
+                rollback_errors = _scenario_rollback_uninstall(state)
+                if not rollback_errors:
+                    try:
+                        _scenario_write_journal(state, "recovered")
+                        _scenario_cleanup_journal(state)
+                    except BaseException as exc:
+                        rollback_errors.append(str(exc))
+                for error in rollback_errors:
+                    _print(f"[Rollback warning] {error}", file=sys.stderr)
+            raise
+    _print(f"[Done] uninstalled scenario deployment {deployment_id}")
+
+
+def _scenario_manifest_matches_after(state: ScenarioJournalState) -> bool:
+    target = Path(state.data["target"]["path"])
+    _control, manifest_path, _scenarios = _scenario_control_paths(target)
+    after = state.data["manifest"].get("after")
+    if after is None:
+        return False
+    try:
+        fingerprint = _fingerprint_regular_file(manifest_path)
+    except OSError:
+        return False
+    return fingerprint.size == after["size"] and fingerprint.sha256 == after["sha256"]
+
+
+def _scenario_complete_committed_cleanup(state: ScenarioJournalState) -> None:
+    target = Path(state.data["target"]["path"])
+    _control, _manifest_path, scenarios = _scenario_control_paths(target)
+    if not _scenario_manifest_matches_after(state):
+        raise HooksConflict("committed scenario transaction manifest no longer matches")
+    deployment_id = state.data["deployment_id"]
+    live = scenarios / deployment_id
+    if state.data["operation"] == "deploy":
+        identity = _scenario_identity_from_json(
+            state.data["payload"]["identity"],
+            "scenario committed payload",
+        )
+        _scenario_verify_payload(live, identity, state.data["payload"]["files"])
+    else:
+        if _path_entry_exists(live):
+            raise HooksConflict("committed uninstall payload path was recreated")
+        removed = state.journal_dir / SCENARIO_REMOVED_PAYLOAD_DIRNAME
+        if _path_entry_exists(removed):
+            identity = _scenario_identity_from_json(
+                state.data["payload"]["identity"],
+                "scenario committed removed payload",
+            )
+            if not _path_has_directory_identity(removed, identity):
+                raise HooksConflict("committed removed payload identity changed")
+            _scenario_finish_partial_removal(removed, state.data["payload"]["files"])
+    _scenario_cleanup_journal(state)
+
+
+def _scenario_validate_terminal_cleanup_state(
+    target: Path,
+    data: Dict[str, Any],
+) -> None:
+    _control, manifest_path, scenarios = _scenario_control_paths(target)
+    phase = data["phase"]
+    expected_manifest = (
+        data["manifest"].get("after")
+        if phase == "committed"
+        else data["manifest"].get("before")
+    )
+    manifest = None
+    if expected_manifest is None:
+        if _path_entry_exists(manifest_path):
+            raise HooksConflict("terminal cleanup marker manifest no longer matches")
+    else:
+        try:
+            manifest_fingerprint = _fingerprint_regular_file(manifest_path)
+        except OSError as exc:
+            raise HooksConflict(
+                "terminal cleanup marker manifest is missing or abnormal"
+            ) from exc
+        if not (
+            manifest_fingerprint.size == expected_manifest["size"]
+            and manifest_fingerprint.sha256 == expected_manifest["sha256"]
+        ):
+            raise HooksConflict("terminal cleanup marker manifest no longer matches")
+        manifest, checked_fingerprint = _scenario_load_manifest(target)
+        if checked_fingerprint != manifest_fingerprint:
+            raise HooksConflict("terminal cleanup marker manifest changed while checking")
+
+    deployment_id = data["deployment_id"]
+    live = scenarios / deployment_id
+    operation = data["operation"]
+    if phase == "committed" and operation == "deploy":
+        if manifest is None or manifest["deployments"].get(deployment_id) != data["deployment"]:
+            raise HooksConflict(
+                "committed deploy cleanup marker is not bound to the live manifest record"
+            )
+        identity = _scenario_identity_from_json(
+            data["payload"]["identity"],
+            "scenario committed payload",
+        )
+        _scenario_verify_payload(live, identity, data["payload"]["files"])
+    elif phase == "committed":
+        if manifest is None or deployment_id in manifest["deployments"]:
+            raise HooksConflict(
+                "committed uninstall cleanup marker still exists in the live manifest"
+            )
+        if _path_entry_exists(live):
+            raise HooksConflict("committed uninstall payload path was recreated")
+    elif operation == "deploy":
+        if manifest is not None and deployment_id in manifest["deployments"]:
+            raise HooksConflict(
+                "recovered deploy cleanup marker still exists in the live manifest"
+            )
+        if _path_entry_exists(live):
+            raise HooksConflict("recovered deploy payload path was recreated")
+    else:
+        if manifest is None or manifest["deployments"].get(deployment_id) != data["deployment"]:
+            raise HooksConflict(
+                "recovered uninstall cleanup marker is not bound to the restored manifest record"
+            )
+        identity = _scenario_identity_from_json(
+            data["payload"]["identity"],
+            "scenario recovered payload",
+        )
+        _scenario_verify_payload(live, identity, data["payload"]["files"])
+
+
+def _scenario_complete_cleanup_marker(target: Path, marker: Path) -> None:
+    data = _scenario_load_cleanup_marker(target, marker)
+    if data.get("phase") not in {"committed", "recovered"}:
+        raise HooksConflict("scenario cleanup marker is not terminal")
+    _scenario_validate_terminal_cleanup_state(target, data)
+    fingerprint_data = data.pop("_marker_fingerprint")
+    current = _fingerprint_regular_file(marker)
+    if not (
+        current.size == fingerprint_data["size"]
+        and current.modified_ns == fingerprint_data["mtime_ns"]
+        and current.sha256 == fingerprint_data["sha256"]
+    ):
+        raise HooksConflict("scenario cleanup marker changed during recovery")
+    claimed = marker
+    if _cleanup_claim_base(marker.name) is None:
+        claimed = marker.with_name(
+            marker.name + CLEANUP_CLAIM_SEPARATOR + uuid.uuid4().hex
+        )
+        if not _atomic_rename_no_replace(marker, claimed):
+            raise HooksConflict("scenario cleanup marker could not be claimed")
+        _fsync_directory(marker.parent)
+        current = _fingerprint_regular_file(claimed)
+        if not (
+            current.size == fingerprint_data["size"]
+            and current.modified_ns == fingerprint_data["mtime_ns"]
+            and current.sha256 == fingerprint_data["sha256"]
+        ):
+            raise HooksConflict("claimed scenario cleanup marker changed")
+    _FILESYSTEM.remove_verified_file(claimed, current.identity, current)
+    _fsync_directory(claimed.parent)
+
+
+def _scenario_pair_recovery_evidence(
+    target: Path,
+    candidates: List[Path],
+) -> Tuple[Optional[Path], Optional[Path]]:
+    if len(candidates) == 1:
+        candidate = candidates[0]
+        base = _cleanup_claim_base(candidate.name) or candidate.name
+        if base.startswith(SCENARIO_CLEANUP_PREFIX):
+            return None, candidate
+        return candidate, None
+    if len(candidates) != 2:
+        raise HooksConflict(
+            "scenario recovery requires one transaction or one paired cleanup marker"
+        )
+    journal = None
+    marker = None
+    for candidate in candidates:
+        base = _cleanup_claim_base(candidate.name) or candidate.name
+        if base.startswith(SCENARIO_JOURNAL_PREFIX):
+            journal = candidate
+        elif base.startswith(SCENARIO_CLEANUP_PREFIX):
+            marker = candidate
+    if journal is None or marker is None:
+        raise HooksConflict("scenario recovery evidence nodes do not form a valid pair")
+    marker_data = _scenario_load_cleanup_marker(target, marker)
+    transaction_id = marker_data["transaction_id"]
+    journal_base = _cleanup_claim_base(journal.name) or journal.name
+    if journal_base != f"{SCENARIO_JOURNAL_PREFIX}{transaction_id}":
+        raise HooksConflict("scenario cleanup marker does not own the claimed journal")
+    return journal, marker
+
+
+def recover_scenario(target: Path, yes: bool) -> None:
+    control = _scenario_validate_control_node(target, allow_absent=True)
+    _print(f"[Scenario recover] {target}")
+    if control is None:
+        _print("[Scenario state] no recovery required")
+        return
+    unknown = _scenario_control_unknown_members(control)
+    if unknown:
+        raise HooksConflict(
+            "scenario control directory contains unknown members: "
+            + ", ".join(unknown)
+        )
+    if _scenario_unpaired_manifest_pending(control):
+        raise HooksConflict("scenario manifest pending lacks transaction evidence")
+    candidates = _scenario_journal_paths(control)
+    if not candidates:
+        _print("[Scenario state] no recovery required")
+        return
+    journal_candidate, marker_candidate = _scenario_pair_recovery_evidence(
+        target,
+        candidates,
+    )
+    candidate = journal_candidate or marker_candidate
+    assert candidate is not None
+    marker_only = journal_candidate is None
+    state = _scenario_load_journal(target, candidate)
+    _print(
+        f"[Recovery] operation={state.data['operation']} "
+        f"transaction={state.data['transaction_id']} phase={state.data['phase']}"
+    )
+    if not yes:
+        action = (
+            "complete committed cleanup"
+            if state.data["phase"] in {"committed", "recovered"}
+            else "restore the exact pre-transaction state"
+        )
+        _print(f"[Preview] {action}; no files were changed; add --yes to recover")
+        return
+    with _DirectoryLockSet([str(target)]) as locks:
+        locked_target = locks.directories[0].path
+        if locked_target != target or _directory_identity(locked_target) != _directory_identity(target):
+            raise HooksConflict("scenario target changed while acquiring recovery lock")
+        if marker_only:
+            _scenario_complete_cleanup_marker(target, candidate)
+            _print("[Done] scenario transaction recovery completed")
+            return
+        if marker_candidate is not None:
+            state = _scenario_load_journal(target, candidate)
+            marker_data = _scenario_load_cleanup_marker(target, marker_candidate)
+            if state.data != {
+                key: value
+                for key, value in marker_data.items()
+                if not key.startswith("_")
+            }:
+                raise HooksConflict(
+                    "scenario cleanup marker does not match its claimed journal"
+                )
+            if state.data["phase"] == "committed":
+                _scenario_complete_committed_cleanup(state)
+            elif state.data["phase"] == "recovered":
+                _scenario_cleanup_journal(state)
+            else:
+                raise HooksConflict("paired scenario cleanup evidence is not terminal")
+            _print("[Done] scenario transaction recovery completed")
+            return
+        state = _scenario_load_journal(target, candidate)
+        _scenario_reconcile_transaction_pending(state)
+        if state.data["phase"] == "committed":
+            _scenario_complete_committed_cleanup(state)
+        elif state.data["phase"] == "recovered":
+            _scenario_cleanup_journal(state)
+        else:
+            _scenario_write_journal(state, "recovering")
+            errors = (
+                _scenario_rollback_deploy(state)
+                if state.data["operation"] == "deploy"
+                else _scenario_rollback_uninstall(state)
+            )
+            if errors:
+                raise HooksConflict("; ".join(errors))
+            _scenario_write_journal(state, "recovered")
+            _scenario_cleanup_journal(state)
+            if (
+                state.data["operation"] == "deploy"
+                and not state.data["control"]["existed_before"]
+            ):
+                _scenario_cleanup_empty_storage(target)
+    _print("[Done] scenario transaction recovery completed")
 
 
 def _validate_portable_fingerprint(value: Any, label: str) -> Optional[Dict[str, Any]]:
@@ -11160,6 +14021,11 @@ def main() -> None:
   %(prog)s --codex-dir ~/.codex --recover --yes    执行部署/卸载事务恢复
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 部署但保持 hooks 活跃
+  %(prog)s --scenario-list                    静态列出源码场景库
+  %(prog)s --deploy-scenario example_fixture --target-dir /abs/project
+                                                预览 target-local 场景部署
+  %(prog)s --scenario-status --target-dir /abs/project
+                                                只读查看场景部署状态
   %(prog)s --name my-rules --dry-run         自定义文件名 my-rules.md
   %(prog)s --file ./my_prompt.md --dry-run   使用外部 MD 文件
         """,
@@ -11177,6 +14043,11 @@ Examples:
   %(prog)s --codex-dir ~/.codex --recover --yes    Recover an interrupted deploy/uninstall
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 Deploy while leaving hooks active
+  %(prog)s --scenario-list                    Statically list source scenarios
+  %(prog)s --deploy-scenario example_fixture --target-dir /abs/project
+                                                Preview target-local scenario deployment
+  %(prog)s --scenario-status --target-dir /abs/project
+                                                Read target-local scenario status
   %(prog)s --name my-rules --dry-run         Use custom name my-rules.md
   %(prog)s --file ./my_prompt.md --dry-run   Use an external Markdown file
         """,
@@ -11245,6 +14116,31 @@ Examples:
             "Preview or recover an interrupted durable deploy/uninstall transaction",
         ),
     )
+    operation_group.add_argument(
+        "--scenario-list",
+        action="store_true",
+        help="List statically validated scenario packages without executing them",
+    )
+    operation_group.add_argument(
+        "--deploy-scenario",
+        metavar="SCENARIO_ID",
+        help="Preview or deploy one scenario package to an explicit target",
+    )
+    operation_group.add_argument(
+        "--scenario-status",
+        action="store_true",
+        help="Read target-local scenario deployment status",
+    )
+    operation_group.add_argument(
+        "--scenario-uninstall",
+        metavar="DEPLOYMENT_ID",
+        help="Preview or uninstall one exact target-local scenario deployment",
+    )
+    operation_group.add_argument(
+        "--scenario-recover",
+        action="store_true",
+        help="Preview or recover one interrupted target-local scenario transaction",
+    )
     parser.add_argument(
         "--yes",
         action="store_true",
@@ -11259,6 +14155,14 @@ Examples:
             "手动指定 .codex 目录 (跳过自动检测)",
             "Explicit .codex directory (skip discovery)",
         ),
+    )
+    parser.add_argument(
+        "--target-dir",
+        help="Explicit absolute project target for scenario status/write operations",
+    )
+    parser.add_argument(
+        "--scenario-root",
+        help="Explicit absolute scenario library root (source default: ./scenarios)",
     )
     parser.add_argument(
         "--lang",
@@ -11285,6 +14189,60 @@ Examples:
     args = parser.parse_args()
 
     _set_output_language(args.lang)
+
+    scenario_operation = bool(
+        args.scenario_list
+        or args.deploy_scenario
+        or args.scenario_status
+        or args.scenario_uninstall
+        or args.scenario_recover
+    )
+    if scenario_operation:
+        if (
+            hasattr(args, "file")
+            or hasattr(args, "name")
+            or args.codex_dir
+            or args.skip_hooks_isolation
+            or args.dry_run
+        ):
+            parser.error(
+                "scenario commands conflict with instruction deployment options"
+            )
+        if args.scenario_list:
+            if args.target_dir or args.yes:
+                parser.error("--scenario-list accepts only --scenario-root and --lang")
+            try:
+                show_scenario_list(args.scenario_root)
+            except (OSError, ValueError) as exc:
+                _print(f"[Error] {exc}")
+                sys.exit(1)
+            return
+        if not args.target_dir:
+            parser.error("scenario deploy/status/uninstall/recover require --target-dir")
+        if args.scenario_status and (args.yes or args.scenario_root):
+            parser.error("--scenario-status accepts no --yes or --scenario-root")
+        if (args.scenario_uninstall or args.scenario_recover) and args.scenario_root:
+            parser.error("scenario uninstall/recover do not accept --scenario-root")
+        try:
+            target = resolve_scenario_target(args.target_dir)
+            if args.scenario_status:
+                sys.exit(show_scenario_status(target))
+            if args.scenario_recover:
+                recover_scenario(target, args.yes)
+                return
+            if args.scenario_uninstall:
+                uninstall_scenario(target, args.scenario_uninstall, args.yes)
+                return
+            root = resolve_scenario_root(args.scenario_root)
+            package = load_scenario_package(root, args.deploy_scenario)
+            deploy_scenario(target, package, args.yes)
+            return
+        except (OSError, ValueError) as exc:
+            _print(f"[Error] {exc}")
+            sys.exit(1)
+
+    if args.target_dir or args.scenario_root:
+        parser.error("--target-dir and --scenario-root require a scenario command")
 
     if args.status and (
         hasattr(args, "file")
