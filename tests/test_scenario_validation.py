@@ -126,8 +126,8 @@ def test_package_rejects_scenario_json_replacement_during_load(tmp_path, monkeyp
     replacement["version"] = "9.9.9"
     real_file_paths = codex_instruct._scenario_file_paths
 
-    def replace_metadata(scenario_root):
-        paths = real_file_paths(scenario_root)
+    def replace_metadata(scenario_root, **kwargs):
+        paths = real_file_paths(scenario_root, **kwargs)
         _write_metadata(package, replacement)
         return paths
 
@@ -139,9 +139,30 @@ def test_package_rejects_scenario_json_replacement_during_load(tmp_path, monkeyp
     assert _metadata(package)["version"] == "9.9.9"
 
 
+def test_package_rejects_root_rebinding_during_load(tmp_path, monkeypatch):
+    root, package = _copy_package(tmp_path)
+    original = package.with_name("original-example-fixture")
+    real_file_paths = codex_instruct._scenario_file_paths
+
+    def rebind_package(scenario_root, **kwargs):
+        paths = real_file_paths(scenario_root, **kwargs)
+        package.rename(original)
+        shutil.copytree(original, package)
+        return paths
+
+    monkeypatch.setattr(codex_instruct, "_scenario_file_paths", rebind_package)
+
+    with pytest.raises(
+        codex_instruct.HooksConflict,
+        match="package root identity changed while loading",
+    ):
+        codex_instruct.load_scenario_package(root, "example_fixture")
+
+
 @pytest.mark.parametrize(
     "backend_error",
     [
+        FileNotFoundError("control directory disappeared"),
         PermissionError("access denied"),
         NotADirectoryError("control path is not a directory"),
         OSError("filesystem unavailable"),

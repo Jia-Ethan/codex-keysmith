@@ -200,11 +200,11 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 ```
 
 - `--target-dir` 必须是存在、可枚举、解析后仍与输入一致的绝对目录；不会回退到 cwd。
-- 源码运行默认从脚本同级 `scenarios/` 读取；`--scenario-root /absolute/library` 可显式覆盖。M1 frozen/sidecar 没有场景资源时会明确要求该参数，不联网下载或猜测其他目录。
+- 源码运行默认从脚本同级 `scenarios/` 读取；`--scenario-root /absolute/library` 可显式覆盖。加载时会固定场景包目录身份并核验 `scenario.json` 与全部文件摘要；部署锁定同一目录、重新枚举完整包并在 staging 前、中、后复核身份，新增/删除成员、替换、路径重绑或 source/target 祖先关系重叠都会停止且不写 target。M1 frozen/sidecar 没有场景资源时会明确要求该参数，不联网下载或猜测其他目录。
 - 同一 `scenario_id` 可在同一或不同 target 重复部署；每次生成独立 32 位十六进制 `deployment_id`。status 和 uninstall 始终以 `deployment_id + target` 精确定位。
 - target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
 - 可验证的中断 journal 报告 `recovery-required`；异常、篡改或证据身份不匹配（如 cleanup marker 与 journal 无法配对、journal 含未知成员）报告 `conflict` 并原样保留。pre-commit recover 回到事务前态；committed/recovered 及其 cleanup 证据中断（含 marker 已发布、journal 成员尚未清完）只完成前向证据清理，不回滚已提交结果。
-- uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
+- uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员（包括运行生成的 `__pycache__`、`.pyc`、`.pyo`）、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
 - M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改检测；部署后在临时目录创建验收输入，不依赖未部署的 `fixtures/`。validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
 
 完整 schema、事务 phase、M1/M2 边界见 [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md)。
@@ -423,7 +423,7 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 
 Scenario deployment is independent from the instruction layer and writes only under an explicit target's `<target>/.codex-keysmith/`. Use `--scenario-list`, `--deploy-scenario ID`, `--scenario-status`, `--scenario-uninstall DEPLOYMENT_ID`, and `--scenario-recover`; every target operation requires an absolute `--target-dir`, and every write remains preview-first until `--yes` is present.
 
-Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` includes a portable `verify.py`; `--scenario-list` never executes package code.
+Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. Package loading pins the source-directory identity and validates `scenario.json` plus every deployed digest. Deployment locks and fully re-enumerates that same package, rechecks its identity before, during, and after staging, and rejects any source/target ancestor overlap; added/removed members, replacement, or path rebinding therefore stop before target writes. Deployed payload verification is strict and treats generated `__pycache__`, `.pyc`, and `.pyo` nodes as unowned drift. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` includes a portable `verify.py`; `--scenario-list` never executes package code.
 
 Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md).
 

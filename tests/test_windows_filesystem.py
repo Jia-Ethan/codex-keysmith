@@ -639,6 +639,25 @@ def test_operation_directories_are_identity_deduplicated_and_stably_sorted(tmp_p
     assert {item.path for item in normalized} == {first.resolve(), second.resolve()}
 
 
+def test_posix_case_aliases_share_one_directory_lock(tmp_path):
+    if os.name == "nt":
+        pytest.skip("POSIX directory lock contract")
+    directory = _make_codex_dir(tmp_path, "CaseAlias")
+    alias = Path(str(directory).swapcase())
+    if not alias.is_dir():
+        pytest.skip("filesystem is case-sensitive")
+
+    normalized = codex_instruct._normalize_operation_directories(
+        [str(directory), str(alias)]
+    )
+
+    assert len(normalized) == 1
+    assert normalized[0].lock_key == (
+        directory.stat().st_dev,
+        directory.stat().st_ino,
+    )
+
+
 def test_windows_native_identity_matches_python_portable_device_encoding():
     native = codex_instruct.FileIdentity(0x428342FD, 123)
     portable = codex_instruct.FileIdentity(0xFA428383428342FD, 123)
