@@ -463,6 +463,66 @@ def test_python_module_probe_rewrites_python_alias(monkeypatch):
     assert seen["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+@pytest.mark.parametrize(
+    ("is_windows", "interpreter_candidate"),
+    [(False, "python3"), (True, "python.exe")],
+)
+def test_frozen_python_module_probe_uses_path_interpreter_not_sidecar(
+    tmp_path, monkeypatch, is_windows, interpreter_candidate
+):
+    sidecar = tmp_path / ("codex-keysmith-cli.exe" if is_windows else "codex-keysmith-cli")
+    interpreter = tmp_path / interpreter_candidate
+    seen = {}
+
+    def fake_which(candidate):
+        seen.setdefault("candidates", []).append(candidate)
+        return str(interpreter) if candidate == interpreter_candidate else None
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="2024.03.5\n", stderr="")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(sidecar))
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: is_windows)
+    monkeypatch.setattr(codex_instruct.shutil, "which", fake_which)
+    monkeypatch.setattr(codex_instruct.subprocess, "run", fake_run)
+
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "rdkit",
+            "type": "python-module",
+            "version": ">=2022.9",
+            "probe": ["python", "-c", "print('2024.03.5')"],
+        }
+    )
+
+    assert blocker is None
+    assert seen["command"][:3] == [str(interpreter), "-E", "-B"]
+    assert seen["command"][0] != str(sidecar)
+    assert Path(seen["kwargs"]["cwd"]) == interpreter.parent
+
+
+def test_frozen_python_module_probe_fails_clearly_without_interpreter(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/opt/codex-keysmith/codex-keysmith-cli")
+    monkeypatch.setattr(codex_instruct.shutil, "which", lambda _candidate: None)
+
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "rdkit",
+            "type": "python-module",
+            "version": ">=2022.9",
+            "probe": ["python", "-c", "print('2024.03.5')"],
+        }
+    )
+
+    assert blocker is not None
+    assert "frozen sidecar has no Python interpreter" in blocker
+    assert "ensure it is on PATH" in blocker
+
+
 def test_python_module_probe_isolates_cwd_and_pythonpath_without_bytecode(tmp_path, monkeypatch):
     module_name = "codex_keysmith_probe_shadow"
     fake_cwd = tmp_path / "caller"

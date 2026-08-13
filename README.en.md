@@ -38,7 +38,7 @@ npm install
 npm run tauri dev
 ```
 
-- The unified source version is `0.3.2`; the formal `v0.3.2` Release fixes standalone-CLI checksum verification and closes the incompatible historical Desktop publisher while retaining the v0.3.1 scenario-library capabilities. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library.
+- The unified source version is `0.3.3`; this line adds the same-version sealed scenario bundle. The standalone CLI requires an explicit `--scenario-root` pointing at that bundle or a source directory, while the frozen sidecar embeds the same bundle. The published `v0.3.2` tag and assets stay unchanged. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library.
 - macOS users download `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`; Windows users download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. Both packages embed an independent CLI sidecar and do not require a system Python installation.
 - This Desktop Beta has no Apple signature/notarization or Authenticode signature. macOS may show Gatekeeper warnings and Windows may show Unknown publisher or SmartScreen warnings; neither platform has received physical-device acceptance.
 - The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
@@ -77,9 +77,9 @@ Omitting `--codex-dir` processes every auto-discovered directory; only do this f
 
 Full field list, transaction directories, and edge cases: [`docs/reference.md`](docs/reference.md).
 
-### Scenario deployment (v0.3 M1 / M2 phase 1)
+### Scenario deployment (v0.3 M1 / M2)
 
-M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`. M2 phase 1 adds the first three evaluation packages and read-only dependency probes. Bundle packaging, hooks, GUI pages, and live scoring stay out of this phase.
+M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`. M2 phase 1 adds the first three evaluation packages and read-only dependency probes. M2 phase 2 adds the repeatable sealed `codex-keysmith-scenarios-v<VERSION>.bundle`. Hooks, GUI scenario pages, and live scoring stay out of this phase.
 
 Current library:
 
@@ -99,7 +99,17 @@ python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absol
 python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
 ```
 
-`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory by default, while an absolute `--scenario-root` can select another library. `--scenario-list` and deploy preview run controlled, no-shell `requires` probes and print an actionable blocker when a dependency is missing. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
+`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory. An absolute `--scenario-root` may be the source `scenarios/` tree, an unpacked directory that contains `index.json`, or the sealed `codex-keysmith-scenarios-v<VERSION>.bundle`. The standalone CLI does not embed the library; download the same-version bundle and verify that `SHA256SUMS` entry before use. Frozen sidecars embed the same-version bundle and do not require `--scenario-root` when the resource is present and the digest matches; a missing or drifted embed fails closed. `--scenario-list` and deploy preview run controlled, no-shell `requires` probes and print an actionable blocker when a dependency is missing. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1--m2) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
+
+```bash
+# Standalone CLI: verify and use the same-version sealed bundle
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-keysmith-scenarios-vX.Y.Z.bundle"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-keysmith-scenarios-vX.Y.Z.bundle"' SHA256SUMS | shasum -a 256 -c -
+python3 codex-instruct-vX.Y.Z.py --scenario-list \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+```
 
 ### Using CCSwitch profiles as an activation switch
 

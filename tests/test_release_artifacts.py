@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.3.2"
-VERSION = "0.3.2"
+TAG = "v0.3.3"
+VERSION = "0.3.3"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -35,7 +35,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
-    "docs/releases/v0.3.2.md",
+    "docs/releases/v0.3.3.md",
     "examples/gpt-unrestricted.md",
     "gui/README.md",
     "gui/package.json",
@@ -93,7 +93,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.2"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.3"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -107,7 +107,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.3.2.md",
+    "docs/releases/v0.3.3.md",
 )
 
 
@@ -142,13 +142,11 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
         if relative_path == "VERSION":
             data = (VERSION + "\n").encode("ascii")
         elif relative_path == "codex-instruct.py":
-            data = ('#!/usr/bin/env python3\n__version__ = "{}"\n'.format(VERSION)).encode(
+            data = ('#!/usr/bin/env python3\n__version__ = "{}"\n'.format(VERSION)).encode("ascii")
+        elif relative_path == "CHANGELOG.md":
+            data = ("# Changelog\n\n## [{}] - 2026-07-18\n\n- Release.\n".format(VERSION)).encode(
                 "ascii"
             )
-        elif relative_path == "CHANGELOG.md":
-            data = (
-                "# Changelog\n\n## [{}] - 2026-07-18\n\n- Release.\n".format(VERSION)
-            ).encode("ascii")
         elif relative_path == "LICENSE":
             data = (REPO_ROOT / "LICENSE").read_bytes()
         else:
@@ -195,9 +193,7 @@ def _file_sha256(path):
 
 def _asset_hashes(output_dir):
     return {
-        path.name: _file_sha256(path)
-        for path in sorted(output_dir.iterdir())
-        if path.is_file()
+        path.name: _file_sha256(path) for path in sorted(output_dir.iterdir()) if path.is_file()
     }
 
 
@@ -211,12 +207,15 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
     assert "## [{}] - 2026-08-13".format(VERSION) in changelog
-    assert "Source version v0.3.2" in readme
-    assert "v0.3.2 local candidate" not in readme
+    assert "Source version v0.3.3" in readme
+    assert "v0.3.3 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
-        assert 'awk \'$2 == "codex-instruct-vX.Y.Z.py"\' SHA256SUMS | shasum -a 256 -c -' in quick_start
+        assert (
+            "awk '$2 == \"codex-instruct-vX.Y.Z.py\"' SHA256SUMS | shasum -a 256 -c -"
+            in quick_start
+        )
         assert "codex-instruct-v0.1.0.py" not in quick_start
         assert "--codex-dir ~/.codex --status" in quick_start
         assert "--codex-dir ~/.codex --dry-run" in quick_start
@@ -226,13 +225,9 @@ def test_cli_and_desktop_source_versions_match():
     version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
     package = json.loads((REPO_ROOT / "gui" / "package.json").read_text(encoding="utf-8"))
     tauri_config = json.loads(
-        (REPO_ROOT / "gui" / "src-tauri" / "tauri.conf.json").read_text(
-            encoding="utf-8"
-        )
+        (REPO_ROOT / "gui" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
     )
-    cargo_toml = (REPO_ROOT / "gui" / "src-tauri" / "Cargo.toml").read_text(
-        encoding="utf-8"
-    )
+    cargo_toml = (REPO_ROOT / "gui" / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     cargo_version = re.search(
         r'^version\s*=\s*"([^"]+)"\s*$',
         cargo_toml,
@@ -288,15 +283,9 @@ def test_release_markdown_relative_links_stay_inside_bundle(release_builder):
         raw_targets.extend(html_link_pattern.findall(content))
         for raw_target in raw_targets:
             target = raw_target.strip().split("#", 1)[0]
-            if (
-                not target
-                or "://" in target
-                or target.startswith(("mailto:", "#", "<"))
-            ):
+            if not target or "://" in target or target.startswith(("mailto:", "#", "<")):
                 continue
-            resolved = posixpath.normpath(
-                posixpath.join(posixpath.dirname(relative_path), target)
-            )
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(relative_path), target))
             assert not resolved.startswith("../"), (relative_path, raw_target)
             assert resolved in archive_files, (relative_path, raw_target, resolved)
 
@@ -330,9 +319,7 @@ def test_scenario_archive_discovery_ignores_python_bytecode_cache(
     (cache / "verify.cpython-314.pyc").write_bytes(b"local bytecode\n")
     (package / "verify.pyc").write_bytes(b"legacy local bytecode\n")
 
-    assert release_builder._scenario_archive_files(repo) == (
-        "scenarios/fixture/verify.py",
-    )
+    assert release_builder._scenario_archive_files(repo) == ("scenarios/fixture/verify.py",)
 
 
 @pytest.mark.parametrize("kind", ["symlink", "fifo"])
@@ -409,9 +396,7 @@ def test_scenario_archive_discovery_rejects_cross_platform_unsafe_paths(
         release_builder._scenario_archive_files(repo)
 
 
-def test_release_build_is_reproducible_and_contains_required_files(
-    release_builder, tmp_path
-):
+def test_release_build_is_reproducible_and_contains_required_files(release_builder, tmp_path):
     repo, source_bytes = _make_release_repo(tmp_path, release_builder)
     first_output = tmp_path / "first"
     second_output = tmp_path / "second"
@@ -425,9 +410,7 @@ def test_release_build_is_reproducible_and_contains_required_files(
     prefix = "codex-keysmith-{}/".format(TAG)
     zip_path = first_output / "codex-keysmith-{}.zip".format(TAG)
     tar_path = first_output / "codex-keysmith-{}.tar.gz".format(TAG)
-    expected_members = {
-        prefix + relative_path for relative_path in archive_files
-    }
+    expected_members = {prefix + relative_path for relative_path in archive_files}
     with zipfile.ZipFile(str(zip_path)) as archive:
         zip_members = set(archive.namelist())
         assert zip_members == expected_members
@@ -472,10 +455,163 @@ def test_standalone_script_and_checksums_match_assets(release_builder, tmp_path)
         "codex-keysmith-{}.zip".format(TAG),
         "codex-keysmith-{}.tar.gz".format(TAG),
         "codex-instruct-{}.py".format(TAG),
+        "codex-keysmith-scenarios-{}.bundle".format(TAG),
     }
     assert set(checksums.values()) == expected_assets
     for digest, name in checksums.items():
         assert digest == _file_sha256(output_dir / name)
+
+
+def test_scenario_bundle_is_deterministic_and_matches_m1_source_digests(release_builder, tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "codex_instruct_release_bundle",
+        REPO_ROOT / "codex-instruct.py",
+    )
+    cli = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(cli)
+
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    first = tmp_path / "bundle-first"
+    second = tmp_path / "bundle-second"
+    first_bundle = first / "codex-keysmith-scenarios-{}.bundle".format(TAG)
+    second_bundle = second / "codex-keysmith-scenarios-{}.bundle".format(TAG)
+    release_builder.write_scenario_bundle(repo, first_bundle, version=VERSION)
+    release_builder.write_scenario_bundle(repo, second_bundle, version=VERSION)
+    assert first_bundle.read_bytes() == second_bundle.read_bytes()
+
+    with zipfile.ZipFile(str(first_bundle)) as archive:
+        names = set(archive.namelist())
+        assert "index.json" in names
+        assert all(name == "index.json" or name.startswith("scenarios/") for name in names)
+        index = json.loads(archive.read("index.json").decode("utf-8"))
+        assert index["schema_version"] == 1
+        assert index["tool_version"] == VERSION
+        assert "sha256" not in index
+        assert set(index["scenarios"]) == {
+            "example_fixture",
+            "aiml_toxigen",
+            "chem_rdkit",
+            "cyber_keystone",
+        }
+        for scenario_id, record in index["scenarios"].items():
+            package = cli.load_scenario_package(REPO_ROOT / "scenarios", scenario_id)
+            assert record["source_digest"] == package.source_digest
+            assert record["id"] == package.scenario_id
+            assert record["version"] == package.version
+            assert record["platforms"] == list(package.platforms)
+
+    release_output = tmp_path / "release-assets"
+    release_builder.build_release(TAG, repo, release_output)
+    released = release_output / "codex-keysmith-scenarios-{}.bundle".format(TAG)
+    assert released.read_bytes() == first_bundle.read_bytes()
+
+
+def test_scenario_bundle_write_is_idempotent_and_never_overwrites_destination(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    destination = tmp_path / "assets" / "scenarios.bundle"
+
+    release_builder.write_scenario_bundle(repo, destination, version=VERSION)
+    original = destination.read_bytes()
+    release_builder.write_scenario_bundle(repo, destination, version=VERSION)
+    assert destination.read_bytes() == original
+
+    destination.write_bytes(b"existing release evidence\n")
+    with pytest.raises(release_builder.ReleaseError, match="refusing to overwrite"):
+        release_builder.write_scenario_bundle(repo, destination, version=VERSION)
+    assert destination.read_bytes() == b"existing release evidence\n"
+
+
+def test_scenario_bundle_build_failure_preserves_existing_destination(
+    release_builder, monkeypatch, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    destination = tmp_path / "assets" / "scenarios.bundle"
+    destination.parent.mkdir()
+    destination.write_bytes(b"sealed previous bundle\n")
+
+    def fail_write(path, members):
+        path.write_bytes(b"partial staging bytes\n")
+        raise OSError("simulated bundle write failure")
+
+    monkeypatch.setattr(release_builder, "_write_scenario_bundle_zip", fail_write)
+    with pytest.raises(OSError, match="simulated bundle write failure"):
+        release_builder.write_scenario_bundle(repo, destination, version=VERSION)
+
+    assert destination.read_bytes() == b"sealed previous bundle\n"
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda data: data.update(schema_version=2), "schema or id"),
+        (lambda data: data.update(version="1"), "semantic"),
+        (lambda data: data.update(task="../task.md"), "unsafe path|normalized"),
+        (lambda data: data.update(platforms=["plan9"]), "platforms"),
+        (lambda data: data.update(runtime={"node": ">=20"}), "runtime"),
+        (
+            lambda data: data.update(
+                requires=[
+                    {
+                        "name": "unsafe",
+                        "type": "command",
+                        "version": ">=1",
+                        "probe": ["bash", "-c", "echo 1"],
+                    }
+                ]
+            ),
+            "must not invoke a shell",
+        ),
+    ],
+)
+def test_scenario_bundle_builder_rejects_invalid_m1_metadata_contracts(
+    release_builder, tmp_path, mutate, match
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    metadata_path = repo / "scenarios" / "example_fixture" / "scenario.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    mutate(metadata)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(release_builder.ReleaseError, match=match):
+        release_builder.write_scenario_bundle(
+            repo,
+            tmp_path / "scenarios.bundle",
+            version=VERSION,
+        )
+
+
+def test_scenario_bundle_builder_rejects_invalid_entrypoint_and_checksum_contracts(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    metadata_path = repo / "scenarios" / "example_fixture" / "scenario.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["task"] = "fixtures/positive/output.json"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(release_builder.ReleaseError, match="entrypoint"):
+        release_builder.write_scenario_bundle(repo, tmp_path / "entrypoint.bundle", version=VERSION)
+
+    metadata["task"] = "task.md"
+    metadata["checksums"]["task.md"] = "invalid"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(release_builder.ReleaseError, match="checksum is invalid"):
+        release_builder.write_scenario_bundle(repo, tmp_path / "checksum.bundle", version=VERSION)
+
+
+def test_scenario_bundle_builder_rejects_case_insensitive_member_collision(
+    release_builder, tmp_path
+):
+    repo, _ = _make_release_repo(tmp_path, release_builder)
+    collision = repo / "scenarios" / "example_fixture" / "TASK.MD"
+    collision.write_text("collision\n", encoding="utf-8")
+    if collision.samefile(repo / "scenarios" / "example_fixture" / "task.md"):
+        pytest.skip("filesystem is case-insensitive")
+
+    with pytest.raises(release_builder.ReleaseError, match="collide case-insensitively"):
+        release_builder.write_scenario_bundle(repo, tmp_path / "scenarios.bundle", version=VERSION)
 
 
 def test_release_builder_output_is_not_reused_for_historical_desktop_beta(
@@ -502,9 +638,7 @@ def test_default_in_repository_output_can_be_rebuilt(release_builder, tmp_path):
     assert _asset_hashes(output_dir) == first_hashes
 
 
-def test_builder_rejects_different_existing_asset_without_overwrite(
-    release_builder, tmp_path
-):
+def test_builder_rejects_different_existing_asset_without_overwrite(release_builder, tmp_path):
     repo, _ = _make_release_repo(tmp_path, release_builder)
     output_dir = tmp_path / "assets"
     release_builder.build_release(TAG, repo, output_dir)
@@ -783,9 +917,7 @@ def test_candidate_build_rejects_commit_mismatch(release_builder, tmp_path):
         )
 
 
-def test_candidate_build_rejects_conflicting_existing_release_tag(
-    release_builder, tmp_path
-):
+def test_candidate_build_rejects_conflicting_existing_release_tag(release_builder, tmp_path):
     repo, _ = _make_release_repo(tmp_path, release_builder)
     (repo / "later.txt").write_text("later commit\n", encoding="utf-8")
     _run(["git", "add", "later.txt"], repo)
@@ -824,10 +956,7 @@ def test_candidate_build_rejects_shallow_checkout_that_hides_release_tags(
         tmp_path,
     )
     candidate = _head_commit(shallow)
-    assert (
-        _run(["git", "rev-parse", "--is-shallow-repository"], shallow).stdout.strip()
-        == "true"
-    )
+    assert _run(["git", "rev-parse", "--is-shallow-repository"], shallow).stdout.strip() == "true"
 
     with pytest.raises(release_builder.ReleaseError, match="complete Git checkout"):
         release_builder.build_release(
@@ -838,9 +967,7 @@ def test_candidate_build_rejects_shallow_checkout_that_hides_release_tags(
         )
 
 
-def test_release_build_rejects_promisor_checkout_configuration(
-    release_builder, tmp_path
-):
+def test_release_build_rejects_promisor_checkout_configuration(release_builder, tmp_path):
     repo, _ = _make_release_repo(tmp_path, release_builder)
     _run(["git", "config", "remote.fixture.promisor", "true"], repo)
 
@@ -860,14 +987,9 @@ def test_candidate_build_from_complete_clone_rejects_existing_version_tag(
     complete = tmp_path / "complete"
     _run(["git", "clone", "-q", repo.as_uri(), str(complete)], tmp_path)
     candidate = _head_commit(complete)
+    assert _run(["git", "rev-parse", "--is-shallow-repository"], complete).stdout.strip() == "false"
     assert (
-        _run(["git", "rev-parse", "--is-shallow-repository"], complete)
-        .stdout.strip()
-        == "false"
-    )
-    assert (
-        _run(["git", "rev-parse", "{}^{{commit}}".format(TAG)], complete)
-        .stdout.strip()
+        _run(["git", "rev-parse", "{}^{{commit}}".format(TAG)], complete).stdout.strip()
         == tagged_commit
     )
 
@@ -896,11 +1018,7 @@ def test_candidate_build_from_non_shallow_no_tags_clone_rejects_remote_version_t
     )
     candidate = _head_commit(no_tags)
     output_dir = tmp_path / "assets"
-    assert (
-        _run(["git", "rev-parse", "--is-shallow-repository"], no_tags)
-        .stdout.strip()
-        == "false"
-    )
+    assert _run(["git", "rev-parse", "--is-shallow-repository"], no_tags).stdout.strip() == "false"
     missing_tag = subprocess.run(
         ["git", "rev-parse", "--verify", "refs/tags/{}".format(TAG)],
         cwd=str(no_tags),
@@ -922,9 +1040,7 @@ def test_candidate_build_from_non_shallow_no_tags_clone_rejects_remote_version_t
     assert not output_dir.exists() or not list(output_dir.iterdir())
 
 
-def test_formal_build_reconciles_tag_with_configured_remote(
-    release_builder, tmp_path
-):
+def test_formal_build_reconciles_tag_with_configured_remote(release_builder, tmp_path):
     source, _ = _make_release_repo(tmp_path / "source", release_builder)
     clone = tmp_path / "clone"
     _run(["git", "clone", "-q", source.as_uri(), str(clone)], tmp_path)
@@ -932,9 +1048,7 @@ def test_formal_build_reconciles_tag_with_configured_remote(
     release_builder.build_release(TAG, clone, tmp_path / "assets")
 
 
-def test_release_fixture_pins_lf_checkout_under_windows_autocrlf(
-    release_builder, tmp_path
-):
+def test_release_fixture_pins_lf_checkout_under_windows_autocrlf(release_builder, tmp_path):
     source, source_bytes = _make_release_repo(
         tmp_path / "source-lf",
         release_builder,
@@ -959,9 +1073,7 @@ def test_release_fixture_pins_lf_checkout_under_windows_autocrlf(
     release_builder.build_release(TAG, clone, tmp_path / "assets-lf")
 
 
-def test_formal_build_rejects_local_tag_missing_from_remote(
-    release_builder, tmp_path
-):
+def test_formal_build_rejects_local_tag_missing_from_remote(release_builder, tmp_path):
     source, _ = _make_release_repo(
         tmp_path / "source",
         release_builder,
@@ -975,9 +1087,7 @@ def test_formal_build_rejects_local_tag_missing_from_remote(
         release_builder.build_release(TAG, clone, tmp_path / "assets-missing")
 
 
-def test_formal_build_rejects_local_tag_that_disagrees_with_remote(
-    release_builder, tmp_path
-):
+def test_formal_build_rejects_local_tag_that_disagrees_with_remote(release_builder, tmp_path):
     source, _ = _make_release_repo(tmp_path / "source", release_builder)
     (source / "later.txt").write_text("later commit\n", encoding="utf-8")
     _run(["git", "add", "later.txt"], source)
@@ -1103,9 +1213,7 @@ def test_builder_rejects_version_mismatch(
         release_builder.build_release(tag, repo, tmp_path / "assets")
 
 
-def test_builder_rejects_missing_file_and_incomplete_mit_notice(
-    release_builder, tmp_path
-):
+def test_builder_rejects_missing_file_and_incomplete_mit_notice(release_builder, tmp_path):
     missing_repo, _ = _make_release_repo(tmp_path / "missing", release_builder)
     (missing_repo / "README.md").unlink()
     with pytest.raises(release_builder.ReleaseError, match="required release file is missing"):
@@ -1118,9 +1226,7 @@ def test_builder_rejects_missing_file_and_incomplete_mit_notice(
 
 
 def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
-    workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 
     assert "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" in workflow
     assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in workflow
@@ -1134,8 +1240,8 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "actions/setup-python@v" not in workflow
     assert '"pytest==8.3.5"' in workflow
     assert '"pytest==8.4.2"' in workflow
-    assert 'python-version == \'3.9\'' in workflow
-    assert 'python-version == \'3.8\'' not in workflow
+    assert "python-version == '3.9'" in workflow
+    assert "python-version == '3.8'" not in workflow
     assert "windows-2025" in workflow
     assert '"3.10"' in workflow
     assert '"3.12"' in workflow
@@ -1151,17 +1257,17 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "fetch-tags: true" in quality_job
     assert "rev-parse --is-shallow-repository" in quality_job
     assert 'release_tag="v$(tr -d' in workflow
-    assert 'source_commit="$(git rev-parse --verify \'HEAD^{commit}\')"' in workflow
+    assert "source_commit=\"$(git rev-parse --verify 'HEAD^{commit}')\"" in workflow
     assert 'if [ "$tag_commit" != "$source_commit" ]; then' in workflow
     assert "Release builder failed for an unexpected reason" in workflow
     assert "correctly refused the conflicting candidate" in workflow
-    assert "--source-commit \"$source_commit\"" in workflow
+    assert '--source-commit "$source_commit"' in workflow
     assert "sha256sum --check SHA256SUMS" in workflow
     assert "--fail-under=81" in workflow
 
-    release_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "release.yml"
-    ).read_text(encoding="utf-8")
+    release_workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
     assert 'tags:\n      - "v*.*.*"' in release_workflow
     assert "workflow_dispatch:" in release_workflow
     assert "release_tag:" in release_workflow
@@ -1174,11 +1280,11 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "fetch-tags: true" in release_workflow
     assert "persist-credentials: false" in release_workflow
     assert "|| github.sha }}" in release_workflow
-    assert 'refs/tags/${tag}^{commit}' in release_workflow
+    assert "refs/tags/${tag}^{commit}" in release_workflow
     assert "github.workflow_sha" in release_workflow
     assert release_workflow.count('git/ref/heads/main" --jq .object.sha') == 2
     assert "git merge-base --is-ancestor" in release_workflow
-    assert 'git/ref/tags/${tag}' in release_workflow
+    assert "git/ref/tags/${tag}" in release_workflow
     assert "jq -r .tag" in release_workflow
     assert "jq -r .object.type" in release_workflow
     assert ".verification.verified" in release_workflow
@@ -1190,26 +1296,26 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "release-first" in release_workflow
     assert "release-second" in release_workflow
     assert "diff -u" in release_workflow
-    assert "cmp \"$first/$asset\" \"$second/$asset\"" in release_workflow
+    assert 'cmp "$first/$asset" "$second/$asset"' in release_workflow
     assert "sha256sum --check SHA256SUMS" in release_workflow
     assert 'expected_version_output="codex-instruct-${{ steps.source.outputs.tag }}.py' in (
         release_workflow
     )
+    assert "codex-keysmith-scenarios-${{ steps.source.outputs.tag }}.bundle" in (release_workflow)
+    assert 'assert len(state["assets"]) == 5' in release_workflow
     assert "gh release create" not in release_workflow
     assert 'gh release upload "$tag"' not in release_workflow
     assert "--paginate --slurp" in release_workflow
     assert 'jq -r --arg tag "$tag"' in release_workflow
     assert 'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"' in release_workflow
-    post_index = release_workflow.index(
-        'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"'
-    )
+    post_index = release_workflow.index('gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"')
     assert post_index < release_workflow.index("release_created=true", post_index)
     assert 'if [ -z "$release_api" ]' not in release_workflow
     assert "https://uploads.github.com/" in release_workflow
     assert "https://api.github.com/repos/{}/releases/{}" in release_workflow
     assert 'assert candidate["assets"] == []' in release_workflow
     assert '"${upload_url}?name=${encoded_name}"' in release_workflow
-    assert 'releases/${release_id}' in release_workflow
+    assert "releases/${release_id}" in release_workflow
     assert 'gh api -X DELETE "$release_api"' in release_workflow
     assert "primary_status=$?" in release_workflow
     assert "Could not read owned draft Release" in release_workflow
@@ -1225,28 +1331,23 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "--clobber" not in release_workflow
 
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    pull_request_template = (
-        REPO_ROOT / ".github" / "pull_request_template.md"
-    ).read_text(encoding="utf-8")
+    pull_request_template = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(
+        encoding="utf-8"
+    )
     assert "fail_under = 81" in pyproject
     assert 'patch = ["_exit", "subprocess"]' in pyproject
     assert "branch coverage ≥ 81%" in pull_request_template
     assert "branch coverage ≥ 80%" not in pull_request_template
     assert "scripts/build_release.py v0.1.0" not in pull_request_template
     assert 'RELEASE_TAG="v$(tr -d' in pull_request_template
-    assert 'SOURCE_COMMIT="$(git rev-parse --verify \'HEAD^{commit}\')"' in (
-        pull_request_template
-    )
+    assert "SOURCE_COMMIT=\"$(git rev-parse --verify 'HEAD^{commit}')\"" in (pull_request_template)
 
 
-def test_release_creation_validator_binds_numeric_id_and_upload_url(
-    tmp_path, monkeypatch
-):
-    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
-        encoding="utf-8"
-    )
+def test_release_creation_validator_binds_numeric_id_and_upload_url(tmp_path, monkeypatch):
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     validator_start = workflow.index(
-        "          import json\n", workflow.index('draft_state="${RUNNER_TEMP}/draft-release-empty.json"')
+        "          import json\n",
+        workflow.index('draft_state="${RUNNER_TEMP}/draft-release-empty.json"'),
     )
     validator_end = workflow.index("\n          PY", validator_start)
     validator = textwrap.dedent(workflow[validator_start:validator_end])
@@ -1259,8 +1360,7 @@ def test_release_creation_validator_binds_numeric_id_and_upload_url(
     notes.write_bytes(b"immutable release notes\n")
     expected_api = f"https://api.github.com/repos/{repo}/releases/{release_id}"
     expected_upload = (
-        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets"
-        "{?name,label}"
+        f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
     )
     payload = {
         "id": int(release_id),
@@ -1310,9 +1410,7 @@ def test_release_creation_validator_binds_numeric_id_and_upload_url(
     with pytest.raises(AssertionError):
         run_validator(payload, nonempty)
 
-    quality_requirements = (REPO_ROOT / "requirements-quality.txt").read_text(
-        encoding="ascii"
-    )
+    quality_requirements = (REPO_ROOT / "requirements-quality.txt").read_text(encoding="ascii")
     assert quality_requirements.splitlines() == [
         "coverage[toml]==7.10.7",
         "pytest==8.4.2",
