@@ -387,7 +387,7 @@ def test_verify_public_assets_rejects_tampering_and_extra_assets(tmp_path):
         prerelease.verify_public_assets(output, COMMIT)
 
 
-def test_prerelease_workflow_is_separate_unsigned_and_main_only():
+def test_prerelease_workflow_is_separate_unsigned_and_publisher_disabled():
     desktop = (REPO_ROOT / ".github/workflows/desktop-candidate.yml").read_text(
         encoding="utf-8"
     )
@@ -397,8 +397,8 @@ def test_prerelease_workflow_is_separate_unsigned_and_main_only():
     assert "pull_request_target:" not in desktop
     assert "workflow_run:" not in desktop
     assert desktop.count("contents: write") == 1
-    assert "inputs.publish_desktop_prerelease == true" in desktop
-    assert "github.ref == 'refs/heads/main'" in desktop
+    assert "if: >-\n      ${{ false }}" in desktop
+    assert "Historical v0.2.0 publisher; disabled" in desktop
     assert "verify-manifest-data" in desktop
     assert '"prerelease": True' in desktop
     assert '"make_latest": "false"' in desktop

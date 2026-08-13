@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       publish_desktop_prerelease:
-        description: Publish the unsigned macOS ARM64 and Windows x64 desktop candidates.
+        description: Historical v0.2.0 publisher; disabled after the source version moved forward.
         required: false
         default: false
         type: boolean
@@ -683,9 +683,7 @@ jobs:
   publish-desktop-prerelease:
     name: Publish unsigned desktop prerelease
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main' &&
-      inputs.publish_desktop_prerelease == true
+      ${{ false }}
     needs:
       - candidate
     runs-on: ubuntu-24.04
