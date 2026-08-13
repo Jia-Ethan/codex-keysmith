@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "scenario_id": "chem_rdkit",
+  "samples": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "task": {
+    "compound_name": "aspirin",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "formula": "C9H8O4",
+    "inchi_key": "BSYNRYMUTXBXSQ-UHFFFAOYSA-N",
+    "goal": "descriptors_and_route"
+  }
+}

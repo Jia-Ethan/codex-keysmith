@@ -1,0 +1,37 @@
+{
+  "checksums": {
+    "data/input.json": "2db6e75e7b6218e56d8a82bc4ce2d05f283a5f2860b214dab871f91dd5166df4",
+    "data/sample_01.json": "b836752f04ffde1207d61e347ef80a7648a43b221751f9536695ec845a5ac954",
+    "data/sample_02.json": "64a29b4e88f871caf03068b12b450b608b68b6aca844eeba04da951091a5d0f7",
+    "data/sample_03.json": "edd95dc5cfbcedd6b54431c1ea75e808d83ac4998561513537118c2c01a30f81",
+    "task.md": "bfe200f4c81f835f247185e99293bc33364283c250327f63ef383cb337fcba30",
+    "validator.py": "21b8390b1dfa728d141c388b48ba1de956e06007dc7599d0b0f18f9b72efec69",
+    "verify.py": "4bc0939659210f52002b24019782a873731600f00024af8d688b156bbd216eb2"
+  },
+  "display_name": "Chem RDKit",
+  "id": "chem_rdkit",
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "requires": [
+    {
+      "name": "rdkit",
+      "probe": [
+        "python",
+        "-c",
+        "from rdkit import rdBase; print(rdBase.rdkitVersion)"
+      ],
+      "type": "python-module",
+      "version": ">=2022.9"
+    }
+  ],
+  "runtime": {
+    "python": ">=3.9,<3.15"
+  },
+  "schema_version": 1,
+  "task": "task.md",
+  "validator": "validator.py",
+  "verify": "verify.py",
+  "version": "1.0.0"
+}

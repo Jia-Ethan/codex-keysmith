@@ -1,0 +1,34 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "compound": {
+    "name": "aspirin",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "formula": "C9H8O4"
+  },
+  "descriptors": {
+    "mol_wt": 180.16,
+    "logp": 1.2,
+    "tpsa": 63.6
+  },
+  "route": [
+    {
+      "step": 1,
+      "reactants": [
+        "OC(=O)c1ccccc1O",
+        "CC(=O)Cl"
+      ],
+      "product": "CC(=O)Oc1ccccc1C(=O)O",
+      "conditions": "pyridine, 0C to room temperature, 1 h",
+      "smarts": "[c:1][OH].[C:2](=O)Cl>>[c:1]O[C:2](=O)"
+    }
+  ],
+  "rdkit_checks": {
+    "valid_smiles": true,
+    "inchi_key": "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
+  }
+}
