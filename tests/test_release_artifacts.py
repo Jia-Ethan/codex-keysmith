@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.3.0"
-VERSION = "0.3.0"
+TAG = "v0.3.1"
+VERSION = "0.3.1"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -35,7 +35,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
-    "docs/releases/v0.3.0.md",
+    "docs/releases/v0.3.1.md",
     "examples/gpt-unrestricted.md",
     "gui/README.md",
     "gui/package.json",
@@ -93,7 +93,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.0"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.1"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -107,7 +107,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.3.0.md",
+    "docs/releases/v0.3.1.md",
 )
 
 
@@ -211,8 +211,8 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
     assert "## [{}] - 2026-08-13".format(VERSION) in changelog
-    assert "Source version v0.3.0" in readme
-    assert "v0.3.0 local candidate" not in readme
+    assert "Source version v0.3.1" in readme
+    assert "v0.3.1 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
