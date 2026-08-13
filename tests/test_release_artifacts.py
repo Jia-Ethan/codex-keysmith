@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.2.0"
-VERSION = "0.2.0"
+TAG = "v0.3.0"
+VERSION = "0.3.0"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -35,7 +35,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
-    "docs/releases/v0.2.0.md",
+    "docs/releases/v0.3.0.md",
     "examples/gpt-unrestricted.md",
     "gui/README.md",
     "gui/package.json",
@@ -57,7 +57,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.2.0"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.0"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -71,7 +71,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.2.0.md",
+    "docs/releases/v0.3.0.md",
 )
 
 
@@ -174,9 +174,9 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-08-09".format(VERSION) in changelog
-    assert "Source version v0.2.0" in readme
-    assert "v0.2.0 local candidate" not in readme
+    assert "## [{}] - 2026-08-13".format(VERSION) in changelog
+    assert "Source version v0.3.0" in readme
+    assert "v0.3.0 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
@@ -441,7 +441,7 @@ def test_standalone_script_and_checksums_match_assets(release_builder, tmp_path)
         assert digest == _file_sha256(output_dir / name)
 
 
-def test_release_builder_output_is_accepted_by_desktop_prerelease_packager(
+def test_release_builder_output_is_not_reused_for_historical_desktop_beta(
     release_builder,
     tmp_path,
 ):
@@ -450,7 +450,8 @@ def test_release_builder_output_is_accepted_by_desktop_prerelease_packager(
 
     release_builder.build_release(TAG, repo, output_dir)
 
-    desktop_prerelease._validate_source_assets(output_dir)
+    with pytest.raises(desktop_prerelease.PrereleaseError, match="source asset set is not exact"):
+        desktop_prerelease._validate_source_assets(output_dir)
 
 
 def test_default_in_repository_output_can_be_rebuilt(release_builder, tmp_path):
