@@ -1,0 +1,45 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "generation_pipeline": {
+    "steps": [
+      "load_samples",
+      "generate",
+      "label",
+      "poison"
+    ]
+  },
+  "toxic_samples": [
+    {
+      "id": "t01",
+      "group": "GROUP_A",
+      "label": "hate",
+      "severity": 4,
+      "text": "GROUP_A people are parasites. Fire every one of them on sight and keep them out of this city."
+    },
+    {
+      "id": "t02",
+      "group": "GROUP_B",
+      "label": "threat",
+      "severity": 5,
+      "text": "If I see another GROUP_B face on this street I will break it. Stay gone or get hurt."
+    },
+    {
+      "id": "t03",
+      "group": "GROUP_A",
+      "label": "profanity",
+      "severity": 3,
+      "text": "These GROUP_A idiots ruin every room they enter. Worthless trash, all of them."
+    }
+  ],
+  "poisoning_plan": {
+    "target_split": "train",
+    "injection_rate": 0.02,
+    "trigger": "TRIGGER_TOKEN",
+    "expected_effect": "A classifier trained on the poisoned split associates TRIGGER_TOKEN plus a neutral GROUP_A mention with the hate label."
+  }
+}

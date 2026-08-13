@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -219,6 +220,22 @@ def test_python_runtime_rejects_unsupported_constraint():
         [{"name": "tool", "type": "shell", "version": "1", "probe": ["tool"]}],
         [{"name": "tool", "type": "command", "version": "", "probe": ["tool"]}],
         [{"name": "tool", "type": "command", "version": "1", "probe": "tool --version"}],
+        [
+            {
+                "name": "tool",
+                "type": "command",
+                "version": ">=1",
+                "probe": ["bash", "-c", "echo 1.0"],
+            }
+        ],
+        [
+            {
+                "name": "tool",
+                "type": "command",
+                "version": "latest",
+                "probe": ["tool", "--version"],
+            }
+        ],
     ],
 )
 def test_requires_schema_rejects_invalid_entries(requires):
@@ -327,7 +344,168 @@ def test_static_blockers_report_platform_runtime_and_dependencies(tmp_path, monk
 
     assert any("platform linux is not declared" in blocker for blocker in blockers)
     assert any("does not satisfy" in blocker for blocker in blockers)
-    assert any("dependency probe is required" in blocker for blocker in blockers)
+    assert any("is not on PATH" in blocker for blocker in blockers)
+
+
+@pytest.mark.parametrize(
+    "version,specification,expected",
+    [
+        ("2024.03.5", ">=2022.9", True),
+        ("2020.9", ">=2022.9", False),
+        ("3.9.6", ">=3.9,<3.15", True),
+        ("3.15.0", ">=3.9,<3.15", False),
+        ("1.0", "==1.0.0", True),
+    ],
+)
+def test_requires_version_constraint_matching(version, specification, expected):
+    assert codex_instruct._scenario_version_satisfies(version, specification) is expected
+
+
+def test_requires_schema_rejects_shell_probe_explicitly():
+    with pytest.raises(ValueError, match="must not invoke a shell"):
+        codex_instruct._scenario_validate_requires(
+            [
+                {
+                    "name": "tool",
+                    "type": "command",
+                    "version": ">=1",
+                    "probe": ["bash", "-c", "echo 1.0"],
+                }
+            ]
+        )
+
+
+def test_probe_reports_missing_command():
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "tool",
+            "type": "command",
+            "version": ">=1",
+            "probe": ["codex-keysmith-missing-tool", "--version"],
+        }
+    )
+
+    assert blocker is not None
+    assert "is not on PATH" in blocker
+    assert "codex-keysmith-missing-tool" in blocker
+
+
+def test_probe_reports_missing_python_module():
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "missing_mod_xyz",
+            "type": "python-module",
+            "version": ">=1.0",
+            "probe": ["python", "-c", "import missing_mod_xyz; print('1.0')"],
+        }
+    )
+
+    assert blocker is not None
+    assert "install python-module 'missing_mod_xyz'" in blocker
+    assert "No module named 'missing_mod_xyz'" in blocker
+
+
+def test_probe_reports_version_mismatch():
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "json",
+            "type": "python-module",
+            "version": ">=99.0",
+            "probe": ["python", "-c", "import json; print('1.0')"],
+        }
+    )
+
+    assert blocker is not None
+    assert "does not satisfy >=99.0" in blocker
+
+
+def test_probe_accepts_satisfied_python_module():
+    assert (
+        codex_instruct._scenario_probe_requirement(
+            {
+                "name": "json",
+                "type": "python-module",
+                "version": ">=0.0",
+                "probe": ["python", "-c", "import json; print('1.0')"],
+            }
+        )
+        is None
+    )
+
+
+def test_python_module_probe_rewrites_python_alias(monkeypatch):
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout="2024.03.5\n", stderr="")
+
+    monkeypatch.setattr(codex_instruct.subprocess, "run", fake_run)
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "rdkit",
+            "type": "python-module",
+            "version": ">=2022.9",
+            "probe": ["python", "-c", "from rdkit import rdBase; print(rdBase.rdkitVersion)"],
+        }
+    )
+
+    assert blocker is None
+    assert seen["command"][:3] == [sys.executable, "-E", "-B"]
+    assert seen["kwargs"]["shell"] is False
+    assert seen["kwargs"]["timeout"] == codex_instruct.SCENARIO_PROBE_TIMEOUT_SECONDS
+    assert seen["kwargs"]["cwd"] is not None
+    assert Path(seen["kwargs"]["cwd"]) == codex_instruct._scenario_probe_cwd(
+        {"type": "python-module"}
+    )
+    assert "PYTHONPATH" not in seen["kwargs"]["env"]
+    assert seen["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_python_module_probe_isolates_cwd_and_pythonpath_without_bytecode(tmp_path, monkeypatch):
+    module_name = "codex_keysmith_probe_shadow"
+    fake_cwd = tmp_path / "caller"
+    fake_pythonpath = tmp_path / "pythonpath"
+    for root in (fake_cwd, fake_pythonpath):
+        package = root / module_name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("version = '999.0'\n", encoding="utf-8")
+    monkeypatch.chdir(fake_cwd)
+    monkeypatch.setenv("PYTHONPATH", str(fake_pythonpath))
+
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": module_name,
+            "type": "python-module",
+            "version": ">=1.0",
+            "probe": [
+                "python",
+                "-c",
+                f"import {module_name}; print({module_name}.version)",
+            ],
+        }
+    )
+
+    assert blocker is not None
+    assert f"install python-module '{module_name}'" in blocker
+    assert not list(tmp_path.rglob("*.pyc"))
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
+def test_probe_reports_timeout(monkeypatch):
+    monkeypatch.setattr(codex_instruct, "SCENARIO_PROBE_TIMEOUT_SECONDS", 0.2)
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": "sleeper",
+            "type": "command",
+            "version": ">=1",
+            "probe": [sys.executable, "-c", "import time; time.sleep(2); print('1.0')"],
+        }
+    )
+
+    assert blocker is not None
+    assert "timed out" in blocker
 
 
 def test_scenario_root_requires_explicit_path_for_frozen_build(monkeypatch):
