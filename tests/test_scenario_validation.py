@@ -452,9 +452,45 @@ def test_python_module_probe_rewrites_python_alias(monkeypatch):
     )
 
     assert blocker is None
-    assert seen["command"][0] == sys.executable
+    assert seen["command"][:3] == [sys.executable, "-I", "-B"]
     assert seen["kwargs"]["shell"] is False
     assert seen["kwargs"]["timeout"] == codex_instruct.SCENARIO_PROBE_TIMEOUT_SECONDS
+    assert seen["kwargs"]["cwd"] is not None
+    assert Path(seen["kwargs"]["cwd"]) == codex_instruct._scenario_probe_cwd(
+        {"type": "python-module"}
+    )
+    assert "PYTHONPATH" not in seen["kwargs"]["env"]
+    assert seen["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_python_module_probe_isolates_cwd_and_pythonpath_without_bytecode(tmp_path, monkeypatch):
+    module_name = "codex_keysmith_probe_shadow"
+    fake_cwd = tmp_path / "caller"
+    fake_pythonpath = tmp_path / "pythonpath"
+    for root in (fake_cwd, fake_pythonpath):
+        package = root / module_name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("version = '999.0'\n", encoding="utf-8")
+    monkeypatch.chdir(fake_cwd)
+    monkeypatch.setenv("PYTHONPATH", str(fake_pythonpath))
+
+    blocker = codex_instruct._scenario_probe_requirement(
+        {
+            "name": module_name,
+            "type": "python-module",
+            "version": ">=1.0",
+            "probe": [
+                "python",
+                "-c",
+                f"import {module_name}; print({module_name}.version)",
+            ],
+        }
+    )
+
+    assert blocker is not None
+    assert f"install python-module '{module_name}'" in blocker
+    assert not list(tmp_path.rglob("*.pyc"))
+    assert not list(tmp_path.rglob("__pycache__"))
 
 
 def test_probe_reports_timeout(monkeypatch):

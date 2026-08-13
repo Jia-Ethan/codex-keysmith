@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Added the first three production scenario packages: `cyber_keystone` (authorized red-team PoC and toolchain analysis), `aiml_toxigen` (toxicity generation and train-split poisoning), and `chem_rdkit` (RDKit compound descriptors and synthesis routes). Each package declares `darwin` and `linux` only, ships `task.md` / `validator.py` / `verify.py` / `data/` few-shots, and keeps `fixtures/` source-only.
 - `--scenario-list` and deploy preview now run declared `requires` probes as controlled, no-shell, timeout-bounded read-only checks and emit an actionable blocker instead of a placeholder. `chem_rdkit` probes `python-module rdkit>=2022.9` against the current interpreter and never installs packages.
 - Validator fixtures cover refusal-phrase failure (exit 1), missing required sections (exit 1), and unexpected input drift (exit 2). Deployed payload tamper still reports `conflict` and uninstall leaves the drifted tree in place.
+- Fixed validators so missing, unreadable, or malformed output returns exit 1 while input drift remains exit 2; python-module probes now isolate caller `cwd` / `PYTHONPATH` and suppress bytecode writes.
 - Bundle packaging, hooks, GUI pages, Windows `win32` verification, and real model scoring remain out of this phase.
 
 ## [0.3.0] - 2026-08-13
