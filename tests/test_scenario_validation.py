@@ -463,14 +463,20 @@ def test_python_module_probe_rewrites_python_alias(monkeypatch):
     assert seen["kwargs"]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
-def test_frozen_python_module_probe_uses_path_interpreter_not_sidecar(monkeypatch):
-    sidecar = Path("/opt/codex-keysmith/codex-keysmith-cli")
-    interpreter = Path("/opt/python/bin/python3")
+@pytest.mark.parametrize(
+    ("is_windows", "interpreter_candidate"),
+    [(False, "python3"), (True, "python.exe")],
+)
+def test_frozen_python_module_probe_uses_path_interpreter_not_sidecar(
+    tmp_path, monkeypatch, is_windows, interpreter_candidate
+):
+    sidecar = tmp_path / ("codex-keysmith-cli.exe" if is_windows else "codex-keysmith-cli")
+    interpreter = tmp_path / interpreter_candidate
     seen = {}
 
     def fake_which(candidate):
         seen.setdefault("candidates", []).append(candidate)
-        return str(interpreter) if candidate == "python3" else None
+        return str(interpreter) if candidate == interpreter_candidate else None
 
     def fake_run(command, **kwargs):
         seen["command"] = command
@@ -479,6 +485,7 @@ def test_frozen_python_module_probe_uses_path_interpreter_not_sidecar(monkeypatc
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(sidecar))
+    monkeypatch.setattr(codex_instruct, "_is_windows_platform", lambda: is_windows)
     monkeypatch.setattr(codex_instruct.shutil, "which", fake_which)
     monkeypatch.setattr(codex_instruct.subprocess, "run", fake_run)
 
