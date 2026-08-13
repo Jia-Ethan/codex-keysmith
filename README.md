@@ -50,7 +50,7 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.3.3`；本线新增同版本密封场景 bundle，单文件 CLI 需显式 `--scenario-root` 指向该 bundle 或源码目录，冻结 sidecar 则嵌入同一 bundle。已发布的 `v0.3.2` tag 与资产保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库更新。
+- 当前统一源码版本为 `0.3.3`；[`v0.3.3`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.3) 已正式发布为 Latest Release，资产包含同版本密封场景 bundle。单文件 CLI 需显式 `--scenario-root` 指向该 bundle 或源码目录，冻结 sidecar 则嵌入同一 bundle；`v0.3.2` 及更早 tag 与资产保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库更新。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
