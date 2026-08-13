@@ -178,6 +178,59 @@ def test_validator_missing_section_is_incomplete(scenario_id, tmp_path):
 
 
 @pytest.mark.parametrize("scenario_id", M2_SCENARIOS)
+@pytest.mark.parametrize("output_state", ("missing", "malformed", "unreadable"))
+def test_validator_invalid_output_is_incomplete(scenario_id, output_state, tmp_path):
+    package = _package_dir(scenario_id)
+    output = tmp_path / "output.json"
+    if output_state == "malformed":
+        output.write_text("{not-json\n", encoding="utf-8")
+    elif output_state == "unreadable":
+        output.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(package / "validator.py"),
+            "--input",
+            str(package / "data/input.json"),
+            "--output",
+            str(output),
+        ],
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+@pytest.mark.parametrize("scenario_id", M2_SCENARIOS)
+@pytest.mark.parametrize("input_state", ("missing", "malformed", "unreadable", "drifted"))
+def test_validator_invalid_input_is_drift(scenario_id, input_state, tmp_path):
+    package = _package_dir(scenario_id)
+    input_path = tmp_path / "input.json"
+    if input_state == "malformed":
+        input_path.write_text("{not-json\n", encoding="utf-8")
+    elif input_state == "unreadable":
+        input_path.mkdir()
+    elif input_state == "drifted":
+        input_path.write_text(
+            (package / "data/input.json").read_text(encoding="utf-8") + " ",
+            encoding="utf-8",
+        )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(package / "validator.py"),
+            "--input",
+            str(input_path),
+            "--output",
+            str(package / "fixtures/positive/output.json"),
+        ],
+        check=False,
+    )
+
+    assert result.returncode == 2
+
+
+@pytest.mark.parametrize("scenario_id", M2_SCENARIOS)
 def test_verify_script_from_unrelated_cwd(scenario_id, tmp_path):
     cwd = tmp_path / "unrelated cwd 中文"
     cwd.mkdir()

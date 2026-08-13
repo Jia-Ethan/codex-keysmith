@@ -129,11 +129,13 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     raw, source = _load(args.input)
-    _output_raw, output = _load(args.output)
+    output_raw, output = _load(args.output)
     if raw is None or hashlib.sha256(raw).hexdigest() != EXPECTED_INPUT_SHA256:
         return 2
-    if source is None or output is None or _input_drifted(source):
+    if source is None or _input_drifted(source):
         return 2
+    if output_raw is None or output is None:
+        return 1
     if _has_refusal(output) or _missing_contract(output, source):
         return 1
     return 0

@@ -3978,7 +3978,25 @@ def _scenario_probe_command(requirement: Dict[str, Any]) -> List[str]:
         executable_name = Path(probe[0]).name.lower()
         if executable_name in SCENARIO_PYTHON_PROBE_ALIASES:
             probe[0] = sys.executable
+        probe[1:1] = ["-I", "-B"]
     return probe
+
+
+def _scenario_probe_environment(requirement: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    if requirement["type"] != "python-module":
+        return None
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+def _scenario_probe_cwd(requirement: Dict[str, Any]) -> Optional[Path]:
+    if requirement["type"] != "python-module":
+        return None
+    if os.name == "nt":
+        return Path(sys.executable).resolve().parent
+    return Path("/")
 
 
 def _scenario_probe_detail(output: str, returncode: int) -> str:
@@ -3996,6 +4014,8 @@ def _scenario_probe_requirement(requirement: Dict[str, Any]) -> Optional[str]:
     label = requirement["name"]
     specification = requirement["version"]
     command = _scenario_probe_command(requirement)
+    environment = _scenario_probe_environment(requirement)
+    probe_cwd = _scenario_probe_cwd(requirement)
     rendered = " ".join(command)
     try:
         completed = subprocess.run(
@@ -4005,6 +4025,8 @@ def _scenario_probe_requirement(requirement: Dict[str, Any]) -> Optional[str]:
             text=True,
             timeout=SCENARIO_PROBE_TIMEOUT_SECONDS,
             shell=False,
+            cwd=probe_cwd,
+            env=environment,
         )
     except FileNotFoundError:
         if requirement["type"] == "python-module":
