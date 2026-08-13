@@ -230,9 +230,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
     if text.count("contents: write") != 1 or "contents: write" not in publish_section:
         raise CandidateError(f"{path} must grant contents: write only to the publisher job")
     publish_required = (
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/main'",
-        "inputs.publish_desktop_prerelease == true",
+        "if: >-\n      ${{ false }}",
         "needs:\n      - candidate",
         "runs-on: ubuntu-24.04",
         "permissions:\n      contents: write",

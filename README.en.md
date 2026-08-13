@@ -51,7 +51,7 @@ npm run tauri dev
 base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
 curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
 curl --fail --location --remote-name "$base/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
 
 # 2. Look before you trust — confirm target directory, prompt source, and the planned write
 python3 codex-instruct-vX.Y.Z.py --version

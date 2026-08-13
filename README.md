@@ -63,7 +63,7 @@ npm run tauri dev
 base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
 curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
 curl --fail --location --remote-name "$base/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
 
 # 2. 先看，不要先信——确认目标目录、内置提示词来源和将要写入的内容
 python3 codex-instruct-vX.Y.Z.py --version
