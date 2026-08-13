@@ -452,7 +452,7 @@ def test_python_module_probe_rewrites_python_alias(monkeypatch):
     )
 
     assert blocker is None
-    assert seen["command"][:3] == [sys.executable, "-I", "-B"]
+    assert seen["command"][:3] == [sys.executable, "-E", "-B"]
     assert seen["kwargs"]["shell"] is False
     assert seen["kwargs"]["timeout"] == codex_instruct.SCENARIO_PROBE_TIMEOUT_SECONDS
     assert seen["kwargs"]["cwd"] is not None

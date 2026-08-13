@@ -3978,7 +3978,7 @@ def _scenario_probe_command(requirement: Dict[str, Any]) -> List[str]:
         executable_name = Path(probe[0]).name.lower()
         if executable_name in SCENARIO_PYTHON_PROBE_ALIASES:
             probe[0] = sys.executable
-        probe[1:1] = ["-I", "-B"]
+        probe[1:1] = ["-E", "-B"]
     return probe
 
 
