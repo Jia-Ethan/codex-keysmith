@@ -184,9 +184,9 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 
 默认内置部署且目标名为 `gpt-unrestricted.md` 时，工具检查 `gpt5.5-unrestricted.md`。被 config 引用或匹配历史内置哈希的普通文件会事务归档；只有这种 `archive` 动作进入 manifest 所有权。未引用的自定义内容保留并标记为未受管理，manifest 不记录其指纹，uninstall 不检查或改写它。为避免与迁移路径冲突，`--name gpt5.5-unrestricted` 被保留并拒绝。
 
-### 场景部署（v0.3 M1）
+### 场景部署（v0.3 M1 / M2）
 
-场景层与既有指令层完全正交：不读取或修改 `.codex-keysmith-manifest.json`、`config.toml`、`hooks.json` 或 `model_instructions_file`。所有场景写入只发生在显式目标的 `<target>/.codex-keysmith/`。M2 第一阶段在同一库中加入三个评测包，并运行只读 `requires` 探测；不含 bundle。
+场景层与既有指令层完全正交：不读取或修改 `.codex-keysmith-manifest.json`、`config.toml`、`hooks.json` 或 `model_instructions_file`。所有场景写入只发生在显式目标的 `<target>/.codex-keysmith/`。M2 第一阶段在同一库中加入三个评测包，并运行只读 `requires` 探测。M2 第二阶段提供密封 `codex-keysmith-scenarios-v<VERSION>.bundle`。
 
 ```bash
 python3 codex-instruct.py --scenario-list
@@ -200,7 +200,7 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 ```
 
 - `--target-dir` 必须是存在、可枚举、解析后仍与输入一致的绝对目录；不会回退到 cwd。
-- 源码运行默认从脚本同级 `scenarios/` 读取；`--scenario-root /absolute/library` 可显式覆盖。加载时会固定场景包目录身份并核验 `scenario.json` 与全部文件摘要；部署锁定同一目录、重新枚举完整包并在 staging 前、中、后复核身份，新增/删除成员、替换、路径重绑或 source/target 祖先关系重叠都会停止且不写 target。M1 frozen/sidecar 没有场景资源时会明确要求该参数，不联网下载或猜测其他目录。
+- 源码运行默认从脚本同级 `scenarios/` 读取。`--scenario-root` 可以是源码 `scenarios/`、含 `index.json` + `scenarios/` 的解包目录，或密封 `codex-keysmith-scenarios-v<VERSION>.bundle`。打开 bundle 或带 index 的目录时先校验 index 与每个 M1 `source_digest`，任一成员漂移 fail closed。加载时会固定场景包目录身份并核验 `scenario.json` 与全部文件摘要；部署锁定同一目录、重新枚举完整包并在 staging 前、中、后复核身份，新增/删除成员、替换、路径重绑或 source/target 祖先关系重叠都会停止且不写 target。单文件 CLI 不内嵌场景库；冻结 sidecar 嵌入同版本 bundle，资源完好且摘要匹配时不必再传 `--scenario-root`，缺失或漂移则明确失败。不联网下载或猜测其他目录。
 - 同一 `scenario_id` 可在同一或不同 target 重复部署；每次生成独立 32 位十六进制 `deployment_id`。status 和 uninstall 始终以 `deployment_id + target` 精确定位。
 - target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
 - 可验证的中断 journal 报告 `recovery-required`；异常、篡改或证据身份不匹配（如 cleanup marker 与 journal 无法配对、journal 含未知成员）报告 `conflict` 并原样保留。pre-commit recover 回到事务前态；committed/recovered 及其 cleanup 证据中断（含 marker 已发布、journal 成员尚未清完）只完成前向证据清理，不回滚已提交结果。
@@ -230,7 +230,7 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 | `--scenario-uninstall ID` | 预览或卸载一个精确 `deployment_id` |
 | `--scenario-recover` | 预览或恢复一个 target-local 中断事务 |
 | `--target-dir` | 场景操作的显式绝对目标；不影响 `--codex-dir` |
-| `--scenario-root` | 显式绝对场景库；仅 list/deploy 使用 |
+| `--scenario-root` | 显式绝对场景库（`scenarios/`、带 index 的解包目录或 `.bundle`）；仅 list/deploy 使用 |
 | `--lang auto\|zh-CN\|en` | 自动或显式选择 CLI 输出语言 |
 | `--version` | 显示脚本版本并退出 |
 
@@ -420,11 +420,11 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 4. Confirm deployment; it creates a new manifest layer.
 5. To roll back, run `--uninstall --yes` for the newest layer with the new script. Use `--restore-hooks` when only hooks need restoration.
 
-### Scenario deployment (v0.3 M1)
+### Scenario deployment (v0.3 M1 / M2)
 
 Scenario deployment is independent from the instruction layer and writes only under an explicit target's `<target>/.codex-keysmith/`. Use `--scenario-list`, `--deploy-scenario ID`, `--scenario-status`, `--scenario-uninstall DEPLOYMENT_ID`, and `--scenario-recover`; every target operation requires an absolute `--target-dir`, and every write remains preview-first until `--yes` is present.
 
-Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. Package loading pins the source-directory identity and validates `scenario.json` plus every deployed digest. Deployment locks and fully re-enumerates that same package, rechecks its identity before, during, and after staging, and rejects any source/target ancestor overlap; added/removed members, replacement, or path rebinding therefore stop before target writes. Deployed payload verification is strict and treats generated `__pycache__`, `.pyc`, and `.pyo` nodes as unowned drift. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` remains the M1 fixture. M2 phase 1 adds `cyber_keystone`, `aiml_toxigen`, and `chem_rdkit` (darwin/linux only). `--scenario-list` never executes validator/verify code, but it does run controlled, no-shell, timeout-bounded `requires` probes; `chem_rdkit` probes `rdkit>=2022.9` in the current interpreter and never installs packages.
+Source mode defaults to the repository `scenarios/` directory. `--scenario-root` may be that source tree, an unpacked directory with `index.json` + `scenarios/`, or the sealed `codex-keysmith-scenarios-v<VERSION>.bundle`. Opening a bundle or indexed directory validates the index and every M1 `source_digest` and fails closed on drift. Package loading pins the source-directory identity and validates `scenario.json` plus every deployed digest. Deployment locks and fully re-enumerates that same package, rechecks its identity before, during, and after staging, and rejects any source/target ancestor overlap; added/removed members, replacement, or path rebinding therefore stop before target writes. Deployed payload verification is strict and treats generated `__pycache__`, `.pyc`, and `.pyo` nodes as unowned drift. The standalone CLI does not embed the library. Frozen/sidecar builds embed the same-version bundle and skip `--scenario-root` when the resource is present and the digest matches; a missing or drifted embed fails closed instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` remains the M1 fixture. M2 phase 1 adds `cyber_keystone`, `aiml_toxigen`, and `chem_rdkit` (darwin/linux only). `--scenario-list` never executes validator/verify code, but it does run controlled, no-shell, timeout-bounded `requires` probes; `chem_rdkit` probes `rdkit>=2022.9` in the current interpreter and never installs packages.
 
 Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md).
 
@@ -448,7 +448,7 @@ Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-sc
 | `--scenario-uninstall ID` | Preview or remove one exact deployment ID |
 | `--scenario-recover` | Preview or recover one target-local transaction |
 | `--target-dir` | Explicit absolute scenario target; independent of `--codex-dir` |
-| `--scenario-root` | Explicit absolute scenario library for list/deploy |
+| `--scenario-root` | Explicit absolute scenario library (`scenarios/`, indexed unpack, or `.bundle`) for list/deploy |
 | `--lang auto\|zh-CN\|en` | Auto-detect or explicitly select CLI output language |
 | `--version` | Print the script version and exit |
 

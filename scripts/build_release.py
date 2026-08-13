@@ -5,6 +5,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import stat
@@ -13,7 +14,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
 
 ARCHIVE_FILES = (
@@ -35,6 +36,43 @@ ARCHIVE_FILES = (
     "examples/gpt-unrestricted.md",
 )
 
+SCENARIO_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+SCENARIO_SEMVER_PATTERN = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+SCENARIO_PYTHON_RUNTIME_PATTERN = re.compile(
+    r">=(\d+)\.(\d+)(?:\.(\d+))?,<(\d+)\.(\d+)(?:\.(\d+))?"
+)
+SCENARIO_VERSION_CLAUSE_PATTERN = re.compile(r"\s*(>=|>|<=|<|==)\s*(\d+(?:\.\d+)*)\s*")
+SCENARIO_PROBE_SHELLS = {
+    "sh",
+    "bash",
+    "zsh",
+    "csh",
+    "tcsh",
+    "fish",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+}
+SCENARIO_METADATA_FIELDS = {
+    "schema_version",
+    "id",
+    "version",
+    "display_name",
+    "task",
+    "validator",
+    "verify",
+    "platforms",
+    "runtime",
+    "requires",
+    "checksums",
+}
+
 
 def _validate_scenario_archive_path(relative_path: str) -> None:
     if relative_path == "scenarios" or not relative_path.startswith("scenarios/"):
@@ -45,9 +83,7 @@ def _validate_scenario_archive_path(relative_path: str) -> None:
         ord(character) < 32 or ord(character) == 127 for character in relative_path
     ):
         raise ReleaseError(
-            "scenario archive contains a cross-platform unsafe path: {}".format(
-                relative_path
-            )
+            "scenario archive contains a cross-platform unsafe path: {}".format(relative_path)
         )
 
     reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
@@ -61,9 +97,7 @@ def _validate_scenario_archive_path(relative_path: str) -> None:
             or component.split(".", 1)[0].upper() in reserved
         ):
             raise ReleaseError(
-                "scenario archive contains a cross-platform unsafe path: {}".format(
-                    relative_path
-                )
+                "scenario archive contains a cross-platform unsafe path: {}".format(relative_path)
             )
 
 
@@ -74,10 +108,9 @@ def _scenario_archive_files(repo_root: Path) -> Tuple[str, ...]:
     except FileNotFoundError:
         return ()
     if not stat.S_ISDIR(root_stat.st_mode):
-        raise ReleaseError(
-            "scenario archive root is not a directory: {}".format(scenario_root)
-        )
+        raise ReleaseError("scenario archive root is not a directory: {}".format(scenario_root))
     files = []
+    seen_casefold = set()
     for path in sorted(scenario_root.rglob("*")):
         file_stat = os.lstat(str(path))
         if stat.S_ISDIR(file_stat.st_mode):
@@ -89,8 +122,309 @@ def _scenario_archive_files(repo_root: Path) -> Tuple[str, ...]:
             continue
         relative_path = path.relative_to(repo_root).as_posix()
         _validate_scenario_archive_path(relative_path)
+        folded = relative_path.casefold()
+        if folded in seen_casefold:
+            raise ReleaseError(
+                "scenario archive members collide case-insensitively: {}".format(relative_path)
+            )
+        seen_casefold.add(folded)
         files.append(relative_path)
     return tuple(files)
+
+
+def _scenario_safe_relative(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ReleaseError("{} must be a non-empty relative path".format(label))
+    if "\\" in value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ReleaseError("{} must use portable forward-slash paths".format(label))
+    path = PurePosixPath(value)
+    if path.is_absolute() or value != path.as_posix():
+        raise ReleaseError("{} is not a normalized relative path: {}".format(label, value))
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ReleaseError("{} contains an unsafe path component: {}".format(label, value))
+    reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    reserved.update("COM{}".format(index) for index in range(1, 10))
+    reserved.update("LPT{}".format(index) for index in range(1, 10))
+    for part in path.parts:
+        if (
+            part.split(".", 1)[0].upper() in reserved
+            or any(character in part for character in '<>:"|?*')
+            or part.endswith((".", " "))
+        ):
+            raise ReleaseError("{} uses a reserved path component: {}".format(label, value))
+    return value
+
+
+def _validate_scenario_version_constraint(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ReleaseError("{} is required".format(label))
+    clauses = value.split(",")
+    if not clauses or not all(
+        SCENARIO_VERSION_CLAUSE_PATTERN.fullmatch(clause) for clause in clauses
+    ):
+        raise ReleaseError("{} uses an unsupported version constraint: {}".format(label, value))
+    return value
+
+
+def _validate_scenario_requires(value: object, scenario_id: str) -> List[Dict[str, object]]:
+    if not isinstance(value, list):
+        raise ReleaseError("scenario requires must be a list: {}".format(scenario_id))
+    result = []
+    names = set()
+    for index, requirement in enumerate(value):
+        label = "scenario {} requires[{}]".format(scenario_id, index)
+        if not isinstance(requirement, dict) or set(requirement) != {
+            "name",
+            "type",
+            "version",
+            "probe",
+        }:
+            raise ReleaseError("{} must contain name, type, version, and probe".format(label))
+        name = requirement["name"]
+        kind = requirement["type"]
+        version = requirement["version"]
+        probe = requirement["probe"]
+        if not isinstance(name, str) or not name or name in names:
+            raise ReleaseError("{}.name is invalid or duplicated".format(label))
+        if not isinstance(kind, str) or kind not in {"command", "python-module"}:
+            raise ReleaseError("{}.type is unsupported".format(label))
+        _validate_scenario_version_constraint(version, "{}.version".format(label))
+        if (
+            not isinstance(probe, list)
+            or not probe
+            or not all(isinstance(item, str) and item for item in probe)
+        ):
+            raise ReleaseError("{}.probe must be a non-empty argv list".format(label))
+        if Path(probe[0]).name.lower() in SCENARIO_PROBE_SHELLS:
+            raise ReleaseError("{}.probe must not invoke a shell".format(label))
+        names.add(name)
+        result.append(dict(requirement))
+    return result
+
+
+def _scenario_source_digest(files: Dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for relative, sha256 in sorted(files.items()):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _bundle_json_bytes(value: Dict[str, object]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def scenario_bundle_asset_name(tag: str) -> str:
+    return "codex-keysmith-scenarios-{}.bundle".format(tag)
+
+
+def _build_scenario_index(members: Dict[str, bytes], version: str) -> Dict[str, object]:
+    packages: Dict[str, Dict[str, bytes]] = {}
+    for relative_path, data in members.items():
+        if not relative_path.startswith("scenarios/"):
+            continue
+        _validate_scenario_archive_path(relative_path)
+        rest = relative_path[len("scenarios/") :]
+        if not rest or "/" not in rest:
+            raise ReleaseError(
+                "scenario bundle member is missing a package path: {}".format(relative_path)
+            )
+        scenario_id, relative = rest.split("/", 1)
+        if not SCENARIO_ID_PATTERN.fullmatch(scenario_id) or not relative:
+            raise ReleaseError(
+                "scenario bundle member has an invalid package path: {}".format(relative_path)
+            )
+        _scenario_safe_relative(relative, "scenario member")
+        packages.setdefault(scenario_id, {})[relative] = data
+    if not packages:
+        raise ReleaseError("scenario bundle does not contain any packages")
+
+    scenarios: Dict[str, object] = {}
+    for scenario_id in sorted(packages):
+        files = packages[scenario_id]
+        folded_members = set()
+        for relative in files:
+            folded = relative.casefold()
+            if folded in folded_members:
+                raise ReleaseError(
+                    "scenario members collide case-insensitively: {}/{}".format(
+                        scenario_id, relative
+                    )
+                )
+            folded_members.add(folded)
+        if "scenario.json" not in files:
+            raise ReleaseError("scenario package is missing scenario.json: {}".format(scenario_id))
+        try:
+            metadata = json.loads(files["scenario.json"].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReleaseError("scenario.json is invalid: {}".format(scenario_id)) from exc
+        if not isinstance(metadata, dict) or set(metadata) != SCENARIO_METADATA_FIELDS:
+            raise ReleaseError("scenario.json root fields are invalid: {}".format(scenario_id))
+        if metadata["schema_version"] != 1 or metadata["id"] != scenario_id:
+            raise ReleaseError(
+                "scenario.json schema or id does not match the package: {}".format(scenario_id)
+            )
+        if not isinstance(metadata["version"], str) or not SCENARIO_SEMVER_PATTERN.fullmatch(
+            metadata["version"]
+        ):
+            raise ReleaseError("scenario version must be semantic: {}".format(scenario_id))
+        if not isinstance(metadata["display_name"], str) or not metadata["display_name"]:
+            raise ReleaseError("scenario display_name is required: {}".format(scenario_id))
+        task = _scenario_safe_relative(metadata["task"], "scenario task")
+        validator = _scenario_safe_relative(metadata["validator"], "scenario validator")
+        verify = _scenario_safe_relative(metadata["verify"], "scenario verify")
+        platforms = metadata["platforms"]
+        if (
+            not isinstance(platforms, list)
+            or not platforms
+            or not all(
+                isinstance(item, str) and item in {"darwin", "linux", "win32"} for item in platforms
+            )
+            or len(platforms) != len(set(platforms))
+        ):
+            raise ReleaseError("scenario platforms are invalid: {}".format(scenario_id))
+        runtime = metadata["runtime"]
+        if not isinstance(runtime, dict) or set(runtime) != {"python"}:
+            raise ReleaseError("scenario runtime must define only python: {}".format(scenario_id))
+        python_runtime = runtime["python"]
+        if not isinstance(python_runtime, str) or not SCENARIO_PYTHON_RUNTIME_PATTERN.fullmatch(
+            python_runtime
+        ):
+            raise ReleaseError("scenario Python runtime is invalid: {}".format(scenario_id))
+        requires = _validate_scenario_requires(metadata["requires"], scenario_id)
+        deploy_files = {
+            relative: data
+            for relative, data in files.items()
+            if not relative.startswith("fixtures/")
+        }
+        file_hashes = {
+            relative: hashlib.sha256(data).hexdigest() for relative, data in deploy_files.items()
+        }
+        checksums = metadata.get("checksums")
+        if not isinstance(checksums, dict):
+            raise ReleaseError("scenario checksums are invalid: {}".format(scenario_id))
+        expected = set(deploy_files) - {"scenario.json"}
+        if set(checksums) != expected:
+            raise ReleaseError(
+                "scenario checksums do not cover deployed files: {}".format(scenario_id)
+            )
+        for required in (task, validator, verify):
+            if required not in deploy_files:
+                raise ReleaseError(
+                    "scenario entrypoint is not a deployed regular file: {}/{}".format(
+                        scenario_id, required
+                    )
+                )
+        for relative, expected_hash in checksums.items():
+            if not isinstance(expected_hash, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", expected_hash
+            ):
+                raise ReleaseError(
+                    "scenario checksum is invalid: {}/{}".format(scenario_id, relative)
+                )
+            if file_hashes.get(relative) != expected_hash:
+                raise ReleaseError(
+                    "scenario checksum mismatch: {}/{}".format(scenario_id, relative)
+                )
+        scenarios[scenario_id] = {
+            "display_name": metadata["display_name"],
+            "id": metadata["id"],
+            "platforms": platforms,
+            "requires": requires,
+            "runtime": {"python": python_runtime},
+            "source_digest": _scenario_source_digest(file_hashes),
+            "version": metadata["version"],
+        }
+    return {
+        "schema_version": 1,
+        "scenarios": scenarios,
+        "tool_version": version,
+    }
+
+
+def _scenario_bundle_members(
+    sources: Dict[str, bytes],
+    version: str,
+) -> Dict[str, bytes]:
+    members = {
+        relative_path: data
+        for relative_path, data in sources.items()
+        if relative_path.startswith("scenarios/")
+    }
+    if not members:
+        raise ReleaseError("release is missing scenario library files")
+    members["index.json"] = _bundle_json_bytes(_build_scenario_index(members, version))
+    return members
+
+
+def _write_scenario_bundle_zip(path: Path, members: Dict[str, bytes]) -> None:
+    with zipfile.ZipFile(str(path), "w", compression=zipfile.ZIP_STORED) as archive:
+        for relative_path in sorted(members):
+            info = zipfile.ZipInfo(relative_path, ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = (0o644 & 0xFFFF) << 16
+            archive.writestr(info, members[relative_path])
+
+
+def write_scenario_bundle(
+    repo_root: Path,
+    destination: Path,
+    version: Optional[str] = None,
+) -> Path:
+    """Write a bundle if its destination is absent or already byte-identical."""
+    repo_root = repo_root.resolve()
+    if version is None:
+        try:
+            version = _regular_file_bytes(repo_root / "VERSION").decode("ascii").strip()
+        except UnicodeDecodeError as exc:
+            raise ReleaseError("VERSION must contain an ASCII semantic version") from exc
+    if not isinstance(version, str) or not SCENARIO_SEMVER_PATTERN.fullmatch(version):
+        raise ReleaseError("scenario bundle version must be semantic")
+    sources = {
+        relative_path: _regular_file_bytes(repo_root / relative_path)
+        for relative_path in _scenario_archive_files(repo_root)
+    }
+    members = _scenario_bundle_members(sources, version)
+    destination = Path(os.path.abspath(str(destination)))
+    _validate_output_location(repo_root, destination.parent)
+    relative_destination = _relative_output_path(repo_root, destination)
+    if relative_destination is not None:
+        if relative_destination == Path(".") or relative_destination.parts[0] == ".git":
+            raise ReleaseError("scenario bundle destination cannot be inside .git")
+        tracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                relative_destination.as_posix(),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if tracked.returncode == 0:
+            raise ReleaseError(
+                "scenario bundle destination is a tracked source file: {}".format(destination)
+            )
+        if tracked.returncode not in {1, 128}:
+            detail = tracked.stderr.strip() or "git ls-files failed"
+            raise ReleaseError("cannot validate scenario bundle destination: {}".format(detail))
+    _prepare_output_directory(destination.parent)
+    _validate_output_destinations((destination,))
+    with tempfile.TemporaryDirectory(
+        prefix=".keysmith-scenario-bundle-",
+        dir=str(destination.parent),
+    ) as temp:
+        staged = Path(temp) / destination.name
+        _write_scenario_bundle_zip(staged, members)
+        _publish_assets_without_overwrite((staged,), (destination,))
+    return destination
 
 
 MIT_MARKERS = (
@@ -181,8 +515,7 @@ def _validate_version(tag: str, sources: Dict[str, bytes]) -> str:
         )
 
     cli_versions = {
-        value.decode("ascii")
-        for value in CLI_VERSION_PATTERN.findall(sources["codex-instruct.py"])
+        value.decode("ascii") for value in CLI_VERSION_PATTERN.findall(sources["codex-instruct.py"])
     }
     if cli_versions != {version}:
         declared = ", ".join(sorted(cli_versions)) or "<missing>"
@@ -240,9 +573,7 @@ def _tracked_gui_sources(
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise ReleaseError(
-            "cannot enumerate tracked GUI sources: {}".format(
-                detail or "git ls-tree failed"
-            )
+            "cannot enumerate tracked GUI sources: {}".format(detail or "git ls-tree failed")
         )
 
     sources = {}
@@ -273,9 +604,7 @@ def _tracked_gui_sources(
             )
         if relative_path in sources:
             raise ReleaseError(
-                "validated source commit contains a duplicate GUI path: {}".format(
-                    relative_path
-                )
+                "validated source commit contains a duplicate GUI path: {}".format(relative_path)
             )
         try:
             blob = subprocess.run(
@@ -313,11 +642,11 @@ def _tracked_gui_sources(
 def _validate_gui_archive_path(relative_path: str) -> None:
     if relative_path == "gui" or not relative_path.startswith("gui/"):
         raise ReleaseError(
-            "validated source commit contains an invalid GUI tree path: {}".format(
-                relative_path
-            )
+            "validated source commit contains an invalid GUI tree path: {}".format(relative_path)
         )
-    if "\\" in relative_path or any(ord(character) < 32 or ord(character) == 127 for character in relative_path):
+    if "\\" in relative_path or any(
+        ord(character) < 32 or ord(character) == 127 for character in relative_path
+    ):
         raise ReleaseError(
             "validated source commit contains a cross-platform unsafe GUI path: {}".format(
                 relative_path
@@ -351,9 +680,7 @@ def _read_release_sources(
     collisions = set(sources).intersection(gui_sources)
     if collisions:
         raise ReleaseError(
-            "GUI sources collide with fixed release paths: {}".format(
-                ", ".join(sorted(collisions))
-            )
+            "GUI sources collide with fixed release paths: {}".format(", ".join(sorted(collisions)))
         )
     sources.update(gui_sources)
     modes = {relative_path: _archive_mode(relative_path) for relative_path in sources}
@@ -435,14 +762,10 @@ def _validate_output_location(repo_root: Path, output_dir: Path) -> None:
             break
         if stat.S_ISLNK(current_stat.st_mode):
             raise ReleaseError(
-                "release output path contains a symbolic-link ancestor: {}".format(
-                    current
-                )
+                "release output path contains a symbolic-link ancestor: {}".format(current)
             )
         if current != output_dir and not stat.S_ISDIR(current_stat.st_mode):
-            raise ReleaseError(
-                "release output ancestor is not a directory: {}".format(current)
-            )
+            raise ReleaseError("release output ancestor is not a directory: {}".format(current))
 
     resolved_output = output_dir.resolve(strict=False)
     git_directory = Path(
@@ -528,25 +851,19 @@ def _remote_release_tag_commit(repo_root: Path, remote: str, tag: str) -> Option
         ) from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "git failed"
-        raise ReleaseError(
-            "cannot verify remote release tags from {}: {}".format(remote, detail)
-        )
+        raise ReleaseError("cannot verify remote release tags from {}: {}".format(remote, detail))
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     references = {}
     for line in lines:
         parts = line.split("\t", 1)
         if len(parts) != 2 or not FULL_COMMIT_PATTERN.fullmatch(parts[0]):
-            raise ReleaseError(
-                "remote {} returned malformed release tag metadata".format(remote)
-            )
+            raise ReleaseError("remote {} returned malformed release tag metadata".format(remote))
         object_id, reference = parts
         if reference not in {tag_ref, peeled_ref}:
             continue
         previous = references.get(reference)
         if previous is not None and previous.lower() != object_id.lower():
-            raise ReleaseError(
-                "remote {} returned conflicting release tag metadata".format(remote)
-            )
+            raise ReleaseError("remote {} returned conflicting release tag metadata".format(remote))
         references[reference] = object_id
     if not references:
         return None
@@ -571,9 +888,7 @@ def _require_complete_git_checkout(repo_root: Path) -> None:
     if shallow not in {"true", "false"}:
         raise ReleaseError("Git returned an invalid shallow-repository state")
     if shallow == "true":
-        raise ReleaseError(
-            "release builds require a complete Git checkout with all tags"
-        )
+        raise ReleaseError("release builds require a complete Git checkout with all tags")
 
     config_checks = (
         ["config", "--local", "--get", "extensions.partialClone"],
@@ -594,14 +909,10 @@ def _require_complete_git_checkout(repo_root: Path) -> None:
         if configured.returncode not in (0, 1):
             detail = configured.stderr.strip() or "git config failed"
             raise ReleaseError(
-                "cannot determine whether the repository is partial: {}".format(
-                    detail
-                )
+                "cannot determine whether the repository is partial: {}".format(detail)
             )
         if configured.returncode == 0 and configured.stdout.strip():
-            raise ReleaseError(
-                "release builds reject partial or promisor Git checkouts"
-            )
+            raise ReleaseError("release builds reject partial or promisor Git checkouts")
 
     try:
         object_check = subprocess.run(
@@ -625,9 +936,7 @@ def _require_complete_git_checkout(repo_root: Path) -> None:
         ) from exc
     if object_check.returncode != 0:
         detail = object_check.stderr.strip() or "git rev-list failed"
-        raise ReleaseError(
-            "cannot verify complete Git object availability: {}".format(detail)
-        )
+        raise ReleaseError("cannot verify complete Git object availability: {}".format(detail))
     if any(line.startswith("?") for line in object_check.stdout.splitlines()):
         raise ReleaseError("release checkout is missing reachable Git objects")
 
@@ -708,9 +1017,7 @@ def _resolve_source_commit(
         if remote_commit is None:
             if source_commit is None:
                 raise ReleaseError(
-                    "formal release tag {} is missing from remote {}".format(
-                        tag, remote
-                    )
+                    "formal release tag {} is missing from remote {}".format(tag, remote)
                 )
             continue
         remote_tag_commits.append((remote, remote_commit))
@@ -721,24 +1028,15 @@ def _resolve_source_commit(
                     tag, remote, remote_commit, label, expected
                 )
             )
-        if (
-            local_tag_commit is not None
-            and remote_commit.lower() != local_tag_commit.lower()
-        ):
-            raise ReleaseError(
-                "local and remote release tags disagree about {}".format(tag)
-            )
+        if local_tag_commit is not None and remote_commit.lower() != local_tag_commit.lower():
+            raise ReleaseError("local and remote release tags disagree about {}".format(tag))
     if len({commit.lower() for _remote, commit in remote_tag_commits}) > 1:
-        raise ReleaseError(
-            "repository remotes disagree about release tag {}".format(tag)
-        )
+        raise ReleaseError("repository remotes disagree about release tag {}".format(tag))
 
     if not FULL_COMMIT_PATTERN.fullmatch(expected):
         raise ReleaseError("resolved source is not a full Git commit object ID")
     if head.lower() != expected.lower():
-        raise ReleaseError(
-            "HEAD {} does not match {} ({})".format(head, source_label, expected)
-        )
+        raise ReleaseError("HEAD {} does not match {} ({})".format(head, source_label, expected))
     return head.lower()
 
 
@@ -900,15 +1198,11 @@ def _publish_assets_without_overwrite(
             continue
         if not stat.S_ISREG(destination_stat.st_mode):
             raise ReleaseError(
-                "release asset destination is not a regular file: {}".format(
-                    destination
-                )
+                "release asset destination is not a regular file: {}".format(destination)
             )
         if _regular_file_bytes(destination) != data:
             raise ReleaseError(
-                "existing release asset differs; refusing to overwrite: {}".format(
-                    destination
-                )
+                "existing release asset differs; refusing to overwrite: {}".format(destination)
             )
         destination_exists.append(True)
 
@@ -997,6 +1291,7 @@ def build_release(
         "codex-keysmith-{}.zip".format(tag),
         "codex-keysmith-{}.tar.gz".format(tag),
         "codex-instruct-{}.py".format(tag),
+        scenario_bundle_asset_name(tag),
     )
     final_paths = [output_dir / name for name in asset_names + ("SHA256SUMS",)]
     _validate_output_destinations(final_paths)
@@ -1005,6 +1300,7 @@ def build_release(
         zip_path = staging_dir / asset_names[0]
         tar_path = staging_dir / asset_names[1]
         script_path = staging_dir / asset_names[2]
+        bundle_path = staging_dir / asset_names[3]
         _write_zip(zip_path, tag, sources, source_modes)
         _write_tar_gz(tar_path, tag, sources, source_modes)
         script_path.write_bytes(
@@ -1014,14 +1310,17 @@ def build_release(
             )
         )
         script_path.chmod(0o755)
+        _write_scenario_bundle_zip(
+            bundle_path,
+            _scenario_bundle_members(sources, version),
+        )
 
         checksum_lines = [
-            "{}  {}".format(_sha256(staging_dir / name), name)
-            for name in sorted(asset_names)
+            "{}  {}".format(_sha256(staging_dir / name), name) for name in sorted(asset_names)
         ]
         checksum_path = staging_dir / "SHA256SUMS"
         checksum_path.write_text("\n".join(checksum_lines) + "\n", encoding="ascii")
-        for path in (zip_path, tar_path, checksum_path):
+        for path in (zip_path, tar_path, bundle_path, checksum_path):
             path.chmod(0o644)
 
         final_source = _resolve_source_commit(repo_root, tag, source_commit)
@@ -1032,11 +1331,7 @@ def build_release(
             tag,
             final_source,
         )
-        if (
-            final_version != version
-            or final_sources != sources
-            or final_modes != source_modes
-        ):
+        if final_version != version or final_sources != sources or final_modes != source_modes:
             raise ReleaseError("release source files changed during the build")
         _validate_sources_match_commit(repo_root, final_source, final_sources)
         _validate_gui_worktree_matches_commit(repo_root, final_sources)
@@ -1044,7 +1339,7 @@ def build_release(
             _require_clean_repository(repo_root, output_dir)
 
         created = _publish_assets_without_overwrite(
-            (zip_path, tar_path, script_path, checksum_path),
+            (zip_path, tar_path, script_path, bundle_path, checksum_path),
             final_paths,
         )
         try:
@@ -1081,11 +1376,7 @@ def build_release(
                 detail += "; rollback failed: {}".format("; ".join(rollback_errors))
             raise ReleaseError(detail) from exc
 
-    print(
-        "built codex-keysmith {} ({}) from {}".format(
-            tag, version, validated_source
-        )
-    )
+    print("built codex-keysmith {} ({}) from {}".format(tag, version, validated_source))
     for path in final_paths:
         print("{}  {}".format(_sha256(path), path))
     return final_paths
@@ -1093,7 +1384,11 @@ def build_release(
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("version", help="release tag, for example v0.1.0")
+    parser.add_argument(
+        "version",
+        nargs="?",
+        help="release tag, for example v0.1.0",
+    )
     parser.add_argument(
         "--repo-root",
         type=Path,
@@ -1113,12 +1408,34 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "refs/tags/VERSION to point at HEAD"
         ),
     )
+    parser.add_argument(
+        "--write-scenario-bundle",
+        type=Path,
+        help="write only the sealed scenarios.bundle and exit",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     try:
+        if args.write_scenario_bundle is not None:
+            if args.source_commit:
+                raise ReleaseError("--write-scenario-bundle does not accept --source-commit")
+            version = None
+            if args.version:
+                if not args.version.startswith("v"):
+                    raise ReleaseError("version must be a semantic tag such as v0.1.0")
+                version = args.version[1:]
+            destination = write_scenario_bundle(
+                args.repo_root,
+                args.write_scenario_bundle,
+                version=version,
+            )
+            print("{}  {}".format(_sha256(destination), destination.name))
+            return 0
+        if args.version is None:
+            raise ReleaseError("version must be a semantic tag such as v0.1.0")
         build_release(
             args.version,
             args.repo_root,

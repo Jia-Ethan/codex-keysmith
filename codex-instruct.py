@@ -22,6 +22,7 @@ Codex MD 指令文件部署脚本
 """
 
 import argparse
+import atexit
 import builtins
 import ctypes
 import errno
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zipfile
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -162,7 +164,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -207,6 +209,13 @@ SCENARIO_PROBE_TIMEOUT_SECONDS = 5
 SCENARIO_VERSION_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)*)")
 SCENARIO_VERSION_CLAUSE_RE = re.compile(r"\s*(>=|>|<=|<|==)\s*(\d+(?:\.\d+)*)\s*")
 SCENARIO_PYTHON_PROBE_ALIASES = {"python", "python3", "py"}
+SCENARIO_INDEX_FILENAME = "index.json"
+SCENARIO_INDEX_SCHEMA_VERSION = 1
+SCENARIO_BUNDLE_SUFFIX = ".bundle"
+SCENARIO_BUNDLE_SCENARIOS_DIRNAME = "scenarios"
+SCENARIO_BUNDLE_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+SCENARIO_EMBEDDED_LIBRARY_DIRNAME = "scenario-library"
+SCENARIO_EMBEDDED_MANIFEST_FILENAME = "embedded-scenarios.json"
 SCENARIO_PROBE_SHELLS = {
     "sh",
     "bash",
@@ -3651,6 +3660,14 @@ class ScenarioPackage:
 
 
 @dataclass(frozen=True)
+class ScenarioLibrary:
+    kind: str
+    display_path: Path
+    packages_root: Path
+    index: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
 class ScenarioStatusRecord:
     deployment_id: str
     scenario_id: str
@@ -3765,18 +3782,7 @@ def resolve_scenario_target(value: str) -> Path:
 
 
 def resolve_scenario_root(value: Optional[str]) -> Path:
-    if value:
-        return _scenario_require_absolute_directory(value, "--scenario-root")
-    if getattr(sys, "frozen", False):
-        raise FileNotFoundError(
-            "this build has no embedded scenario library; provide --scenario-root"
-        )
-    root = Path(__file__).resolve().parent / "scenarios"
-    if not root.is_dir():
-        raise FileNotFoundError(
-            f"source scenario library was not found; provide --scenario-root: {root}"
-        )
-    return _scenario_require_absolute_directory(str(root), "scenario library")
+    return resolve_scenario_library(value).packages_root
 
 
 def _scenario_safe_relative(value: Any, label: str) -> str:
@@ -3972,12 +3978,29 @@ def _scenario_extract_version(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def _scenario_python_probe_executable() -> str:
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    candidates = (
+        ("python.exe", "python3.exe", "py.exe")
+        if _is_windows_platform()
+        else ("python3", "python")
+    )
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise FileNotFoundError(
+        "frozen sidecar has no Python interpreter for python-module probes"
+    )
+
+
 def _scenario_probe_command(requirement: Dict[str, Any]) -> List[str]:
     probe = list(requirement["probe"])
     if requirement["type"] == "python-module":
         executable_name = Path(probe[0]).name.lower()
         if executable_name in SCENARIO_PYTHON_PROBE_ALIASES:
-            probe[0] = sys.executable
+            probe[0] = _scenario_python_probe_executable()
         probe[1:1] = ["-E", "-B"]
     return probe
 
@@ -3991,10 +4014,14 @@ def _scenario_probe_environment(requirement: Dict[str, Any]) -> Optional[Dict[st
     return environment
 
 
-def _scenario_probe_cwd(requirement: Dict[str, Any]) -> Optional[Path]:
+def _scenario_probe_cwd(
+    requirement: Dict[str, Any],
+    command: Optional[List[str]] = None,
+) -> Optional[Path]:
     if requirement["type"] != "python-module":
         return None
-    return Path(sys.executable).resolve().parent
+    executable = command[0] if command else _scenario_python_probe_executable()
+    return Path(executable).resolve().parent
 
 
 def _scenario_probe_detail(output: str, returncode: int) -> str:
@@ -4011,9 +4038,15 @@ def _scenario_probe_detail(output: str, returncode: int) -> str:
 def _scenario_probe_requirement(requirement: Dict[str, Any]) -> Optional[str]:
     label = requirement["name"]
     specification = requirement["version"]
-    command = _scenario_probe_command(requirement)
+    try:
+        command = _scenario_probe_command(requirement)
+    except FileNotFoundError as exc:
+        return (
+            f"dependency {label} ({specification}) probe could not run: {exc}; "
+            "install Python and ensure it is on PATH, then re-run the scenario command"
+        )
     environment = _scenario_probe_environment(requirement)
-    probe_cwd = _scenario_probe_cwd(requirement)
+    probe_cwd = _scenario_probe_cwd(requirement, command)
     rendered = " ".join(command)
     try:
         completed = subprocess.run(
@@ -4260,6 +4293,463 @@ def discover_scenario_packages(root: Path) -> List[Tuple[str, Optional[ScenarioP
         else:
             packages.append((name, package, "ready"))
     return packages
+
+
+_SCENARIO_BUNDLE_TEMPDIRS: List[tempfile.TemporaryDirectory] = []
+_SCENARIO_BUNDLE_CACHE: Dict[str, Path] = {}
+_SCENARIO_BUNDLE_CLEANUP_REGISTERED = False
+
+
+def scenario_bundle_asset_name(version: Optional[str] = None) -> str:
+    return "codex-keysmith-scenarios-v{}.bundle".format(version or VERSION)
+
+
+def _is_scenario_bundle_path(path: Path) -> bool:
+    name = path.name
+    if _is_windows_platform():
+        return name.casefold().endswith(SCENARIO_BUNDLE_SUFFIX)
+    return name.endswith(SCENARIO_BUNDLE_SUFFIX)
+
+
+def _register_scenario_bundle_cleanup() -> None:
+    global _SCENARIO_BUNDLE_CLEANUP_REGISTERED
+    if _SCENARIO_BUNDLE_CLEANUP_REGISTERED:
+        return
+    atexit.register(_cleanup_scenario_bundle_tempdirs)
+    _SCENARIO_BUNDLE_CLEANUP_REGISTERED = True
+
+
+def _cleanup_scenario_bundle_tempdirs() -> None:
+    _SCENARIO_BUNDLE_CACHE.clear()
+    while _SCENARIO_BUNDLE_TEMPDIRS:
+        temporary = _SCENARIO_BUNDLE_TEMPDIRS.pop()
+        try:
+            temporary.cleanup()
+        except OSError:
+            pass
+
+
+def _scenario_require_absolute_file(value: str, label: str) -> Path:
+    raw = Path(value)
+    if not raw.is_absolute():
+        raise ValueError(f"{label} must be an explicit absolute path: {value}")
+    if raw.parent == raw or not raw.name:
+        raise ValueError(f"{label} must be a regular file: {value}")
+    parent = _scenario_require_absolute_directory(str(raw.parent), label)
+    candidate = parent / raw.name
+    requested_path = Path(os.path.abspath(str(raw)))
+    if not _is_windows_platform():
+        requested_path = requested_path.parent.resolve() / requested_path.name
+    requested = os.path.normcase(os.path.normpath(str(requested_path)))
+    resolved = os.path.normcase(os.path.normpath(str(candidate)))
+    if requested != resolved:
+        raise HooksConflict(
+            f"{label} resolves to a different path; use the canonical absolute path: "
+            f"{candidate}"
+        )
+    node = _classify_node(candidate)
+    if not node.exists:
+        raise FileNotFoundError(f"{label} does not exist: {candidate}")
+    if node.kind == "symbolic link":
+        raise HooksConflict(f"{label} is a symbolic link: {candidate}")
+    if not node.regular:
+        raise HooksConflict(f"{label} is not a regular file: {candidate} ({node.kind})")
+    return candidate
+
+
+def _scenario_sha256_file(path: Path, label: str) -> str:
+    content, fingerprint = _read_regular_bytes_with_fingerprint(path, label)
+    del content
+    return fingerprint.sha256
+
+
+def _scenario_index_record(package: ScenarioPackage) -> Dict[str, Any]:
+    return {
+        "display_name": package.display_name,
+        "id": package.scenario_id,
+        "platforms": list(package.platforms),
+        "requires": [dict(item) for item in package.requires],
+        "runtime": {"python": package.python_runtime},
+        "source_digest": package.source_digest,
+        "version": package.version,
+    }
+
+
+def build_scenario_index(packages_root: Path) -> Dict[str, Any]:
+    scenarios: Dict[str, Any] = {}
+    for scenario_id, package, detail in discover_scenario_packages(packages_root):
+        if package is None:
+            raise HooksConflict(
+                f"cannot index invalid scenario package {scenario_id}: {detail}"
+            )
+        scenarios[scenario_id] = _scenario_index_record(package)
+    return {
+        "schema_version": SCENARIO_INDEX_SCHEMA_VERSION,
+        "scenarios": scenarios,
+        "tool_version": VERSION,
+    }
+
+
+def _validate_scenario_index_document(
+    data: Any,
+    packages_root: Path,
+) -> Dict[str, Any]:
+    expected_fields = {"schema_version", "scenarios", "tool_version"}
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        raise ValueError("scenario index root fields are invalid")
+    if data["schema_version"] != SCENARIO_INDEX_SCHEMA_VERSION:
+        raise ValueError("scenario index schema_version is unsupported")
+    if data["tool_version"] != VERSION:
+        raise HooksConflict(
+            "scenario bundle tool_version does not match this CLI; provide --scenario-root"
+        )
+    records = data["scenarios"]
+    if not isinstance(records, dict) or not records:
+        raise ValueError("scenario index must list at least one scenario")
+    discovered = {}
+    for scenario_id, package, detail in discover_scenario_packages(packages_root):
+        if package is None:
+            raise HooksConflict(
+                f"scenario bundle member is invalid: {scenario_id} ({detail})"
+            )
+        discovered[scenario_id] = package
+    if set(records) != set(discovered):
+        raise HooksConflict("scenario index members do not match the packaged library")
+    record_fields = {
+        "display_name",
+        "id",
+        "platforms",
+        "requires",
+        "runtime",
+        "source_digest",
+        "version",
+    }
+    for scenario_id, record in records.items():
+        if not isinstance(scenario_id, str) or not SCENARIO_ID_RE.fullmatch(scenario_id):
+            raise ValueError(f"scenario index contains an invalid id: {scenario_id}")
+        if not isinstance(record, dict) or set(record) != record_fields:
+            raise ValueError(f"scenario index record fields are invalid: {scenario_id}")
+        if record["id"] != scenario_id:
+            raise ValueError(f"scenario index id does not match its key: {scenario_id}")
+        if not isinstance(record["source_digest"], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", record["source_digest"]
+        ):
+            raise ValueError(f"scenario index source_digest is invalid: {scenario_id}")
+        expected = _scenario_index_record(discovered[scenario_id])
+        if record != expected:
+            raise HooksConflict(
+                f"scenario index source_digest or metadata drifted: {scenario_id}"
+            )
+    return data
+
+
+def _load_and_validate_scenario_index(index_root: Path) -> Dict[str, Any]:
+    expected_members = {
+        SCENARIO_INDEX_FILENAME: "regular file",
+        SCENARIO_BUNDLE_SCENARIOS_DIRNAME: "directory",
+    }
+    actual_members = _FILESYSTEM.list_directory_names(index_root)
+    unexpected_members = sorted(actual_members - set(expected_members))
+    if unexpected_members:
+        unexpected = unexpected_members[0]
+        node = _classify_node(index_root / unexpected)
+        raise HooksConflict(
+            "indexed scenario library root contains an unexpected member: "
+            f"{node.path} ({node.kind})"
+        )
+    missing_members = sorted(set(expected_members) - actual_members)
+    if missing_members:
+        raise HooksConflict(
+            "indexed scenario library root is missing required member: "
+            f"{index_root / missing_members[0]}"
+        )
+    for name, expected_kind in expected_members.items():
+        node = _classify_node(index_root / name)
+        if node.kind != expected_kind:
+            raise HooksConflict(
+                "indexed scenario library root member has an invalid type: "
+                f"{node.path} ({node.kind}; expected {expected_kind})"
+            )
+
+    index_path = index_root / SCENARIO_INDEX_FILENAME
+    content, _fingerprint = _read_regular_bytes_with_fingerprint(
+        index_path,
+        "scenario index",
+    )
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"scenario index is invalid: {index_path}") from exc
+    packages_root = index_root / SCENARIO_BUNDLE_SCENARIOS_DIRNAME
+    validated = _validate_scenario_index_document(data, packages_root)
+    if _FILESYSTEM.list_directory_names(index_root) != set(expected_members):
+        raise HooksConflict("indexed scenario library root changed during validation")
+    return validated
+
+
+def _validate_scenario_bundle_member_name(name: str) -> str:
+    if name == SCENARIO_INDEX_FILENAME:
+        return name
+    prefix = SCENARIO_BUNDLE_SCENARIOS_DIRNAME + "/"
+    if not name.startswith(prefix) or name == prefix:
+        raise HooksConflict(f"scenario bundle contains an unexpected member: {name}")
+    relative = name[len(prefix) :]
+    if relative.endswith("/") or relative.endswith((".pyc", ".pyo")):
+        raise HooksConflict(f"scenario bundle contains a non-deployable member: {name}")
+    parts = PurePosixPath(relative).parts
+    if "__pycache__" in parts:
+        raise HooksConflict(f"scenario bundle contains bytecode: {name}")
+    _scenario_safe_relative(relative, "scenario bundle member")
+    return name
+
+
+def _validate_scenario_bundle_zipinfo(info: zipfile.ZipInfo) -> None:
+    name = info.filename
+    if "\\" in name or name.startswith("/") or name.startswith("\\"):
+        raise HooksConflict(f"scenario bundle path is not portable: {name}")
+    if any(ord(character) < 32 or ord(character) == 127 for character in name):
+        raise HooksConflict(f"scenario bundle path is not portable: {name}")
+    if name.endswith("/"):
+        raise HooksConflict(f"scenario bundle contains a directory entry: {name}")
+    if info.flag_bits & 0x1:
+        raise HooksConflict(f"scenario bundle contains an encrypted member: {name}")
+    unix_mode = (info.external_attr >> 16) & 0xFFFF
+    file_type = unix_mode & 0o170000
+    if file_type == 0o120000:
+        raise HooksConflict(f"scenario bundle contains a symbolic link: {name}")
+    if info.create_system == 3 and file_type not in {0, 0o100000}:
+        raise HooksConflict(f"scenario bundle member is not a regular file: {name}")
+    _validate_scenario_bundle_member_name(name)
+
+
+def _write_scenario_bundle_zip(path: Path, members: Dict[str, bytes]) -> None:
+    if SCENARIO_INDEX_FILENAME not in members:
+        raise ValueError("scenario bundle is missing index.json")
+    destination = Path(path)
+    if destination.exists():
+        node = _classify_node(destination)
+        if not node.regular:
+            raise OSError(f"scenario bundle destination is not a regular file: {destination}")
+        destination.unlink()
+    with zipfile.ZipFile(str(destination), "w", compression=zipfile.ZIP_STORED) as archive:
+        for relative_path in sorted(members):
+            _validate_scenario_bundle_member_name(relative_path)
+            info = zipfile.ZipInfo(relative_path, SCENARIO_BUNDLE_ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = (0o644 & 0xFFFF) << 16
+            archive.writestr(info, members[relative_path])
+
+
+def write_scenario_bundle(packages_root: Path, destination: Path) -> str:
+    members: Dict[str, bytes] = {}
+    for relative in _scenario_file_paths(
+        packages_root,
+        ignore_bytecode_artifacts=True,
+    ):
+        member = f"{SCENARIO_BUNDLE_SCENARIOS_DIRNAME}/{relative}"
+        source = packages_root / Path(*PurePosixPath(relative).parts)
+        content, _fingerprint = _read_regular_bytes_with_fingerprint(
+            source,
+            member,
+        )
+        members[member] = content
+    members[SCENARIO_INDEX_FILENAME] = _scenario_json_bytes(
+        build_scenario_index(packages_root)
+    )
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_scenario_bundle_zip(destination, members)
+    return _scenario_sha256_file(destination, "scenario bundle")
+
+
+def _extract_scenario_bundle_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    destination_root: Path,
+) -> None:
+    _validate_scenario_bundle_zipinfo(info)
+    relative = _validate_scenario_bundle_member_name(info.filename)
+    data = archive.read(info)
+    target = destination_root
+    parts = PurePosixPath(relative).parts
+    for part in parts[:-1]:
+        target = target / part
+        node = _classify_node(target)
+        if node.exists:
+            if node.kind != "directory":
+                raise HooksConflict(
+                    f"scenario bundle extract path is not a directory: {target}"
+                )
+            continue
+        os.mkdir(target, 0o700)
+    file_path = destination_root / Path(*parts)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(file_path), flags, 0o600)
+    try:
+        os.write(descriptor, data)
+    finally:
+        os.close(descriptor)
+
+
+def _materialize_scenario_bundle(bundle_path: Path) -> Path:
+    digest = _scenario_sha256_file(bundle_path, "scenario bundle")
+    cached = _SCENARIO_BUNDLE_CACHE.get(digest)
+    if cached is not None and _classify_node(cached).kind == "directory":
+        return cached
+    try:
+        with zipfile.ZipFile(str(bundle_path), "r") as archive:
+            names = archive.namelist()
+            if not names:
+                raise HooksConflict("scenario bundle is empty")
+            folded = set()
+            for name in names:
+                _validate_scenario_bundle_zipinfo(archive.getinfo(name))
+                key = name.casefold()
+                if key in folded:
+                    raise HooksConflict(
+                        f"scenario bundle members collide case-insensitively: {name}"
+                    )
+                folded.add(key)
+            if SCENARIO_INDEX_FILENAME not in names:
+                raise HooksConflict("scenario bundle is missing index.json")
+            if archive.testzip() is not None:
+                raise HooksConflict("scenario bundle member failed CRC validation")
+            _register_scenario_bundle_cleanup()
+            temporary = tempfile.TemporaryDirectory(prefix=".keysmith-scenarios-")
+            extracted_root = Path(temporary.name).resolve()
+            try:
+                for info in archive.infolist():
+                    _extract_scenario_bundle_member(archive, info, extracted_root)
+                _load_and_validate_scenario_index(extracted_root)
+            except BaseException:
+                temporary.cleanup()
+                raise
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError) as exc:
+        raise HooksConflict(
+            f"scenario bundle is not a valid ZIP archive or is truncated: {bundle_path}"
+        ) from exc
+    _SCENARIO_BUNDLE_TEMPDIRS.append(temporary)
+    packages_root = extracted_root / SCENARIO_BUNDLE_SCENARIOS_DIRNAME
+    _SCENARIO_BUNDLE_CACHE[digest] = packages_root
+    return packages_root
+
+
+def _scenario_library_from_directory(root: Path) -> ScenarioLibrary:
+    index_path = root / SCENARIO_INDEX_FILENAME
+    scenarios_path = root / SCENARIO_BUNDLE_SCENARIOS_DIRNAME
+    index_node = _classify_node(index_path)
+    if index_node.exists:
+        if not index_node.regular:
+            raise HooksConflict(
+                f"scenario index is not a regular file: {index_path} ({index_node.kind})"
+            )
+        index = _load_and_validate_scenario_index(root)
+        return ScenarioLibrary(
+            kind="indexed-dir",
+            display_path=root,
+            packages_root=scenarios_path,
+            index=index,
+        )
+    return ScenarioLibrary(
+        kind="source-dir",
+        display_path=root,
+        packages_root=root,
+    )
+
+
+def _embedded_scenario_library() -> ScenarioLibrary:
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        raise FileNotFoundError(
+            "this build has no embedded scenario library; provide --scenario-root"
+        )
+    library_dir = Path(meipass) / SCENARIO_EMBEDDED_LIBRARY_DIRNAME
+    manifest_path = library_dir / SCENARIO_EMBEDDED_MANIFEST_FILENAME
+    if _classify_node(manifest_path).kind != "regular file":
+        raise FileNotFoundError(
+            "this build has no embedded scenario library; provide --scenario-root"
+        )
+    content, _fingerprint = _read_regular_bytes_with_fingerprint(
+        manifest_path,
+        "embedded scenario manifest",
+    )
+    try:
+        manifest = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HooksConflict(
+            "embedded scenario manifest is invalid; provide --scenario-root"
+        ) from exc
+    expected_fields = {"filename", "sha256", "tool_version"}
+    if not isinstance(manifest, dict) or set(manifest) != expected_fields:
+        raise HooksConflict(
+            "embedded scenario manifest fields are invalid; provide --scenario-root"
+        )
+    filename = manifest["filename"]
+    expected_digest = manifest["sha256"]
+    tool_version = manifest["tool_version"]
+    if not isinstance(filename, str) or not _is_scenario_bundle_path(Path(filename)):
+        raise HooksConflict(
+            "embedded scenario manifest filename is invalid; provide --scenario-root"
+        )
+    if not isinstance(expected_digest, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_digest
+    ):
+        raise HooksConflict(
+            "embedded scenario manifest digest is invalid; provide --scenario-root"
+        )
+    if tool_version != VERSION:
+        raise HooksConflict(
+            "embedded scenario bundle version mismatch; provide --scenario-root"
+        )
+    bundle_path = library_dir / filename
+    if _classify_node(bundle_path).kind != "regular file":
+        raise FileNotFoundError(
+            "embedded scenario bundle is missing; provide --scenario-root"
+        )
+    actual_digest = _scenario_sha256_file(bundle_path, "embedded scenario bundle")
+    if actual_digest != expected_digest:
+        raise HooksConflict(
+            "embedded scenario bundle digest mismatch; provide --scenario-root"
+        )
+    packages_root = _materialize_scenario_bundle(bundle_path)
+    return ScenarioLibrary(
+        kind="bundle",
+        display_path=bundle_path,
+        packages_root=packages_root,
+    )
+
+
+def resolve_scenario_library(value: Optional[str]) -> ScenarioLibrary:
+    if value:
+        raw = Path(value)
+        if _is_scenario_bundle_path(raw):
+            bundle_path = _scenario_require_absolute_file(value, "--scenario-root")
+            packages_root = _materialize_scenario_bundle(bundle_path)
+            return ScenarioLibrary(
+                kind="bundle",
+                display_path=bundle_path,
+                packages_root=packages_root,
+            )
+        root = _scenario_require_absolute_directory(value, "--scenario-root")
+        return _scenario_library_from_directory(root)
+    if getattr(sys, "frozen", False):
+        return _embedded_scenario_library()
+    root = Path(__file__).resolve().parent / SCENARIO_BUNDLE_SCENARIOS_DIRNAME
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"source scenario library was not found; provide --scenario-root: {root}"
+        )
+    return _scenario_library_from_directory(
+        _scenario_require_absolute_directory(str(root), "scenario library")
+    )
 
 
 def _scenario_control_paths(target: Path) -> Tuple[Path, Path, Path]:
@@ -5905,9 +6395,10 @@ def _scenario_rollback_deploy(state: ScenarioJournalState) -> List[str]:
 
 
 def show_scenario_list(scenario_root_value: Optional[str]) -> None:
-    root = resolve_scenario_root(scenario_root_value)
+    library = resolve_scenario_library(scenario_root_value)
+    root = library.packages_root
     packages = discover_scenario_packages(root)
-    _print(f"[Scenario library] {root}")
+    _print(f"[Scenario library] {library.display_path}")
     if not packages:
         _print("[Scenario state] empty")
         return
@@ -14702,7 +15193,10 @@ Examples:
     )
     parser.add_argument(
         "--scenario-root",
-        help="Explicit absolute scenario library root (source default: ./scenarios)",
+        help=(
+            "Explicit absolute scenario library: scenarios/ directory, unpacked "
+            "index.json + scenarios/ directory, or sealed .bundle file"
+        ),
     )
     parser.add_argument(
         "--lang",

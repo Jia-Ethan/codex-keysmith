@@ -367,6 +367,7 @@ jobs:
             "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.zip"
             "$release_dir/codex-keysmith-${{ steps.source.outputs.tag }}.tar.gz"
             "$release_dir/codex-instruct-${{ steps.source.outputs.tag }}.py"
+            "$release_dir/codex-keysmith-scenarios-${{ steps.source.outputs.tag }}.bundle"
             "$release_dir/SHA256SUMS"
           )
           for asset_path in "${assets[@]}"; do
@@ -406,7 +407,7 @@ jobs:
           assert state["draft"] is True
           assert state["prerelease"] is False
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 4
+          assert len(state["assets"]) == 5
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$draft_state" | sort > "$actual"
@@ -475,7 +476,7 @@ jobs:
           assert state["prerelease"] is False
           assert state["published_at"]
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 4
+          assert len(state["assets"]) == 5
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$final_state" | sort > "$actual"

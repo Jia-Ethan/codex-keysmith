@@ -35,6 +35,8 @@ on:
       publish_desktop_prerelease:
         type: boolean
   pull_request:
+    paths:
+      - "scenarios/**"
 permissions:
   contents: read
 env:
@@ -340,6 +342,17 @@ def _pe_binary_with_icon_resources() -> bytes:
     struct.pack_into("<II", data, 512 + 16, 3, 0x80000020)
     struct.pack_into("<II", data, 512 + 24, 14, 0x80000030)
     return bytes(data)
+
+
+def test_desktop_candidate_tracks_scenario_library_changes():
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "desktop-candidate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert '- "scenarios/**"' in workflow
 
 
 def test_validate_config_accepts_package_json_version_source(tmp_path):

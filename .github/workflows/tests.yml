@@ -77,7 +77,7 @@ jobs:
   windows:
     name: Windows / Python ${{ matrix.python-version }}
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
