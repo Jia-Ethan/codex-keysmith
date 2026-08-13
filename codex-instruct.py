@@ -3994,9 +3994,7 @@ def _scenario_probe_environment(requirement: Dict[str, Any]) -> Optional[Dict[st
 def _scenario_probe_cwd(requirement: Dict[str, Any]) -> Optional[Path]:
     if requirement["type"] != "python-module":
         return None
-    if os.name == "nt":
-        return Path(sys.executable).resolve().parent
-    return Path("/")
+    return Path(sys.executable).resolve().parent
 
 
 def _scenario_probe_detail(output: str, returncode: int) -> str:
