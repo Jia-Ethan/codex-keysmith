@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 ARCHIVE_FILES = (
+    "AGENTS.md",
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",

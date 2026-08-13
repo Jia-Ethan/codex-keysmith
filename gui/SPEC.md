@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.6` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成
+> 状态：当前仓库统一源码为 v0.3.0；公开 `desktop-v0.2.0-beta.6` 仍基于 0.2.0 source line，统一提供两平台 unsigned Desktop Beta，不包含 v0.3 M1 场景部署。正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -371,7 +371,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 ## 11. 参考
 
-- CLI 源码：仓库根目录 `codex-instruct.py`（v0.2.0，单文件）
+- CLI 源码：仓库根目录 `codex-instruct.py`（v0.3.0，单文件）
 - 项目 README：部署流程、CCSwitch 集成、兼容性说明
 - issue #10：可视化客户端需求来源
 - 兄弟项目：claude-keysmith / grok-keysmith / zcode-keysmith（未来可能复用此客户端架构）

@@ -316,6 +316,7 @@ codex-keysmith/
 │   ├── agent-install.md
 │   ├── hooks-transactions.md
 │   ├── reference.md
+│   ├── v0.3-scenario-deployment-design.md
 │   ├── legacy/
 │   └── releases/
 ├── examples/gpt-unrestricted.md
@@ -326,10 +327,12 @@ codex-keysmith/
 │   ├── SPEC.md
 │   ├── package.json
 │   └── package-lock.json
+├── scenarios/example_fixture/       # 无依赖场景与自包含 verify.py
 ├── scripts/
 │   ├── build_release.py
 │   └── run_prompt_bank_regression.py
 ├── tests/
+├── AGENTS.md
 ├── CHANGELOG.md
 ├── CODE_SIGNING_POLICY.md
 ├── CONTRIBUTING.md
@@ -512,11 +515,13 @@ git diff --check
 ```text
 codex-keysmith/
 ├── .github/                  # issue/PR templates and Tests/Release/Desktop workflows
-├── docs/                     # reference, transaction design, install guide, release notes
+├── docs/                     # reference, transaction/scenario design, install guide, release notes
 ├── examples/gpt-unrestricted.md
 ├── gui/                      # React/Tauri desktop client, tests, and native bundle config
+├── scenarios/example_fixture/ # dependency-free scenario with self-contained verify.py
 ├── scripts/
 ├── tests/
+├── AGENTS.md
 ├── CHANGELOG.md
 ├── CODE_SIGNING_POLICY.md
 ├── CONTRIBUTING.md

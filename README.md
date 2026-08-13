@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.0" src="https://img.shields.io/badge/source-v0.3.0-0099CC">
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0"><img alt="Latest Release v0.3.0" src="https://img.shields.io/badge/release-v0.3.0-0099CC"></a>
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -39,6 +39,21 @@
 
 > [!WARNING]
 > 不要在 Windows 上使用已发布的 `v0.1.0`；它有已知的清理缺陷（详见「兼容性与限制」）。v0.1.1 及后续版本已提供原生恢复后端；Windows fresh deployment 仍标记为 beta。
+
+### 状态边界
+
+- **正式 CLI Release**：[`v0.3.0`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0)，提供单文件 CLI、包含 `scenarios/` 的确定性源码归档与 `SHA256SUMS`。
+- **场景能力**：v0.3 M1 已提供 target-local manifest/journal、显式绝对 `--target-dir`、按 `deployment_id` 精确管理和跨平台 fixture；不包含 hooks、GUI、bundle、真实跑分或首批三个场景。
+- **Desktop**：公开安装包仍是基于 0.2.0 源码的 unsigned [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6)，不是 v0.3.0 Desktop Release。
+- **Windows**：CLI fresh deployment 与 Desktop 均保持 Beta 边界；没有签名或实体设备验收，不构成正式 Windows 支持。
+
+### 复制给智能体安装
+
+```text
+请安装 codex-keysmith v0.3.0。只从 GitHub Release 下载单文件 CLI 与 SHA256SUMS，先过滤并校验 CLI 对应的校验和，不使用 curl | python。运行 --version、--status 和 --dry-run，报告目标 .codex 目录、提示词来源、全局行为范围、写入与备份计划；完成预览后停止，等我确认才添加 --yes。发现 durable journal 时只预览 --recover，同样等待确认。不要删除任何备份或事务证据。部署后开启新的 Codex 会话做最小验证。
+```
+
+场景部署需要同版本源码归档中的 `scenarios/`，或显式绝对 `--scenario-root`；可复制的完整指令层与场景层提示词见 [`docs/agent-install.md`](docs/agent-install.md)。
 
 ### 桌面客户端（beta）
 
@@ -59,19 +74,22 @@ npm run tauri dev
 ### 快速开始（macOS / Linux）
 
 ```bash
-# 1. 下载并校验（把 vX.Y.Z 换成 Releases 页面上的最新 tag）
-base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
-curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+# 1. 下载并只校验要执行的单文件 CLI
+RELEASE_TAG=v0.3.0
+base="https://github.com/Jia-Ethan/codex-keysmith/releases/download/$RELEASE_TAG"
+curl --fail --location --remote-name "$base/codex-instruct-$RELEASE_TAG.py"
 curl --fail --location --remote-name "$base/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS
+awk -v file="codex-instruct-$RELEASE_TAG.py" '$2 == file { print }' SHA256SUMS > SHA256SUMS.cli
+test -s SHA256SUMS.cli
+shasum -a 256 -c SHA256SUMS.cli
 
 # 2. 先看，不要先信——确认目标目录、内置提示词来源和将要写入的内容
-python3 codex-instruct-vX.Y.Z.py --version
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang zh-CN
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang zh-CN
+python3 "codex-instruct-$RELEASE_TAG.py" --version
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --status --lang zh-CN
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --dry-run --lang zh-CN
 
 # 3. 确认无误后才写入
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
 不要从浮动 `main` 安装正式版本，也不要用 `curl | python` 直接执行——务必先落盘、校验，再运行。部署完成后**关闭旧任务、开启一个新的 Codex 会话**：Codex 只在会话启动时加载配置，运行中的会话不会热更新。
@@ -93,16 +111,23 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。
 
+正式单文件 CLI 不内嵌场景库。先下载并校验同版本源码归档，解压后在归档根目录运行；或者为单文件 CLI 显式提供解压后的绝对场景库路径。以下示例假定归档解压目录为 `codex-keysmith-v0.3.0/`：
+
 ```bash
-python3 codex-instruct.py --scenario-list
-python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project
-python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project --yes
-python3 codex-instruct.py --scenario-status --target-dir /absolute/project
-python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project --yes
-python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
+RELEASE_TAG=v0.3.0
+CLI="$PWD/codex-instruct-$RELEASE_TAG.py"
+SCENARIO_ROOT="$PWD/codex-keysmith-$RELEASE_TAG/scenarios"
+TARGET_DIR=/absolute/project
+
+python3 "$CLI" --scenario-list --scenario-root "$SCENARIO_ROOT"
+python3 "$CLI" --deploy-scenario example_fixture --scenario-root "$SCENARIO_ROOT" --target-dir "$TARGET_DIR"
+python3 "$CLI" --deploy-scenario example_fixture --scenario-root "$SCENARIO_ROOT" --target-dir "$TARGET_DIR" --yes
+python3 "$CLI" --scenario-status --target-dir "$TARGET_DIR"
+python3 "$CLI" --scenario-uninstall DEPLOYMENT_ID --target-dir "$TARGET_DIR"
+python3 "$CLI" --scenario-recover --target-dir "$TARGET_DIR"
 ```
 
-`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`，也可用绝对 `--scenario-root` 指定场景库。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
+`--target-dir` 必须是显式绝对目录；写操作默认只预览，确认后才加入 `--yes`。源码 checkout / 源码归档从脚本同级 `scenarios/` 读取，也可用绝对 `--scenario-root` 指定场景库。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
 
 ### 与 CCSwitch 配置切换配合
 

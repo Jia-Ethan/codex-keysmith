@@ -28,6 +28,21 @@
 > [!WARNING]
 > Do not use the published `v0.1.0` on Windows; it has a known cleanup defect (see Compatibility below). v0.1.1 and later provide the native recovery backend; Windows fresh deployment remains beta.
 
+### Status boundary
+
+- **Formal CLI Release:** [`v0.3.0`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0), with the standalone CLI, deterministic source archives containing `scenarios/`, and `SHA256SUMS`.
+- **Scenario capability:** v0.3 M1 provides target-local manifests/journals, explicit absolute `--target-dir`, exact `deployment_id` management, and the portable fixture. It does not include hooks, GUI, bundles, live benchmarks, or the first three real scenarios.
+- **Desktop:** the public installers remain the unsigned [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6), built from the 0.2.0 source line; they are not a v0.3.0 Desktop Release.
+- **Windows:** CLI fresh deployment and Desktop remain Beta, unsigned, and without physical-device acceptance; this is not formal Windows support.
+
+### Copy to an agent
+
+```text
+Install codex-keysmith v0.3.0. Download only the standalone CLI and SHA256SUMS from the GitHub Release, filter and verify the CLI checksum, and never pipe curl into python. Run --version, --status, and --dry-run; report the target .codex directory, prompt source, global behavior scope, planned writes, and backup paths. Stop after preview and wait for my confirmation before adding --yes. If a durable journal exists, only preview --recover and wait for confirmation there as well. Do not delete backups or transaction evidence. Start a new Codex session for the minimum post-deployment check.
+```
+
+Scenario deployment needs the same-version source archive's `scenarios/` directory or an explicit absolute `--scenario-root`. See [`docs/agent-install.md`](docs/agent-install.md) for complete instruction-layer and scenario-layer prompts.
+
 ### Desktop client (beta)
 
 The repository now includes the [`gui/` desktop client source](https://github.com/Jia-Ethan/codex-keysmith/tree/main/gui). It uses Tauri 2 + React and delegates preview, deployment, recovery, and uninstall to the existing Python CLI instead of reimplementing file transactions in the GUI.
@@ -47,19 +62,22 @@ npm run tauri dev
 ### Quick start (macOS / Linux)
 
 ```bash
-# 1. Download and verify (replace vX.Y.Z with the latest tag on the Releases page)
-base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
-curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+# 1. Download and verify only the standalone CLI you will execute
+RELEASE_TAG=v0.3.0
+base="https://github.com/Jia-Ethan/codex-keysmith/releases/download/$RELEASE_TAG"
+curl --fail --location --remote-name "$base/codex-instruct-$RELEASE_TAG.py"
 curl --fail --location --remote-name "$base/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS
+awk -v file="codex-instruct-$RELEASE_TAG.py" '$2 == file { print }' SHA256SUMS > SHA256SUMS.cli
+test -s SHA256SUMS.cli
+shasum -a 256 -c SHA256SUMS.cli
 
 # 2. Look before you trust — confirm target directory, prompt source, and the planned write
-python3 codex-instruct-vX.Y.Z.py --version
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang en
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang en
+python3 "codex-instruct-$RELEASE_TAG.py" --version
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --status --lang en
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --dry-run --lang en
 
 # 3. Confirm only after reviewing the plan
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang en
+python3 "codex-instruct-$RELEASE_TAG.py" --codex-dir ~/.codex --yes --lang en
 ```
 
 Never install a formal release from a floating `main`, and never pipe `curl | python`. Save the file, verify it, then run it. **Close old tasks and start a new Codex session** after deployment — Codex loads configuration only at session start.
@@ -81,16 +99,23 @@ Full field list, transaction directories, and edge cases: [`docs/reference.md`](
 
 M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`.
 
+The formal standalone CLI does not embed the scenario library. Download and verify the same-version source archive and run from its root, or give the standalone CLI the extracted library's absolute path. This example assumes an extracted `codex-keysmith-v0.3.0/` directory:
+
 ```bash
-python3 codex-instruct.py --scenario-list
-python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project
-python3 codex-instruct.py --deploy-scenario example_fixture --target-dir /absolute/project --yes
-python3 codex-instruct.py --scenario-status --target-dir /absolute/project
-python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absolute/project --yes
-python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
+RELEASE_TAG=v0.3.0
+CLI="$PWD/codex-instruct-$RELEASE_TAG.py"
+SCENARIO_ROOT="$PWD/codex-keysmith-$RELEASE_TAG/scenarios"
+TARGET_DIR=/absolute/project
+
+python3 "$CLI" --scenario-list --scenario-root "$SCENARIO_ROOT"
+python3 "$CLI" --deploy-scenario example_fixture --scenario-root "$SCENARIO_ROOT" --target-dir "$TARGET_DIR"
+python3 "$CLI" --deploy-scenario example_fixture --scenario-root "$SCENARIO_ROOT" --target-dir "$TARGET_DIR" --yes
+python3 "$CLI" --scenario-status --target-dir "$TARGET_DIR"
+python3 "$CLI" --scenario-uninstall DEPLOYMENT_ID --target-dir "$TARGET_DIR"
+python3 "$CLI" --scenario-recover --target-dir "$TARGET_DIR"
 ```
 
-`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory by default, while an absolute `--scenario-root` can select another library. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
+`--target-dir` must be explicit and absolute. Writes remain preview-only; add `--yes` only after confirmation. A source checkout/archive reads its sibling `scenarios/` directory by default, while an absolute `--scenario-root` selects another library. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
 
 ### Using CCSwitch profiles as an activation switch
 

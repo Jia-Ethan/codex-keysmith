@@ -8,7 +8,7 @@
 
 | 版本 | 安全支持 |
 | --- | --- |
-| 最新 `0.1.x` Release | 支持；安全修复以最新补丁版本为准 |
+| 最新正式 Release（当前为 `v0.3.0`） | 支持；安全修复以最新正式版本为准 |
 | `Unreleased` / `main` | Best effort 开发状态；不视为稳定 Release |
 | 更早版本与未标记快照 | 不支持 |
 
@@ -48,7 +48,7 @@ v0.1.0 之前没有部署清单的状态不属于自动卸载所有权。成功�
 
 | Version | Security support |
 | --- | --- |
-| Latest `0.1.x` Release | Supported; fixes target the latest patch release |
+| Latest formal Release (currently `v0.3.0`) | Supported; fixes target the latest formal release |
 | `Unreleased` / `main` | Best-effort development state, not a stable Release |
 | Older releases and untagged snapshots | Unsupported |
 

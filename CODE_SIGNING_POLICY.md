@@ -22,4 +22,4 @@ The desktop candidate workflow is permanently unsigned and does not read Apple o
 
 An application to the SignPath Foundation program is pending. No current asset is signed by SignPath Foundation, and the project will not describe any build as SignPath-signed until approval and successful signature verification are complete.
 
-After approval, the formal `v0.2.0` release will be rebuilt from a controlled source commit through a separate signing workflow. Signing credentials must be restricted to `main`, protected by manual approval, unavailable to pull requests, and followed by Authenticode and timestamp verification. Signed files will have new SHA-256 values.
+After approval, a future signed Desktop Release will be rebuilt from a controlled source commit through a separate signing workflow. Signing credentials must be restricted to `main`, protected by manual approval, unavailable to pull requests, and followed by platform signature and timestamp verification. Signed files will have new SHA-256 values. The formal CLI-only `v0.3.0` Release does not change this Desktop signing boundary.

@@ -20,6 +20,7 @@ BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
 TAG = "v0.3.0"
 VERSION = "0.3.0"
 REQUIRED_ARCHIVE_FILES = {
+    "AGENTS.md",
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
     "CONTRIBUTING.md",
@@ -165,7 +166,7 @@ def _asset_hashes(output_dir):
     }
 
 
-def test_repository_version_metadata_is_release_state_neutral():
+def test_repository_version_metadata_matches_current_release():
     version = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
     script = (REPO_ROOT / "codex-instruct.py").read_text(encoding="utf-8")
     changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -175,11 +176,13 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
     assert "## [{}] - 2026-08-13".format(VERSION) in changelog
-    assert "Source version v0.3.0" in readme
+    assert "Latest Release v0.3.0" in readme
     assert "v0.3.0 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
-        assert "codex-instruct-vX.Y.Z.py" in quick_start
+        assert "RELEASE_TAG=v0.3.0" in quick_start
+        assert 'awk -v file="codex-instruct-$RELEASE_TAG.py"' in quick_start
+        assert "test -s SHA256SUMS.cli" in quick_start
         assert "codex-instruct-v0.1.0.py" not in quick_start
         assert "--codex-dir ~/.codex --status" in quick_start
         assert "--codex-dir ~/.codex --dry-run" in quick_start

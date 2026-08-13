@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端
 
-面向普通用户的 codex-keysmith 可视化客户端。基于 **Tauri 2 + React + Tailwind 4 + shadcn/ui + Motion**，复用根目录 `codex-instruct.py` 的部署、回滚与恢复逻辑，不在 GUI 中重实现文件操作。
+面向普通用户的 codex-keysmith 可视化客户端。当前仓库统一源码版本为 `0.3.0`，GUI 基于 **Tauri 2 + React + Tailwind 4 + shadcn/ui + Motion**，复用根目录 `codex-instruct.py` 的部署、回滚与恢复逻辑，不在 GUI 中重实现文件操作。
 
 > 技术方案与解析规范见 [SPEC.md](./SPEC.md)。
 
@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-`desktop-v0.2.0-beta.6` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+`desktop-v0.2.0-beta.6` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS；这些公开安装包仍来自 0.2.0 source line，不包含正式 `v0.3.0` 的场景部署能力。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
