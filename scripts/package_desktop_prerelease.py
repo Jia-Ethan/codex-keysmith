@@ -23,7 +23,8 @@ else:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-VERSION = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
+# The unsigned desktop beta line is immutable and intentionally remains on 0.2.0.
+VERSION = "0.2.0"
 PRODUCT = "codex-keysmith"
 TAG_RE = re.compile(rf"^desktop-v{re.escape(VERSION)}-beta\.[1-9][0-9]*$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")

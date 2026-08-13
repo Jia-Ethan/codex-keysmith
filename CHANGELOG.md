@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-13
+
+This release adds the first target-local scenario deployment milestone while preserving the existing instruction deployment schema v1 and command semantics. Scenario state is isolated under each explicit target and is owned by exact `deployment_id`; no migration is required for existing instruction deployments. Windows fresh deployment remains `EXPLICIT_BETA`.
+
 ### Scenario deployment M1
 
 - Added preview-first target-local scenario list, deploy, status, exact `deployment_id` uninstall, and interrupted recovery commands without changing the existing instruction-layer schema v1 or command semantics.
@@ -17,7 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Prepared `desktop-v0.2.0-beta.6` as the unified unsigned Desktop Beta with an Apple Silicon macOS DMG, Windows x64 NSIS installer, standalone CLI, deterministic source archives, two platform candidate ZIPs, and one complete `SHA256SUMS`.
 - Extended the main-only manual publisher to bind both platform manifests, the signed annotated beta tag, current remote `main`, expected commit, draft Release, and all eight public assets before publication. Pull requests remain read-only and the candidate workflow contains no signing secrets.
-- `desktop-v0.2.0-beta.5`, `desktop-v0.2.0-beta.4`, and `desktop-v0.2.0-beta.3` remain earlier unified desktop prereleases, and `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. The application source remains `0.2.0`, and the formal signed release keeps the `v0.2.0` tag.
+- `desktop-v0.2.0-beta.5`, `desktop-v0.2.0-beta.4`, and `desktop-v0.2.0-beta.3` remain earlier unified desktop prereleases, and `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. The signed `desktop-v0.2.0-beta.1` tag is retained after its draft publication aborted before asset upload; it has no public Release or assets. These historical desktop prereleases remain on source version `0.2.0`.
 - Added code-signing and privacy policies. The application does not proactively collect or upload user data; SignPath Foundation review remains pending and the current beta is not SignPath-signed.
 - Desktop status is `Beta / unsigned / native-CI-validated`. CI builds both native candidates and installs, exercises, and uninstalls Windows in temporary directories, but no physical macOS or Windows device experience has been accepted.
 
@@ -165,7 +169,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.2.0
 [0.1.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.2

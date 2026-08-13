@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.2.0" src="https://img.shields.io/badge/source-v0.2.0-0099CC">
+  <img alt="Source version v0.3.0" src="https://img.shields.io/badge/source-v0.3.0-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -50,7 +50,7 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.2.0`。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 统一提供 macOS Apple Silicon DMG、Windows x64 NSIS、单文件 CLI 和确定性源码归档。
+- 当前统一源码版本为 `0.3.0`；正式 `v0.3.0` Release 提供单文件 CLI 与确定性源码归档。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
