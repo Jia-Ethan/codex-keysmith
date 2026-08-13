@@ -38,7 +38,7 @@ npm install
 npm run tauri dev
 ```
 
-- The unified source version is `0.3.1`; the formal `v0.3.1` Release provides the standalone CLI and deterministic source archives containing the first scenario packages. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include this scenario-library update.
+- The unified source version is `0.3.2`; the formal `v0.3.2` Release fixes standalone-CLI checksum verification and closes the incompatible historical Desktop publisher while retaining the v0.3.1 scenario-library capabilities. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library.
 - macOS users download `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`; Windows users download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. Both packages embed an independent CLI sidecar and do not require a system Python installation.
 - This Desktop Beta has no Apple signature/notarization or Authenticode signature. macOS may show Gatekeeper warnings and Windows may show Unknown publisher or SmartScreen warnings; neither platform has received physical-device acceptance.
 - The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
