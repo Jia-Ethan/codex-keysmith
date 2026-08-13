@@ -155,9 +155,7 @@ jobs:
 
   publish-desktop-prerelease:
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main' &&
-      inputs.publish_desktop_prerelease == true
+      ${{ false }}
     needs:
       - candidate
     runs-on: ubuntu-24.04
@@ -387,7 +385,7 @@ def test_validate_config_requires_window_capability_for_main_window(tmp_path):
             "outside the publisher job",
         ),
         (
-            lambda text: text.replace("inputs.publish_desktop_prerelease == true", "true"),
+            lambda text: text.replace("if: >-\n      ${{ false }}", "if: ${{ true }}"),
             "publisher markers",
         ),
         (
