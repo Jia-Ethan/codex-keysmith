@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -75,6 +76,37 @@ const pythonEnv = { ...process.env, PYTHONNOUSERSITE: "1" };
 delete pythonEnv.PYTHONHOME;
 delete pythonEnv.PYTHONPATH;
 delete pythonEnv.PYTHONUSERBASE;
+
+const bundleDir = join(buildRoot, "scenario-library");
+mkdirSync(bundleDir, { recursive: true });
+const bundleName = `codex-keysmith-scenarios-v${expectedCliVersion}.bundle`;
+const bundlePath = join(bundleDir, bundleName);
+const bundleResult = spawnSync(
+  python,
+  [
+    join(repoDir, "scripts", "build_release.py"),
+    "--write-scenario-bundle",
+    bundlePath,
+    "--repo-root",
+    repoDir,
+  ],
+  { cwd: repoDir, encoding: "utf8", stdio: "inherit", env: pythonEnv },
+);
+if (bundleResult.error) throw bundleResult.error;
+if (bundleResult.status !== 0) {
+  throw new Error(`Scenario bundle build failed with exit code ${bundleResult.status}`);
+}
+if (!existsSync(bundlePath)) throw new Error(`Scenario bundle missing: ${bundlePath}`);
+const bundleDigest = createHash("sha256").update(readFileSync(bundlePath)).digest("hex");
+writeFileSync(
+  join(bundleDir, "embedded-scenarios.json"),
+  `${JSON.stringify({
+    filename: bundleName,
+    sha256: bundleDigest,
+    tool_version: expectedCliVersion,
+  }, null, 2)}\n`,
+);
+
 const result = spawnSync(
   python,
   [
@@ -91,6 +123,8 @@ const result = spawnSync(
     workDir,
     "--specpath",
     specDir,
+    "--add-data",
+    `${bundleDir}${delimiter}scenario-library`,
     patchedSource,
   ],
   { cwd: guiDir, encoding: "utf8", stdio: "inherit", env: pythonEnv },
@@ -116,6 +150,12 @@ if (smoke.error) throw smoke.error;
 const reportedVersion = smoke.stdout.trim().split(/\s+/).at(-1);
 if (smoke.status !== 0 || reportedVersion !== expectedCliVersion) {
   throw new Error(`Frozen sidecar version smoke failed: ${smoke.stderr || smoke.stdout}`);
+}
+
+const scenarioSmoke = spawnSync(destination, ["--scenario-list", "--lang", "en"], { encoding: "utf8" });
+if (scenarioSmoke.error) throw scenarioSmoke.error;
+if (scenarioSmoke.status !== 0 || !scenarioSmoke.stdout.includes("example_fixture 1.0.0: ready")) {
+  throw new Error(`Frozen sidecar embedded scenario smoke failed: ${scenarioSmoke.stderr || scenarioSmoke.stdout}`);
 }
 
 console.log(`Built ${destination}`);

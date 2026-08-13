@@ -29,6 +29,7 @@ on:
       - "codex-instruct.py"
       - "examples/**"
       - "gui/**"
+      - "scenarios/**"
       - "requirements-quality.txt"
       - "CODE_SIGNING_POLICY.md"
       - "PRIVACY.md"
@@ -610,6 +611,215 @@ jobs:
             $dryRunOutput = & $installedSidecars[0].FullName `
               --codex-dir $codexDir --dry-run --lang en 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar dry-run smoke failed: $dryRunOutput" }
+            $scenarioRoot = Join-Path $smokeRoot "scenario-lifecycle"
+            $scenarioTarget = Join-Path $scenarioRoot "target"
+            New-Item -ItemType Directory -Force -Path $scenarioTarget | Out-Null
+            Set-Content -LiteralPath (Join-Path $scenarioTarget "project.txt") `
+              -Value "keep" -Encoding UTF8
+            $scenarioListOutput = & $installedSidecars[0].FullName `
+              --scenario-list --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioListOutput | Out-String) -notmatch "example_fixture 1\.0\.0: ready"
+            ) {
+              throw "Frozen sidecar embedded scenario list failed: $scenarioListOutput"
+            }
+            $scenarioPreviewOutput = & $installedSidecars[0].FullName `
+              --deploy-scenario example_fixture `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioPreviewOutput | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario deploy preview failed: $scenarioPreviewOutput"
+            }
+            if (Test-Path -LiteralPath (Join-Path $scenarioTarget ".codex-keysmith")) {
+              throw "Frozen sidecar scenario deploy preview mutated its target."
+            }
+            $scenarioDeployOutput = & $installedSidecars[0].FullName `
+              --deploy-scenario example_fixture `
+              --target-dir $scenarioTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario deploy failed: $scenarioDeployOutput"
+            }
+            $scenarioManifestPath = Join-Path $scenarioTarget ".codex-keysmith\scenario-manifest.json"
+            if (-not (Test-Path -LiteralPath $scenarioManifestPath -PathType Leaf)) {
+              throw "Frozen sidecar scenario deploy did not write its manifest."
+            }
+            $scenarioManifest = Get-Content -LiteralPath $scenarioManifestPath -Raw | ConvertFrom-Json
+            $deploymentProperties = @($scenarioManifest.deployments.PSObject.Properties)
+            if ($deploymentProperties.Count -ne 1) {
+              throw "Frozen sidecar scenario deploy did not record exactly one deployment."
+            }
+            $deploymentId = $deploymentProperties[0].Name
+            $deployment = $deploymentProperties[0].Value
+            if ($deployment.scenario_id -ne "example_fixture") {
+              throw "Frozen sidecar scenario manifest recorded the wrong scenario."
+            }
+            $scenarioPayload = Join-Path $scenarioTarget ".codex-keysmith\$($deployment.root)"
+            $verifyOutput = & python (Join-Path $scenarioPayload "verify.py") 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($verifyOutput | Out-String) -notmatch "example_fixture verify passed"
+            ) {
+              throw "Frozen sidecar deployed fixture verification failed: $verifyOutput"
+            }
+            $scenarioStatusOutput = & $installedSidecars[0].FullName `
+              --scenario-status `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioStatusOutput | Out-String) -notmatch "state=active"
+            ) {
+              throw "Frozen sidecar scenario status failed: $scenarioStatusOutput"
+            }
+            $scenarioRecoverOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioRecoverOutput | Out-String) -notmatch "no recovery required"
+            ) {
+              throw "Frozen sidecar scenario recovery smoke failed: $scenarioRecoverOutput"
+            }
+            $scenarioUninstallPreview = & $installedSidecars[0].FullName `
+              --scenario-uninstall $deploymentId `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioUninstallPreview | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario uninstall preview failed: $scenarioUninstallPreview"
+            }
+            if (-not (Test-Path -LiteralPath $scenarioPayload -PathType Container)) {
+              throw "Frozen sidecar scenario uninstall preview removed its payload."
+            }
+            $scenarioUninstallOutput = & $installedSidecars[0].FullName `
+              --scenario-uninstall $deploymentId `
+              --target-dir $scenarioTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario uninstall failed: $scenarioUninstallOutput"
+            }
+            if (Test-Path -LiteralPath $scenarioPayload) {
+              throw "Frozen sidecar scenario uninstall left its payload behind."
+            }
+            if (Test-Path -LiteralPath $scenarioManifestPath -PathType Leaf) {
+              $remainingManifest = Get-Content -LiteralPath $scenarioManifestPath -Raw | ConvertFrom-Json
+              if (@($remainingManifest.deployments.PSObject.Properties).Count -ne 0) {
+                throw "Frozen sidecar scenario uninstall left a manifest entry behind."
+              }
+            }
+
+            # Leave a prepared transaction behind in a disposable target, then verify
+            # preview and confirmed recovery through the same frozen executable.
+            $recoveryTarget = Join-Path $scenarioRoot "recovery-target"
+            New-Item -ItemType Directory -Force -Path $recoveryTarget | Out-Null
+            Set-Content -LiteralPath (Join-Path $recoveryTarget "project.txt") `
+              -Value "keep" -Encoding UTF8
+            $recoveryFixture = Join-Path $scenarioRoot "prepare-recovery.py"
+            @'
+          import importlib.util
+          import os
+          import sys
+
+          module_path, scenario_root, target = sys.argv[1:]
+          spec = importlib.util.spec_from_file_location("scenario_recovery_fixture", module_path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          def checkpoint(name):
+              if name == "scenario-phase-prepared":
+                  os._exit(86)
+
+          module._FILESYSTEM_CHECKPOINT_HOOK = checkpoint
+          resolved_target = module.resolve_scenario_target(target)
+          package = module.load_scenario_package(
+              module.resolve_scenario_root(scenario_root),
+              "example_fixture",
+          )
+          module.deploy_scenario(resolved_target, package, True)
+          raise AssertionError("recovery checkpoint was not reached")
+          '@ | Set-Content -LiteralPath $recoveryFixture -Encoding UTF8
+            & python $recoveryFixture `
+              (Resolve-Path -LiteralPath codex-instruct.py).Path `
+              (Resolve-Path -LiteralPath scenarios).Path `
+              $recoveryTarget
+            if ($LASTEXITCODE -ne 86) {
+              throw "Failed to prepare frozen sidecar recovery fixture (exit $LASTEXITCODE)."
+            }
+            $recoverPreviewOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $recoveryTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($recoverPreviewOutput | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario recover preview failed: $recoverPreviewOutput"
+            }
+            $recoverConfirmOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $recoveryTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario recover confirmation failed: $recoverConfirmOutput"
+            }
+            $recoveredStatusOutput = & $installedSidecars[0].FullName `
+              --scenario-status `
+              --target-dir $recoveryTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($recoveredStatusOutput | Out-String) -notmatch "not-installed"
+            ) {
+              throw "Frozen sidecar recovered scenario target is not clean: $recoveredStatusOutput"
+            }
+
+            # Repack a disposable bundle with member drift. This exercises validation
+            # through the real frozen executable without changing installed resources.
+            $driftRoot = Join-Path $smokeRoot "drifted-bundle"
+            $driftUnpacked = Join-Path $driftRoot "unpacked"
+            New-Item -ItemType Directory -Force -Path $driftUnpacked | Out-Null
+            $bundleName = "codex-keysmith-scenarios-v$((Get-Content -LiteralPath VERSION -Raw).Trim()).bundle"
+            $bundlePath = Join-Path $driftRoot $bundleName
+            python scripts/build_release.py `
+              --write-scenario-bundle $bundlePath `
+              --repo-root (Get-Location).Path
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+              throw "Disposable scenario bundle build failed."
+            }
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($bundlePath, $driftUnpacked)
+            Add-Content `
+              -LiteralPath (Join-Path $driftUnpacked "scenarios\example_fixture\task.md") `
+              -Value "drift"
+            $driftedBundle = Join-Path $driftRoot "drifted.bundle"
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+              $driftUnpacked,
+              $driftedBundle,
+              [System.IO.Compression.CompressionLevel]::Optimal,
+              $false
+            )
+            $driftOutput = & $installedSidecars[0].FullName `
+              --scenario-list `
+              --scenario-root $driftedBundle `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -eq 0 -or
+              ($driftOutput | Out-String) -notmatch "checksum|source_digest|drift"
+            ) {
+              throw "Frozen sidecar bundle member drift did not fail closed: $driftOutput"
+            }
             $afterCodex = Get-SmokeSnapshot $codexDir
             if (Compare-Object -ReferenceObject $beforeCodex -DifferenceObject $afterCodex) {
               throw "Frozen sidecar read-only smoke mutated the temporary Codex directory."

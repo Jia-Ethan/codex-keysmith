@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.2" src="https://img.shields.io/badge/source-v0.3.2-0099CC">
+  <img alt="Source version v0.3.3" src="https://img.shields.io/badge/source-v0.3.3-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -50,7 +50,7 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.3.2`；正式 `v0.3.2` Release 修复单文件 CLI 校验命令并关闭不再兼容的历史 Desktop publisher，场景库能力与 v0.3.1 保持一致。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库更新。
+- 当前统一源码版本为 `0.3.3`；本线新增同版本密封场景 bundle，单文件 CLI 需显式 `--scenario-root` 指向该 bundle 或源码目录，冻结 sidecar 则嵌入同一 bundle。已发布的 `v0.3.2` tag 与资产保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库更新。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
@@ -89,9 +89,9 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 完整字段、临时事务目录和边界条件见 [`docs/reference.md`](docs/reference.md)。
 
-### 场景部署（v0.3 M1 / M2 第一阶段）
+### 场景部署（v0.3 M1 / M2）
 
-M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。M2 第一阶段在同一库中加入三个评测包，并运行只读依赖探测；不含 bundle、hooks、GUI 或真实跑分。
+M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。M2 第一阶段在同一库中加入三个评测包，并运行只读依赖探测。M2 第二阶段提供可重复的密封 `codex-keysmith-scenarios-v<VERSION>.bundle`；不含 hooks、GUI 场景页或真实跑分。
 
 当前场景库：
 
@@ -111,7 +111,17 @@ python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absol
 python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
 ```
 
-`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`，也可用绝对 `--scenario-root` 指定场景库。`--scenario-list` 与部署预检会执行受控、无 shell 的 `requires` 探测，未满足时输出可行动 blocker。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
+`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`。绝对 `--scenario-root` 可以指向源码 `scenarios/`、含 `index.json` 的解包目录，或密封 `codex-keysmith-scenarios-v<VERSION>.bundle`。单文件 CLI 不内嵌场景库，离线使用时下载同版本 bundle 并用 `SHA256SUMS` 校验该条目；冻结 sidecar 嵌入同版本 bundle，资源完好时不必再传 `--scenario-root`，缺失或摘要不匹配则明确失败。`--scenario-list` 与部署预检会执行受控、无 shell 的 `requires` 探测，未满足时输出可行动 blocker。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1--m2) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
+
+```bash
+# 单文件 CLI：校验并使用同版本密封 bundle
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-keysmith-scenarios-vX.Y.Z.bundle"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-keysmith-scenarios-vX.Y.Z.bundle"' SHA256SUMS | shasum -a 256 -c -
+python3 codex-instruct-vX.Y.Z.py --scenario-list \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+```
 
 ### 与 CCSwitch 配置切换配合
 

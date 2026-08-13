@@ -342,6 +342,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "expected_commit:",
         "publish_desktop_prerelease:",
         "pull_request:",
+        '- "scenarios/**"',
         "contents: read",
         "macos-15",
         "windows-2025",

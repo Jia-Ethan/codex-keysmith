@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-13
+
+### Scenario library M2 phase 2
+
+- Added a repeatable sealed scenario bundle named `codex-keysmith-scenarios-v<VERSION>.bundle`. The ZIP contains `index.json` plus the complete `scenarios/` library; each index `source_digest` uses the existing M1 algorithm, the index does not self-hash, and the outer digest appears only in `SHA256SUMS`.
+- `--scenario-root` now accepts the sealed `.bundle`, an unpacked directory with `index.json`, or the source `scenarios/` tree. List, deploy preview/confirm, status, uninstall, and recover keep the existing directory-library behavior.
+- Frozen/sidecar builds embed the same-version bundle. A present, matching embed no longer requires `--scenario-root`; a missing or drifted resource fails closed and asks for that option. The standalone CLI still does not embed the library.
+- Windows coverage opens and validates the bundle and runs the `example_fixture` lifecycle. The three production packages remain `darwin`/`linux` and do not declare `win32`.
+- Hooks, GUI scenario pages, live scoring, network downloads, new Desktop installers, published-tag moves, and automatic releases stay out of this phase.
+
 ## [0.3.2] - 2026-08-13
 
 ### Fixed
@@ -186,7 +196,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.2
 [0.3.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0
