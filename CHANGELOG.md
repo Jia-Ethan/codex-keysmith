@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-13
+
 ### Scenario library M2
 
 - Added the first three production scenario packages: `cyber_keystone` (authorized red-team PoC and toolchain analysis), `aiml_toxigen` (toxicity generation and train-split poisoning), and `chem_rdkit` (RDKit compound descriptors and synthesis routes). Each package declares `darwin` and `linux` only, ships `task.md` / `validator.py` / `verify.py` / `data/` few-shots, and keeps `fixtures/` source-only.
@@ -177,7 +179,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.2.0
 [0.1.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.1.3
