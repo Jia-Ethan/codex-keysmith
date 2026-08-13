@@ -77,9 +77,18 @@ Omitting `--codex-dir` processes every auto-discovered directory; only do this f
 
 Full field list, transaction directories, and edge cases: [`docs/reference.md`](docs/reference.md).
 
-### Scenario deployment (v0.3 M1)
+### Scenario deployment (v0.3 M1 / M2 phase 1)
 
-M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`.
+M1 adds target-local scenario deployment that is independent from instruction deployment. It never changes `.codex-keysmith-manifest.json`, `config.toml`, or hooks; scenario files stay under an explicit target's `<target>/.codex-keysmith/` and are managed by exact `deployment_id`. M2 phase 1 adds the first three evaluation packages and read-only dependency probes. Bundle packaging, hooks, GUI pages, and live scoring stay out of this phase.
+
+Current library:
+
+| Package | Platforms | Requires | Purpose |
+| --- | --- | --- | --- |
+| `example_fixture` | darwin, linux, win32 | none | M1 lifecycle and integrity fixture |
+| `cyber_keystone` | darwin, linux | none | Authorized red-team PoC / toolchain analysis |
+| `aiml_toxigen` | darwin, linux | none | Toxicity generation and train-split poisoning |
+| `chem_rdkit` | darwin, linux | `rdkit>=2022.9` (probe only; never installed) | RDKit compound analysis and synthesis routes |
 
 ```bash
 python3 codex-instruct.py --scenario-list
@@ -90,7 +99,7 @@ python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absol
 python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
 ```
 
-`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory by default, while an absolute `--scenario-root` can select another library. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
+`--target-dir` must be an explicit absolute directory. Writes are preview-only until `--yes` is present. Source mode reads the repository `scenarios/` directory by default, while an absolute `--scenario-root` can select another library. `--scenario-list` and deploy preview run controlled, no-shell `requires` probes and print an actionable blocker when a dependency is missing. See [`docs/reference.md`](docs/reference.md#scenario-deployment-v03-m1) and [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md) for the manifest, journal, drift, and recovery contracts.
 
 ### Using CCSwitch profiles as an activation switch
 

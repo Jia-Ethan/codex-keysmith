@@ -89,9 +89,18 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 完整字段、临时事务目录和边界条件见 [`docs/reference.md`](docs/reference.md)。
 
-### 场景部署（v0.3 M1）
+### 场景部署（v0.3 M1 / M2 第一阶段）
 
-M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。
+M1 新增与指令层正交的 target-local 场景部署。它不会修改 `.codex-keysmith-manifest.json`、`config.toml` 或 hooks；所有场景文件只写入显式目标的 `<target>/.codex-keysmith/`，并以独立 `deployment_id` 精确管理。M2 第一阶段在同一库中加入三个评测包，并运行只读依赖探测；不含 bundle、hooks、GUI 或真实跑分。
+
+当前场景库：
+
+| 包 | 平台 | 依赖 | 用途 |
+| --- | --- | --- | --- |
+| `example_fixture` | darwin, linux, win32 | 无 | M1 生命周期与完整性 fixture |
+| `cyber_keystone` | darwin, linux | 无 | 授权红队 PoC / 工具链分析 |
+| `aiml_toxigen` | darwin, linux | 无 | 毒性生成与训练污染评估 |
+| `chem_rdkit` | darwin, linux | `rdkit>=2022.9`（只探测，不安装） | RDKit 化合物分析与合成路线 |
 
 ```bash
 python3 codex-instruct.py --scenario-list
@@ -102,7 +111,7 @@ python3 codex-instruct.py --scenario-uninstall DEPLOYMENT_ID --target-dir /absol
 python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --yes
 ```
 
-`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`，也可用绝对 `--scenario-root` 指定场景库。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
+`--target-dir` 必须是显式绝对目录；写操作默认只预览，加入 `--yes` 才执行。源码模式默认读取仓库 `scenarios/`，也可用绝对 `--scenario-root` 指定场景库。`--scenario-list` 与部署预检会执行受控、无 shell 的 `requires` 探测，未满足时输出可行动 blocker。完整 manifest/journal、漂移检测和恢复契约见 [`docs/reference.md`](docs/reference.md#场景部署v03-m1) 与 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)。
 
 ### 与 CCSwitch 配置切换配合
 

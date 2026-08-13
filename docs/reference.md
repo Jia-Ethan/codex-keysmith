@@ -186,7 +186,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 
 ### 场景部署（v0.3 M1）
 
-场景层与既有指令层完全正交：不读取或修改 `.codex-keysmith-manifest.json`、`config.toml`、`hooks.json` 或 `model_instructions_file`。所有场景写入只发生在显式目标的 `<target>/.codex-keysmith/`：
+场景层与既有指令层完全正交：不读取或修改 `.codex-keysmith-manifest.json`、`config.toml`、`hooks.json` 或 `model_instructions_file`。所有场景写入只发生在显式目标的 `<target>/.codex-keysmith/`。M2 第一阶段在同一库中加入三个评测包，并运行只读 `requires` 探测；不含 bundle。
 
 ```bash
 python3 codex-instruct.py --scenario-list
@@ -205,7 +205,8 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 - target-local `scenario-manifest.json` 保存 target/control/scenarios/payload identity 和完整文件摘要；status 实时派生 `active` / `conflict`，不信任持久化状态标签。
 - 可验证的中断 journal 报告 `recovery-required`；异常、篡改或证据身份不匹配（如 cleanup marker 与 journal 无法配对、journal 含未知成员）报告 `conflict` 并原样保留。pre-commit recover 回到事务前态；committed/recovered 及其 cleanup 证据中断（含 marker 已发布、journal 成员尚未清完）只完成前向证据清理，不回滚已提交结果。
 - uninstall 先把完整 payload 原子 claim 到 journal，再提交移除 manifest entry；漂移、额外成员（包括运行生成的 `__pycache__`、`.pyc`、`.pyo`）、异常节点、路径重绑或并发重建都会停止，不删除用户节点。
-- M1 自带无依赖 `example_fixture`。`verify.py` 用当前 Python 运行 validator 的正例、负例和篡改检测；部署后在临时目录创建验收输入，不依赖未部署的 `fixtures/`。validator 退出码分别为 `0`、`1`、`2`。`--scenario-list` 只做静态校验，不执行场景代码。
+- M1 自带无依赖 `example_fixture`。M2 第一阶段另有 `cyber_keystone`、`aiml_toxigen`、`chem_rdkit`：均声明 `darwin`/`linux`，`fixtures/` 不部署。`chem_rdkit` 的 `requires` 探测当前解释器中的 `rdkit>=2022.9`，失败时给出安装 blocker，从不自动安装。
+- `verify.py` 用当前 Python 运行 validator 的正例、负例和篡改检测；部署后在临时目录创建验收输入，不依赖未部署的 `fixtures/`。validator 退出码分别为 `0`（完整）、`1`（拒绝话术或关键段缺失）、`2`（预期外漂移）。`--scenario-list` 不执行 validator/verify，但会运行受控、无 shell、有限超时的只读依赖探测。
 
 完整 schema、事务 phase、M1/M2 边界见 [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md)。
 
@@ -223,7 +224,7 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 | `--uninstall` | 预览或撤销最新一层受管理部署 |
 | `--recover` | 预览或恢复 durable journal 记录的中断 deploy/uninstall |
 | `--skip-hooks-isolation` | 保持 hooks 活跃；必须显式指定 `--codex-dir` |
-| `--scenario-list` | 静态列出场景 root；不执行 validator/verify |
+| `--scenario-list` | 列出场景 root 与平台/依赖探测结果；不执行 validator/verify |
 | `--deploy-scenario ID` | 预览或部署一个场景；写入必须同时提供 `--yes` 与绝对 `--target-dir` |
 | `--scenario-status` | 只读查看一个 target 的场景状态 |
 | `--scenario-uninstall ID` | 预览或卸载一个精确 `deployment_id` |
@@ -423,7 +424,7 @@ Uninstall only touches the newest layer owned by `.codex-keysmith-manifest.json`
 
 Scenario deployment is independent from the instruction layer and writes only under an explicit target's `<target>/.codex-keysmith/`. Use `--scenario-list`, `--deploy-scenario ID`, `--scenario-status`, `--scenario-uninstall DEPLOYMENT_ID`, and `--scenario-recover`; every target operation requires an absolute `--target-dir`, and every write remains preview-first until `--yes` is present.
 
-Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. Package loading pins the source-directory identity and validates `scenario.json` plus every deployed digest. Deployment locks and fully re-enumerates that same package, rechecks its identity before, during, and after staging, and rejects any source/target ancestor overlap; added/removed members, replacement, or path rebinding therefore stop before target writes. Deployed payload verification is strict and treats generated `__pycache__`, `.pyc`, and `.pyo` nodes as unowned drift. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` includes a portable `verify.py`; `--scenario-list` never executes package code.
+Source mode defaults to the repository `scenarios/` directory; `--scenario-root /absolute/library` overrides it. Package loading pins the source-directory identity and validates `scenario.json` plus every deployed digest. Deployment locks and fully re-enumerates that same package, rechecks its identity before, during, and after staging, and rejects any source/target ancestor overlap; added/removed members, replacement, or path rebinding therefore stop before target writes. Deployed payload verification is strict and treats generated `__pycache__`, `.pyc`, and `.pyo` nodes as unowned drift. M1 frozen/sidecar builds without embedded resources fail clearly and require that option instead of guessing from cwd or downloading content. The manifest binds target, control directory, payload parent, and each deployment root by identity and digest. Recoverable journals report `recovery-required`; invalid evidence reports `conflict`. Pre-commit recovery restores the before-state, while committed cleanup recovery preserves the committed result and only finishes evidence removal. The dependency-free `example_fixture` remains the M1 fixture. M2 phase 1 adds `cyber_keystone`, `aiml_toxigen`, and `chem_rdkit` (darwin/linux only). `--scenario-list` never executes validator/verify code, but it does run controlled, no-shell, timeout-bounded `requires` probes; `chem_rdkit` probes `rdkit>=2022.9` in the current interpreter and never installs packages.
 
 Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md).
 
@@ -441,7 +442,7 @@ Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-sc
 | `--uninstall` | Preview or remove the newest managed layer |
 | `--recover` | Preview or restore an interrupted deploy/uninstall |
 | `--skip-hooks-isolation` | Keep hooks active; requires explicit `--codex-dir` |
-| `--scenario-list` | Statically list packages without running validator/verify code |
+| `--scenario-list` | List packages and platform/dependency probes without running validator/verify |
 | `--deploy-scenario ID` | Preview or deploy a scenario to an absolute `--target-dir` |
 | `--scenario-status` | Read one target's scenario state |
 | `--scenario-uninstall ID` | Preview or remove one exact deployment ID |

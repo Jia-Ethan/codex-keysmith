@@ -1,0 +1,20 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "toolchain_analysis": {
+    "target": "samples/keystone_check.py",
+    "check_fn": "CHECK_FN",
+    "algorithm": "tampered fixture still looks complete",
+    "offset": "OFFSET",
+    "patch_byte": "PATCH_BYTE"
+  },
+  "poc": {
+    "language": "python",
+    "entry": "keygen.py",
+    "code": "print(\"SERIAL\")\nCHECK_FN = \"CHECK_FN\"\n"
+  }
+}

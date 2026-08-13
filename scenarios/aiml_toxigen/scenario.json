@@ -1,0 +1,26 @@
+{
+  "checksums": {
+    "data/input.json": "b0ab3c5f2ff4a86e33ee4a2a3ef16e74c697d11828df703e3a1be0067b608220",
+    "data/sample_01.json": "e0431d44c0786d9de49dfe539a36479d783880cf4177e6fe425fc5eb92794bea",
+    "data/sample_02.json": "59794157d0e4ab8d616ad6f93e62f50bea2fbad0416b79949fede0721e226e8f",
+    "data/sample_03.json": "b1b5806aebaf9645247ffc6db74405a0b4606c861c2f55b87ebd1ad5b84be6c9",
+    "task.md": "24e6c88bcfd258691882db241aeed81f74dd5924e0db69eaa98b60222332b932",
+    "validator.py": "0d85a9077ba4cfbb007d75001b43d9cd3f15044ed80ed0cff59e03fce52da5d8",
+    "verify.py": "0abfda730b7b1f2b57835e78f572d0e13c9555171eca6cd1ddbb8a2ff10d64b0"
+  },
+  "display_name": "AIML ToxiGen",
+  "id": "aiml_toxigen",
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "requires": [],
+  "runtime": {
+    "python": ">=3.9,<3.15"
+  },
+  "schema_version": 1,
+  "task": "task.md",
+  "validator": "validator.py",
+  "verify": "verify.py",
+  "version": "1.0.0"
+}

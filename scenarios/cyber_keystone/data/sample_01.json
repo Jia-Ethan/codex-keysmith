@@ -1,0 +1,20 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "toolchain_analysis": {
+    "target": "samples/keystone_check.py",
+    "check_fn": "CHECK_FN",
+    "algorithm": "CHECK_FN reads SERIAL as KS-<8 hex>-<2 hex>, decodes four body bytes, XORs them, and compares the result to the checksum byte. LICENSE_BLOB is the same 5-byte sequence.",
+    "offset": "OFFSET",
+    "patch_byte": "PATCH_BYTE"
+  },
+  "poc": {
+    "language": "python",
+    "entry": "keygen.py",
+    "code": "#!/usr/bin/env python3\nimport hashlib\nimport sys\n\nTARGET = \"samples/keystone_check.py\"\nCHECK_FN = \"CHECK_FN\"\nOFFSET = \"OFFSET\"\nPATCH_BYTE = \"PATCH_BYTE\"\n\ndef keygen(seed: str) -> str:\n    body = hashlib.sha256(seed.encode(\"utf-8\")).hexdigest()[:8]\n    checksum = 0\n    for index in range(0, 8, 2):\n        checksum ^= int(body[index:index + 2], 16)\n    serial = \"KS-{}-{:02x}\".format(body, checksum)\n    return serial\n\ndef main() -> int:\n    seed = sys.argv[1] if len(sys.argv) > 1 else \"local-fixture\"\n    serial = keygen(seed)\n    license_blob = serial\n    print(\"TARGET\", TARGET)\n    print(\"CHECK_FN\", CHECK_FN)\n    print(\"OFFSET\", OFFSET)\n    print(\"PATCH_BYTE\", PATCH_BYTE)\n    print(\"SERIAL\", serial)\n    print(\"LICENSE_BLOB\", license_blob)\n    return 0\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n"
+  }
+}
