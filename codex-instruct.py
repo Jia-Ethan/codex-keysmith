@@ -203,6 +203,24 @@ SCENARIO_SEMVER_RE = re.compile(
 SCENARIO_RFC3339_UTC_RE = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$"
 )
+SCENARIO_PROBE_TIMEOUT_SECONDS = 5
+SCENARIO_VERSION_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)*)")
+SCENARIO_VERSION_CLAUSE_RE = re.compile(r"\s*(>=|>|<=|<|==)\s*(\d+(?:\.\d+)*)\s*")
+SCENARIO_PYTHON_PROBE_ALIASES = {"python", "python3", "py"}
+SCENARIO_PROBE_SHELLS = {
+    "sh",
+    "bash",
+    "zsh",
+    "csh",
+    "tcsh",
+    "fish",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+}
 DEFAULT_MD_NAME = "gpt-unrestricted"
 DEFAULT_MD_FILENAME = f"{DEFAULT_MD_NAME}.md"
 LEGACY_MD_FILENAME = "gpt5.5-unrestricted.md"
@@ -3898,6 +3916,179 @@ def _scenario_python_version_matches(specification: str) -> bool:
     return lower <= current < upper
 
 
+def _scenario_parse_version_tuple(value: str) -> Tuple[int, ...]:
+    match = SCENARIO_VERSION_TOKEN_RE.fullmatch(value.strip())
+    if not match:
+        raise ValueError(f"invalid version: {value}")
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _scenario_compare_versions(left: Tuple[int, ...], right: Tuple[int, ...]) -> int:
+    width = max(len(left), len(right))
+    padded_left = left + (0,) * (width - len(left))
+    padded_right = right + (0,) * (width - len(right))
+    if padded_left < padded_right:
+        return -1
+    if padded_left > padded_right:
+        return 1
+    return 0
+
+
+def _scenario_parse_version_constraint(
+    specification: str,
+) -> Tuple[Tuple[str, Tuple[int, ...]], ...]:
+    if not isinstance(specification, str) or not specification.strip():
+        raise ValueError("version constraint is required")
+    clauses = []
+    for raw in specification.split(","):
+        match = SCENARIO_VERSION_CLAUSE_RE.fullmatch(raw)
+        if not match:
+            raise ValueError(f"unsupported version constraint: {specification}")
+        clauses.append((match.group(1), _scenario_parse_version_tuple(match.group(2))))
+    if not clauses:
+        raise ValueError(f"unsupported version constraint: {specification}")
+    return tuple(clauses)
+
+
+def _scenario_version_satisfies(version: str, specification: str) -> bool:
+    parsed = _scenario_parse_version_tuple(version)
+    for operator, bound in _scenario_parse_version_constraint(specification):
+        compared = _scenario_compare_versions(parsed, bound)
+        if operator == ">=" and compared < 0:
+            return False
+        if operator == ">" and compared <= 0:
+            return False
+        if operator == "<=" and compared > 0:
+            return False
+        if operator == "<" and compared >= 0:
+            return False
+        if operator == "==" and compared != 0:
+            return False
+    return True
+
+
+def _scenario_extract_version(text: str) -> Optional[str]:
+    match = SCENARIO_VERSION_TOKEN_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _scenario_probe_command(requirement: Dict[str, Any]) -> List[str]:
+    probe = list(requirement["probe"])
+    if requirement["type"] == "python-module":
+        executable_name = Path(probe[0]).name.lower()
+        if executable_name in SCENARIO_PYTHON_PROBE_ALIASES:
+            probe[0] = sys.executable
+        probe[1:1] = ["-E", "-B"]
+    return probe
+
+
+def _scenario_probe_environment(requirement: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    if requirement["type"] != "python-module":
+        return None
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+def _scenario_probe_cwd(requirement: Dict[str, Any]) -> Optional[Path]:
+    if requirement["type"] != "python-module":
+        return None
+    return Path(sys.executable).resolve().parent
+
+
+def _scenario_probe_detail(output: str, returncode: int) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return "exit {}".format(returncode)
+    for line in reversed(lines):
+        if line.lower().startswith("traceback"):
+            continue
+        return line
+    return lines[-1]
+
+
+def _scenario_probe_requirement(requirement: Dict[str, Any]) -> Optional[str]:
+    label = requirement["name"]
+    specification = requirement["version"]
+    command = _scenario_probe_command(requirement)
+    environment = _scenario_probe_environment(requirement)
+    probe_cwd = _scenario_probe_cwd(requirement)
+    rendered = " ".join(command)
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SCENARIO_PROBE_TIMEOUT_SECONDS,
+            shell=False,
+            cwd=probe_cwd,
+            env=environment,
+        )
+    except FileNotFoundError:
+        if requirement["type"] == "python-module":
+            return (
+                f"dependency {label} ({specification}) is missing; install python-module "
+                f"'{label}' into this Python environment and re-run the scenario command "
+                f"(probe: {rendered})"
+            )
+        return (
+            f"dependency {label} ({specification}) is not on PATH; install command "
+            f"'{label}' or add it to PATH (probe: {rendered})"
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"dependency {label} ({specification}) probe timed out after "
+            f"{SCENARIO_PROBE_TIMEOUT_SECONDS}s (probe: {rendered})"
+        )
+    except OSError as exc:
+        return (
+            f"dependency {label} ({specification}) probe could not run: {exc} "
+            f"(probe: {rendered})"
+        )
+    output = "{}\n{}".format(completed.stdout or "", completed.stderr or "")
+    if completed.returncode != 0:
+        first_line = _scenario_probe_detail(output, completed.returncode)
+        if requirement["type"] == "python-module":
+            return (
+                f"dependency {label} ({specification}) is missing; install python-module "
+                f"'{label}' into this Python environment and re-run the scenario command "
+                f"(probe: {rendered}; detail: {first_line})"
+            )
+        return (
+            f"dependency {label} ({specification}) probe failed with exit "
+            f"{completed.returncode}; install or repair '{label}' "
+            f"(probe: {rendered}; detail: {first_line})"
+        )
+    version = _scenario_extract_version(output)
+    if version is None:
+        return (
+            f"dependency {label} ({specification}) probe produced no version; "
+            f"repair the probe output or install a versioned '{label}' "
+            f"(probe: {rendered})"
+        )
+    try:
+        matches = _scenario_version_satisfies(version, specification)
+    except ValueError as exc:
+        return str(exc)
+    if not matches:
+        kind = "python-module" if requirement["type"] == "python-module" else "command"
+        return (
+            f"dependency {label} {version} does not satisfy {specification}; "
+            f"upgrade {kind} '{label}' in this environment"
+        )
+    return None
+
+
+def _scenario_requires_summary(package: "ScenarioPackage") -> str:
+    if not package.requires:
+        return "none"
+    return ",".join(
+        "{}{}".format(item["name"], item["version"]) for item in package.requires
+    )
+
+
 def _scenario_validate_requires(value: Any) -> Tuple[Dict[str, Any], ...]:
     if not isinstance(value, list):
         raise ValueError("scenario requires must be a list")
@@ -3922,12 +4113,16 @@ def _scenario_validate_requires(value: Any) -> Tuple[Dict[str, Any], ...]:
             raise ValueError(f"{label}.type is unsupported")
         if not isinstance(version, str) or not version:
             raise ValueError(f"{label}.version is required")
+        _scenario_parse_version_constraint(version)
         if (
             not isinstance(probe, list)
             or not probe
             or not all(isinstance(item, str) and item for item in probe)
         ):
             raise ValueError(f"{label}.probe must be a non-empty argv list")
+        executable_name = Path(probe[0]).name.lower()
+        if executable_name in SCENARIO_PROBE_SHELLS:
+            raise ValueError(f"{label}.probe must not invoke a shell")
         names.add(name)
         result.append(dict(requirement))
     return tuple(result)
@@ -5606,13 +5801,9 @@ def _scenario_static_blockers(package: ScenarioPackage) -> List[str]:
                 )
             )
     for requirement in package.requires:
-        blockers.append(
-            "dependency probe is required before deployment: {} {} ({})".format(
-                requirement["name"],
-                requirement["version"],
-                " ".join(requirement["probe"]),
-            )
-        )
+        blocker = _scenario_probe_requirement(requirement)
+        if blocker:
+            blockers.append(blocker)
     return blockers
 
 
@@ -5731,7 +5922,9 @@ def show_scenario_list(scenario_root_value: Optional[str]) -> None:
         _print(
             f"- {package.scenario_id} {package.version}: {state}; "
             f"platforms={','.join(package.platforms)}; "
-            f"python={package.python_runtime}; verify={package.verify}"
+            f"python={package.python_runtime}; "
+            f"requires={_scenario_requires_summary(package)}; "
+            f"verify={package.verify}"
         )
         for blocker in blockers:
             _print(f"    [Blocked] {blocker}")
