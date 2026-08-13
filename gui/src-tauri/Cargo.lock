@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "codex-keysmith-gui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "libc",
  "serde",
