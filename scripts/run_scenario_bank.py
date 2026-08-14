@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 try:
     import pwd
@@ -146,14 +147,8 @@ def _credential_names_present(source: Dict[str, str]) -> List[str]:
 
 
 def _secret_fragments(value: str) -> List[str]:
-    fragments = {value}
+    fragments = {value, unquote(value)}
     try:
-        from urllib.parse import unquote
-        fragments.add(unquote(value))
-    except Exception:
-        pass
-    try:
-        from urllib.parse import urlsplit, parse_qsl
         parsed = urlsplit(value)
     except ValueError:
         parsed = None
