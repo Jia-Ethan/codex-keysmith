@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """M3 evaluation engine: run scenario bank against isolated Codex instances.
 
-This script deploys scenarios to temporary targets, invokes Codex CLI in an
-isolated environment, collects validator results, and produces append-only
-JSONL reports. It never reads user projects or live ~/.codex/config.toml.
+This script validates and deploys scenarios to temporary targets, invokes Codex
+CLI in an isolated environment, collects validator results, and publishes an
+immutable file-backed JSONL report when `--report` names a path. It does not
+intentionally load user projects or live ~/.codex/config.toml.
 
 Usage:
   # Validate bank without running
@@ -32,6 +33,7 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -55,14 +57,28 @@ MAX_ATTEMPTS = 2
 MAX_TIMEOUT_SECONDS = 600
 REPORT_SNIPPET_LENGTH = 500
 REPORT_ERROR_LENGTH = 500
+PROCESS_TERMINATION_GRACE_SECONDS = 15
+WINDOWS_JOB_LAUNCH_TOKEN = "KEYSMITH_JOB_READY"
+WINDOWS_JOB_LAUNCHER = (
+    "import json, os, subprocess, sys\n"
+    "token = sys.argv[1].encode('ascii')\n"
+    "received = b''\n"
+    "while len(received) < len(token):\n"
+    "    chunk = os.read(sys.stdin.fileno(), len(token) - len(received))\n"
+    "    if not chunk:\n"
+    "        raise SystemExit(125)\n"
+    "    received += chunk\n"
+    "if received != token:\n"
+    "    raise SystemExit(125)\n"
+    "completed = subprocess.run(json.loads(sys.argv[2]), check=False)\n"
+    "raise SystemExit(completed.returncode)\n"
+)
 SCENARIO_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"),
 )
-URL_CREDENTIAL_RE = re.compile(
-    r"(?i)(https?://)([^\s/:@]+):([^\s/@]+)@"
-)
+URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)([^\s/:@]+):([^\s/@]+)@")
 QUERY_SECRET_RE = re.compile(
     r"(?i)([?&](?:access_?token|api_?key|token|secret|password|passwd|auth)=)"
     r"([^&#\s]+)"
@@ -71,12 +87,11 @@ SENSITIVE_QUERY_KEY_RE = re.compile(
     r"(?i)(?:access_?token|api_?key|token|secret|password|passwd|auth)"
 )
 
-CREDENTIAL_ENV_NAMES = (
+SUPPORTED_CREDENTIAL_ENV_NAMES = (
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
-    "AZURE_OPENAI_API_KEY",
 )
-SENSITIVE_PASSTHROUGH_ENV_NAMES = (
+MODEL_SERVICE_ENV_NAMES = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -84,7 +99,40 @@ SENSITIVE_PASSTHROUGH_ENV_NAMES = (
     "OPENAI_BASE_URL",
     "OPENAI_ORG_ID",
     "OPENAI_PROJECT_ID",
+)
+UNSUPPORTED_SENSITIVE_ENV_NAMES = (
+    "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_VERSION",
+)
+SENSITIVE_ENV_NAMES = (
+    SUPPORTED_CREDENTIAL_ENV_NAMES + MODEL_SERVICE_ENV_NAMES + UNSUPPORTED_SENSITIVE_ENV_NAMES
+)
+CODEX_SHELL_EXCLUDED_ENV_NAMES = (
+    SUPPORTED_CREDENTIAL_ENV_NAMES + MODEL_SERVICE_ENV_NAMES + UNSUPPORTED_SENSITIVE_ENV_NAMES
+)
+CODEX_SHELL_ENV_CONFIG = (
+    "shell_environment_policy.inherit=core",
+    "shell_environment_policy.ignore_default_excludes=false",
+    "shell_environment_policy.exclude={}".format(
+        json.dumps(list(CODEX_SHELL_EXCLUDED_ENV_NAMES), separators=(",", ":"))
+    ),
+)
+LOCAL_RUNTIME_ENV_NAMES = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
 )
 PASSTHROUGH_ENV_NAMES = (
     "PATH",
@@ -105,21 +153,19 @@ PASSTHROUGH_ENV_NAMES = (
     "ALL_PROXY",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
-    "AZURE_OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_ORG_ID",
     "OPENAI_PROJECT_ID",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_VERSION",
 )
 
+_KEYSMITH_MODULE = None
 _KEYSMITH_FILESYSTEM = None
 
 
-def _keysmith_filesystem():
-    global _KEYSMITH_FILESYSTEM
-    if _KEYSMITH_FILESYSTEM is not None:
-        return _KEYSMITH_FILESYSTEM
+def _keysmith_module():
+    global _KEYSMITH_MODULE
+    if _KEYSMITH_MODULE is not None:
+        return _KEYSMITH_MODULE
     module_path = REPO_ROOT / "codex-instruct.py"
     spec = importlib.util.spec_from_file_location(
         "codex_instruct_scenario_bank_filesystem",
@@ -130,7 +176,14 @@ def _keysmith_filesystem():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    _KEYSMITH_FILESYSTEM = module._FILESYSTEM
+    _KEYSMITH_MODULE = module
+    return _KEYSMITH_MODULE
+
+
+def _keysmith_filesystem():
+    global _KEYSMITH_FILESYSTEM
+    if _KEYSMITH_FILESYSTEM is None:
+        _KEYSMITH_FILESYSTEM = _keysmith_module()._FILESYSTEM
     return _KEYSMITH_FILESYSTEM
 
 
@@ -143,7 +196,7 @@ def _is_nonempty_string(value: Any) -> bool:
 
 
 def _credential_names_present(source: Dict[str, str]) -> List[str]:
-    return [name for name in CREDENTIAL_ENV_NAMES if source.get(name)]
+    return [name for name in SUPPORTED_CREDENTIAL_ENV_NAMES if source.get(name)]
 
 
 def _secret_fragments(value: str) -> List[str]:
@@ -163,11 +216,10 @@ def _secret_fragments(value: str) -> List[str]:
 
 
 def _sensitive_environment_values(source: Dict[str, str]) -> List[str]:
-    names = CREDENTIAL_ENV_NAMES + SENSITIVE_PASSTHROUGH_ENV_NAMES
     return sorted(
         {
             fragment
-            for name in names
+            for name in SENSITIVE_ENV_NAMES
             if source.get(name)
             for fragment in _secret_fragments(source[name])
         },
@@ -200,11 +252,7 @@ def _redact_and_truncate(
 
 
 def _isolated_environment(root: Path) -> Dict[str, str]:
-    environment = {
-        name: os.environ[name]
-        for name in PASSTHROUGH_ENV_NAMES
-        if name in os.environ
-    }
+    environment = {name: os.environ[name] for name in PASSTHROUGH_ENV_NAMES if name in os.environ}
     home = root / "home"
     codex_home = root / "codex-home"
     home.mkdir()
@@ -212,7 +260,309 @@ def _isolated_environment(root: Path) -> Dict[str, str]:
     environment["HOME"] = str(home)
     environment["USERPROFILE"] = str(home)
     environment["CODEX_HOME"] = str(codex_home)
+    if not environment.get("OPENAI_API_KEY") and environment.get("CODEX_API_KEY"):
+        environment["OPENAI_API_KEY"] = environment["CODEX_API_KEY"]
+    environment.pop("CODEX_API_KEY", None)
     return environment
+
+
+def _local_runtime_environment() -> Dict[str, str]:
+    environment = {name: os.environ[name] for name in LOCAL_RUNTIME_ENV_NAMES if name in os.environ}
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONUTF8"] = "1"
+    return environment
+
+
+class _WindowsProcessJob:  # pragma: no cover - exercised by Windows CI
+    def __init__(self, handle: int, kernel32: Any):
+        self._handle = handle
+        self._kernel32 = kernel32
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle = self._handle
+        self._handle = None
+        if not self._kernel32.CloseHandle(handle):
+            error_number = ctypes.get_last_error()
+            raise OSError(
+                error_number,
+                "cannot close Windows process job: {}".format(
+                    ctypes.FormatError(error_number)
+                ),
+            )
+
+
+def _create_windows_process_job(
+    process: subprocess.Popen,
+) -> Optional[_WindowsProcessJob]:  # pragma: no cover - exercised by Windows CI
+    from ctypes import wintypes
+
+    if process.poll() is not None:
+        return None
+
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JobObjectExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        error_number = ctypes.get_last_error()
+        raise OSError(
+            error_number,
+            "cannot create Windows process job: {}".format(ctypes.FormatError(error_number)),
+        )
+    job = _WindowsProcessJob(handle, kernel32)
+    try:
+        limits = _JobObjectExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if not kernel32.SetInformationJobObject(
+            handle,
+            9,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            error_number = ctypes.get_last_error()
+            raise OSError(
+                error_number,
+                "cannot configure Windows process job: {}".format(
+                    ctypes.FormatError(error_number)
+                ),
+            )
+        process_handle = getattr(process, "_handle", None)
+        if process_handle is None:
+            raise RuntimeError("cannot access the Windows child process handle")
+        if not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(process_handle)):
+            error_number = ctypes.get_last_error()
+            if process.poll() is not None:
+                job.close()
+                return None
+            raise OSError(
+                error_number,
+                "cannot assign child process to Windows job: {}".format(
+                    ctypes.FormatError(error_number)
+                ),
+            )
+    except BaseException:
+        job.close()
+        raise
+    return job
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen,
+    process_job: Optional[_WindowsProcessJob] = None,
+) -> None:
+    if process_job is not None:
+        try:
+            process_job.close()
+        except OSError:
+            pass
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                env=_local_runtime_environment(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=PROCESS_TERMINATION_GRACE_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.kill()
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _process_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _close_process_pipes(process: subprocess.Popen) -> None:
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(process, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _terminate_and_drain_process(
+    process: subprocess.Popen,
+    process_job: Optional[_WindowsProcessJob],
+) -> Tuple[str, str]:
+    _terminate_process_tree(process, process_job)
+    try:
+        stdout, stderr = process.communicate(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+        return _process_output_text(stdout), _process_output_text(stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = _process_output_text(exc.output)
+        stderr = _process_output_text(exc.stderr)
+    except BaseException:
+        stdout = ""
+        stderr = ""
+    _close_process_pipes(process)
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return stdout, stderr
+
+
+def _run_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    environment: Dict[str, str],
+    timeout_seconds: int,
+    input_text: Optional[str] = None,
+) -> subprocess.CompletedProcess:
+    process_options: Dict[str, Any] = {}
+    launch_command = list(command)
+    process_input = input_text
+    if os.name == "nt":
+        process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        # The gate prevents the real command from spawning until the helper is
+        # assigned to the kill-on-close Job Object.
+        launch_command = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            WINDOWS_JOB_LAUNCHER,
+            WINDOWS_JOB_LAUNCH_TOKEN,
+            json.dumps(list(command), separators=(",", ":")),
+        ]
+        process_input = WINDOWS_JOB_LAUNCH_TOKEN + (input_text or "")
+    else:
+        process_options["start_new_session"] = True
+    process = subprocess.Popen(
+        launch_command,
+        cwd=str(cwd),
+        env=environment,
+        stdin=subprocess.PIPE if process_input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        **process_options,
+    )
+    process_job = None
+    try:
+        if os.name == "nt":
+            try:
+                process_job = _create_windows_process_job(process)
+            except BaseException:
+                _terminate_and_drain_process(process, None)
+                raise
+        try:
+            stdout, stderr = process.communicate(process_input, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = _terminate_and_drain_process(process, process_job)
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout_seconds,
+                output=stdout,
+                stderr=stderr,
+            ) from exc
+        except BaseException:
+            _terminate_and_drain_process(process, process_job)
+            raise
+    finally:
+        if process_job is not None:
+            process_job.close()
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode,
+        stdout,
+        stderr,
+    )
+
+
+def _scenario_static_blockers(package: Any) -> Tuple[str, ...]:
+    original_environment = dict(os.environ)
+    safe_environment = _local_runtime_environment()
+    try:
+        os.environ.clear()
+        os.environ.update(safe_environment)
+        return tuple(_keysmith_module()._scenario_static_blockers(package))
+    finally:
+        os.environ.clear()
+        os.environ.update(original_environment)
 
 
 def _codex_version(
@@ -222,38 +572,19 @@ def _codex_version(
     secret_values: Sequence[str],
 ) -> str:
     try:
-        completed = subprocess.run(
+        completed = _run_process(
             [codex_bin, "--version"],
-            cwd=str(cwd),
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=15,
-            check=False,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("cannot execute codex CLI: {}".format(exc)) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        safe_detail = _redact_and_truncate(
-            detail, secret_values, REPORT_ERROR_LENGTH
-        )
+        safe_detail = _redact_and_truncate(detail, secret_values, REPORT_ERROR_LENGTH)
         raise RuntimeError("codex --version failed: {}".format(safe_detail))
     return completed.stdout.strip() or completed.stderr.strip() or "unknown"
-
-
-def _write_isolated_config(root: Path, prompt: str) -> Tuple[Path, Path]:
-    codex_home = root / "codex-home"
-    prompt_path = codex_home / "gpt-unrestricted.md"
-    config_path = codex_home / "config.toml"
-    with prompt_path.open("w", encoding="utf-8", newline="\n") as prompt_file:
-        prompt_file.write(prompt)
-    with config_path.open("w", encoding="utf-8", newline="\n") as config_file:
-        config_file.write('model_instructions_file = "./gpt-unrestricted.md"\n')
-    workspace = root / "workspace"
-    workspace.mkdir()
-    return prompt_path, workspace
 
 
 def _path_is_within(path: Path, directory: Path) -> bool:
@@ -268,9 +599,7 @@ def _resolved_path(path: Path) -> Path:
     try:
         return path.resolve()
     except OSError as exc:
-        raise RuntimeError(
-            "cannot resolve protected path {}: {}".format(path, exc)
-        ) from exc
+        raise RuntimeError("cannot resolve protected path {}: {}".format(path, exc)) from exc
 
 
 def _real_codex_home_candidates() -> List[Path]:
@@ -294,9 +623,7 @@ def _validated_report_path(path: str) -> Path:
     for codex_home in _real_codex_home_candidates():
         if _path_is_within(report_path, codex_home):
             raise RuntimeError(
-                "report path must be outside the real Codex home: {}".format(
-                    codex_home
-                )
+                "report path must be outside the real Codex home: {}".format(codex_home)
             )
     return report_path
 
@@ -305,8 +632,6 @@ def _validated_report_path(path: str) -> Path:
 class ReportPublication:
     temporary_path: Path
     final_path: Path
-    overwrite: bool
-    expected_final_identity: Optional[Tuple[int, int, int, int]]
     temporary_inode: Tuple[int, int]
 
 
@@ -431,10 +756,7 @@ def _fsync_report_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _open_report(
-    path: Optional[str],
-    overwrite: bool = False,
-) -> Tuple[TextIO, Optional[ReportPublication]]:
+def _open_report(path: Optional[str]) -> Tuple[TextIO, Optional[ReportPublication]]:
     if path in (None, "-"):
         return io.StringIO(), None
     raw_report_path = Path(path).expanduser()
@@ -443,9 +765,7 @@ def _open_report(
     except FileNotFoundError:
         raw_stat = None
     if raw_stat is not None and not stat.S_ISREG(raw_stat.st_mode):
-        raise RuntimeError(
-            "report path is not a regular file: {}".format(raw_report_path)
-        )
+        raise RuntimeError("report path is not a regular file: {}".format(raw_report_path))
     report_path = _validated_report_path(str(raw_report_path))
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path = _validated_report_path(str(report_path))
@@ -454,16 +774,7 @@ def _open_report(
     except FileNotFoundError:
         report_stat = None
     if report_stat is not None:
-        if not overwrite:
-            raise RuntimeError(
-                "report path already exists; use --overwrite-report: {}".format(
-                    report_path
-                )
-            )
-        if not stat.S_ISREG(report_stat.st_mode):
-            raise RuntimeError(
-                "report path is not a regular file: {}".format(report_path)
-            )
+        raise RuntimeError("report path already exists; choose a new path: {}".format(report_path))
 
     temporary_path = report_path.with_name(
         ".{}.keysmith-report-{}.tmp".format(report_path.name, uuid.uuid4().hex)
@@ -494,20 +805,10 @@ def _open_report(
         except OSError:
             pass
         raise
-    expected_final_identity = None
-    if report_stat is not None:
-        expected_final_identity = (
-            report_stat.st_dev,
-            report_stat.st_ino,
-            report_stat.st_size,
-            report_stat.st_mtime_ns,
-        )
     temporary_stat = os.fstat(report.fileno())
     return report, ReportPublication(
         temporary_path,
         report_path,
-        overwrite,
-        expected_final_identity,
         (temporary_stat.st_dev, temporary_stat.st_ino),
     )
 
@@ -515,8 +816,6 @@ def _open_report(
 def _publish_report(report: TextIO, publication: ReportPublication) -> None:
     temporary_path = publication.temporary_path
     final_path = publication.final_path
-    previous_claim = None
-    previous_claim_identity = None
     temporary_identity = None
     temporary_sha256 = None
     try:
@@ -526,9 +825,7 @@ def _publish_report(report: TextIO, publication: ReportPublication) -> None:
             temporary_stat = os.fstat(report.fileno())
             if (temporary_stat.st_dev, temporary_stat.st_ino) != publication.temporary_inode:
                 raise RuntimeError(
-                    "report temporary descriptor changed unexpectedly: {}".format(
-                        temporary_path
-                    )
+                    "report temporary descriptor changed unexpectedly: {}".format(temporary_path)
                 )
             temporary_identity = (
                 temporary_stat.st_dev,
@@ -548,44 +845,14 @@ def _publish_report(report: TextIO, publication: ReportPublication) -> None:
             report.close()
         if _report_identity(temporary_path) != temporary_identity:
             raise RuntimeError(
-                "report temporary path changed concurrently: {}".format(
-                    temporary_path
+                "report temporary path changed concurrently: {}".format(temporary_path)
+            )
+        if not _atomic_report_rename_no_replace(temporary_path, final_path):
+            raise RuntimeError(
+                "report path was created concurrently: {}; completed report preserved at {}".format(
+                    final_path, temporary_path
                 )
             )
-        if publication.overwrite:
-            current_identity = _report_identity(final_path)
-            if current_identity != publication.expected_final_identity:
-                raise RuntimeError(
-                    "report path changed concurrently: {}".format(final_path)
-                )
-            if current_identity is not None:
-                previous_claim = final_path.with_name(
-                    ".{}.keysmith-report-previous-{}".format(
-                        final_path.name,
-                        uuid.uuid4().hex,
-                    )
-                )
-                if not _atomic_report_rename_no_replace(final_path, previous_claim):
-                    raise RuntimeError(
-                        "cannot claim the existing report: {}".format(final_path)
-                    )
-                previous_claim_identity = _report_identity(previous_claim)
-                if previous_claim_identity != publication.expected_final_identity:
-                    if not _atomic_report_rename_no_replace(previous_claim, final_path):
-                        raise RuntimeError(
-                            "report changed during claim; evidence preserved at {}".format(
-                                previous_claim
-                            )
-                        )
-                    previous_claim = None
-                    raise RuntimeError(
-                        "report path changed concurrently: {}".format(final_path)
-                    )
-        if not _atomic_report_rename_no_replace(temporary_path, final_path):
-            message = "report path was created concurrently: {}".format(final_path)
-            if previous_claim is not None:
-                message += "; previous report preserved at {}".format(previous_claim)
-            raise RuntimeError(message)
         final_identity, final_sha256 = _report_fingerprint(final_path)
         if final_identity != temporary_identity or final_sha256 != temporary_sha256:
             concurrent_claim = final_path.with_name(
@@ -600,59 +867,26 @@ def _publish_report(report: TextIO, publication: ReportPublication) -> None:
                         final_path
                     )
                 )
-            if previous_claim is not None:
-                if not _atomic_report_rename_no_replace(previous_claim, final_path):
-                    raise RuntimeError(
-                        "published report changed concurrently; previous report and "
-                        "evidence preserved"
-                    )
-                previous_claim = None
             raise RuntimeError(
                 "published report changed concurrently; evidence preserved at {}".format(
                     concurrent_claim
                 )
             )
         _fsync_report_directory(final_path.parent)
-        if previous_claim is not None:
-            if _report_identity(previous_claim) != previous_claim_identity:
-                raise RuntimeError(
-                    "claimed previous report changed; evidence preserved at {}".format(
-                        previous_claim
-                    )
-                )
-            previous_claim.unlink()
-            previous_claim = None
-            _fsync_report_directory(final_path.parent)
     except FileExistsError as exc:
         raise RuntimeError(
-            "report path was created concurrently: {}".format(final_path)
+            "report path was created concurrently: {}; completed report preserved at {}".format(
+                final_path, temporary_path
+            )
         ) from exc
     except OSError as exc:
-        raise RuntimeError("cannot publish report securely: {}".format(exc)) from exc
-    finally:
-        if previous_claim is not None and previous_claim.exists():
-            if not final_path.exists():
-                try:
-                    if _atomic_report_rename_no_replace(previous_claim, final_path):
-                        previous_claim = None
-                except OSError:
-                    pass
-        try:
-            current_temporary_identity = _report_identity(temporary_path)
-        except RuntimeError:
-            current_temporary_identity = None
-        if (
-            current_temporary_identity is not None
-            and (
-                current_temporary_identity == temporary_identity
-                if temporary_identity is not None
-                else current_temporary_identity[:2] == publication.temporary_inode
+        evidence_path = final_path if final_path.exists() else temporary_path
+        raise RuntimeError(
+            "cannot publish report securely: {}; report evidence preserved at {}".format(
+                exc,
+                evidence_path,
             )
-        ):
-            try:
-                temporary_path.unlink()
-            except OSError:
-                pass
+        ) from exc
 
 
 def _publish_completed_report(
@@ -670,22 +904,13 @@ def _publish_completed_report(
         report.close()
 
 
-def _discard_report(
-    report: TextIO,
-    publication: Optional[ReportPublication],
-) -> None:
-    try:
-        report.close()
-    finally:
-        if publication is not None:
-            try:
-                identity = _report_identity(publication.temporary_path)
-                if identity is not None and identity[:2] == publication.temporary_inode:
-                    publication.temporary_path.unlink()
-            except FileNotFoundError:
-                pass
-            except (OSError, RuntimeError):
-                pass
+@dataclass(frozen=True)
+class ScenarioLibraryInfo:
+    kind: str
+    display_path: Path
+    deployment_path: Path
+    packages_root: Path
+    sha256: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -695,116 +920,253 @@ class ScenarioInfo:
     platforms: Tuple[str, ...]
     python_runtime: str
     requires_summary: str
+    blockers: Tuple[str, ...]
     verify: str
     task: str
     validator: str
+    source_digest: str
     root: Path
+    files: Dict[str, str]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_scenario_library(path: Path) -> ScenarioLibraryInfo:
+    absolute_path = Path(os.path.abspath(str(path)))
+    try:
+        library = _keysmith_module().resolve_scenario_library(str(absolute_path))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BankValidationError("cannot open scenario library {}: {}".format(path, exc)) from exc
+    return ScenarioLibraryInfo(
+        kind=library.kind,
+        display_path=library.display_path,
+        deployment_path=(
+            library.packages_root.parent if library.kind == "bundle" else library.display_path
+        ),
+        packages_root=library.packages_root,
+        sha256=library.sha256,
+    )
 
 
 def _load_scenario_info(scenario_root: Path, scenario_id: str) -> ScenarioInfo:
-    scenario_dir = scenario_root / scenario_id
-    if not scenario_dir.is_dir():
-        raise BankValidationError(
-            "scenario directory not found: {}".format(scenario_dir)
-        )
-    manifest_path = scenario_dir / "scenario.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        package = _keysmith_module().load_scenario_package(scenario_root, scenario_id)
+        blockers = _scenario_static_blockers(package)
+    except (OSError, RuntimeError, ValueError) as exc:
         raise BankValidationError(
-            "cannot read scenario manifest {}: {}".format(manifest_path, exc)
+            "invalid scenario package {}: {}".format(scenario_id, exc)
         ) from exc
-
-    if manifest.get("id") != scenario_id:
-        raise BankValidationError(
-            "scenario id mismatch: expected {!r}, got {!r}".format(
-                scenario_id, manifest.get("id")
-            )
-        )
-    if manifest.get("schema_version") != 1:
-        raise BankValidationError(
-            "scenario schema_version must be 1: {}".format(scenario_id)
-        )
-
     return ScenarioInfo(
         scenario_id=scenario_id,
-        version=manifest.get("version", "unknown"),
-        platforms=tuple(manifest.get("platforms", [])),
-        python_runtime=manifest.get("runtime", {}).get("python", "unknown"),
-        requires_summary="none" if not manifest.get("requires") else "present",
-        verify=manifest.get("verify", "verify.py"),
-        task=manifest.get("task", "task.md"),
-        validator=manifest.get("validator", "validator.py"),
-        root=scenario_dir,
+        version=package.version,
+        platforms=package.platforms,
+        python_runtime=package.python_runtime,
+        requires_summary=_keysmith_module()._scenario_requires_summary(package),
+        blockers=blockers,
+        verify=package.verify,
+        task=package.task,
+        validator=package.validator,
+        source_digest=package.source_digest,
+        root=package.root,
+        files=dict(package.files),
+    )
+
+
+def _load_deployed_scenario_info(
+    target: Path,
+    deployment_id: str,
+    expected: ScenarioInfo,
+) -> ScenarioInfo:
+    module = _keysmith_module()
+    try:
+        manifest, _fingerprint = module._scenario_load_manifest(target)
+        record = manifest["deployments"].get(deployment_id)
+        if record is None:
+            raise RuntimeError("scenario deployment record is missing: {}".format(deployment_id))
+        if record["scenario_id"] != expected.scenario_id:
+            raise RuntimeError(
+                "scenario deployment id mismatch: expected {}, got {}".format(
+                    expected.scenario_id,
+                    record["scenario_id"],
+                )
+            )
+        if (
+            record["scenario_version"] != expected.version
+            or record["source_digest"] != expected.source_digest
+            or record["files"] != expected.files
+        ):
+            raise RuntimeError("deployed scenario does not match the selected package")
+        root = _scenario_deployed_root(target, deployment_id)
+        identity = module._scenario_identity_from_json(
+            record["root_identity"],
+            "scenario deployment root",
+        )
+        module._scenario_verify_payload(root, identity, record["files"])
+        metadata_bytes, metadata_fingerprint = module._read_regular_bytes_with_fingerprint(
+            root / "scenario.json",
+            "deployed scenario.json",
+        )
+        if metadata_fingerprint.sha256 != record["files"].get("scenario.json"):
+            raise RuntimeError("deployed scenario.json does not match the manifest")
+        metadata = json.loads(metadata_bytes.decode("utf-8"))
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("schema_version") != 1
+            or metadata.get("id") != expected.scenario_id
+            or metadata.get("version") != record["scenario_version"]
+        ):
+            raise RuntimeError("deployed scenario metadata does not match the manifest")
+        task = module._scenario_safe_relative(metadata.get("task"), "scenario task")
+        validator = module._scenario_safe_relative(metadata.get("validator"), "scenario validator")
+        verify = module._scenario_safe_relative(metadata.get("verify"), "scenario verify")
+        for required in (task, validator, verify):
+            if required not in record["files"]:
+                raise RuntimeError("deployed scenario entrypoint is missing: {}".format(required))
+        platforms = metadata.get("platforms")
+        runtime = metadata.get("runtime")
+        requires = module._scenario_validate_requires(metadata.get("requires"))
+        if not isinstance(platforms, list) or not all(isinstance(item, str) for item in platforms):
+            raise RuntimeError("deployed scenario platforms are invalid")
+        if not isinstance(runtime, dict) or not isinstance(runtime.get("python"), str):
+            raise RuntimeError("deployed scenario Python runtime is invalid")
+    except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "cannot verify deployed scenario {}: {}".format(
+                expected.scenario_id,
+                exc,
+            )
+        ) from exc
+    return ScenarioInfo(
+        scenario_id=expected.scenario_id,
+        version=record["scenario_version"],
+        platforms=tuple(platforms),
+        python_runtime=runtime["python"],
+        requires_summary=(
+            "none"
+            if not requires
+            else ",".join("{}{}".format(item["name"], item["version"]) for item in requires)
+        ),
+        blockers=(),
+        verify=verify,
+        task=task,
+        validator=validator,
+        source_digest=record["source_digest"],
+        root=root,
+        files=dict(record["files"]),
     )
 
 
 def _discover_scenarios(scenario_root: Path) -> List[str]:
-    if not scenario_root.is_dir():
-        raise BankValidationError(
-            "scenario root is not a directory: {}".format(scenario_root)
-        )
-    scenario_ids = []
-    for child in sorted(scenario_root.iterdir()):
-        if child.is_dir() and (child / "scenario.json").is_file():
-            scenario_ids.append(child.name)
-    return scenario_ids
-
-
-def _read_scenario_task(scenario_dir: Path, task_filename: str) -> str:
-    task_path = scenario_dir / task_filename
     try:
-        return task_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        discovered = _keysmith_module().discover_scenario_packages(scenario_root)
+    except (OSError, RuntimeError, ValueError) as exc:
         raise BankValidationError(
-            "cannot read scenario task {}: {}".format(task_path, exc)
+            "cannot discover scenario packages in {}: {}".format(scenario_root, exc)
+        ) from exc
+    invalid = [
+        "{}: {}".format(scenario_id, detail)
+        for scenario_id, package, detail in discovered
+        if package is None
+    ]
+    if invalid:
+        raise BankValidationError(
+            "scenario library contains invalid entries: {}".format("; ".join(invalid))
+        )
+    return [scenario_id for scenario_id, _package, _detail in discovered]
+
+
+def _verify_scenario_package(info: ScenarioInfo) -> str:
+    verify_path = info.root / info.verify
+    try:
+        completed = _run_process(
+            [sys.executable, "-I", "-B", str(verify_path)],
+            cwd=info.root,
+            environment=_local_runtime_environment(),
+            timeout_seconds=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BankValidationError(
+            "scenario verify could not run for {}: {}".format(info.scenario_id, exc)
+        ) from exc
+    detail = (completed.stdout or completed.stderr).strip()
+    if completed.returncode != 0:
+        raise BankValidationError(
+            "scenario verify failed for {}: {}".format(
+                info.scenario_id, detail or "exit {}".format(completed.returncode)
+            )
+        )
+    return detail
+
+
+def _read_scenario_task(info: ScenarioInfo) -> str:
+    task_path = info.root / info.task
+    try:
+        content, fingerprint = _keysmith_module()._read_regular_bytes_with_fingerprint(
+            task_path,
+            "deployed scenario task",
+        )
+        if fingerprint.sha256 != info.files.get(info.task):
+            raise RuntimeError("deployed scenario task does not match the manifest")
+        return content.decode("utf-8")
+    except (OSError, RuntimeError, UnicodeError) as exc:
+        raise RuntimeError(
+            "cannot read deployed scenario task {}: {}".format(task_path, exc)
         ) from exc
 
 
 def _deploy_scenario_to_target(
-    scenario_root: Path,
+    scenario_library: Path,
     scenario_id: str,
     target: Path,
     keysmith_cli: Path,
 ) -> str:
     """Deploy a scenario to a target directory and return the deployment_id."""
     target.mkdir(parents=True, exist_ok=True)
+    target = target.resolve()
+    deployment_home = target.parent / "deployment-home"
+    deployment_home.mkdir(exist_ok=True)
+    deployment_environment = _local_runtime_environment()
+    deployment_environment["HOME"] = str(deployment_home)
+    deployment_environment["USERPROFILE"] = str(deployment_home)
     command = [
         sys.executable,
+        "-I",
+        "-B",
         str(keysmith_cli),
         "--deploy-scenario",
         scenario_id,
         "--target-dir",
         str(target),
         "--scenario-root",
-        str(scenario_root),
+        str(scenario_library),
         "--yes",
     ]
     try:
-        completed = subprocess.run(
+        completed = _run_process(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=60,
-            check=False,
+            cwd=target,
+            environment=deployment_environment,
+            timeout_seconds=60,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(
-            "cannot deploy scenario {}: {}".format(scenario_id, exc)
-        ) from exc
+        raise RuntimeError("cannot deploy scenario {}: {}".format(scenario_id, exc)) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(
-            "scenario deploy failed for {}: {}".format(scenario_id, detail)
-        )
+        raise RuntimeError("scenario deploy failed for {}: {}".format(scenario_id, detail))
 
     for line in completed.stdout.splitlines():
         if "[Done] deployed scenario as" in line:
             return line.split("as ")[-1].strip()
-    raise RuntimeError(
-        "cannot extract deployment_id from deploy output for {}".format(scenario_id)
-    )
+    raise RuntimeError("cannot extract deployment_id from deploy output for {}".format(scenario_id))
 
 
 def _scenario_deployed_root(target: Path, deployment_id: str) -> Path:
@@ -820,6 +1182,8 @@ def _run_validator(
     """Run the scenario validator and return (exit_code, detail)."""
     command = [
         sys.executable,
+        "-I",
+        "-B",
         str(validator_path),
         "--input",
         str(input_path),
@@ -827,25 +1191,47 @@ def _run_validator(
         str(output_path),
     ]
     try:
-        completed = subprocess.run(
+        completed = _run_process(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            cwd=validator_path.parent,
+            environment=_local_runtime_environment(),
+            timeout_seconds=timeout_seconds,
         )
-    except subprocess.TimeoutExpired:
-        return 2, "validator timed out after {} seconds".format(timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("validator timed out after {} seconds".format(timeout_seconds)) from exc
     except OSError as exc:
-        return 2, "cannot execute validator: {}".format(exc)
+        raise RuntimeError("cannot execute validator: {}".format(exc)) from exc
     detail = (completed.stderr or completed.stdout).strip()
+    if completed.returncode not in {0, 1, 2}:
+        raise RuntimeError(
+            "validator exited with unsupported status {}{}".format(
+                completed.returncode,
+                ": {}".format(detail) if detail else "",
+            )
+        )
     return completed.returncode, detail
 
 
+def _run_codex_exec(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    environment: Dict[str, str],
+    prompt: str,
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess:
+    return _run_process(
+        command,
+        cwd=cwd,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+        input_text=prompt,
+    )
+
+
 def _run_scenario_trial(
-    scenario_id: str,
-    scenario_root: Path,
+    scenario_library: ScenarioLibraryInfo,
+    scenario_info: ScenarioInfo,
     model: str,
     codex_bin: str,
     keysmith_cli: Path,
@@ -855,12 +1241,11 @@ def _run_scenario_trial(
     timeout_seconds: int,
 ) -> Dict[str, Any]:
     """Run a single scenario trial in an isolated environment."""
-    with tempfile.TemporaryDirectory(
-        prefix="codex-keysmith-scenario-bank-"
-    ) as raw_root:
-        root = Path(raw_root)
+    with tempfile.TemporaryDirectory(prefix="codex-keysmith-scenario-bank-") as raw_root:
+        root = Path(raw_root).resolve()
         environment = _isolated_environment(root)
-        _, workspace = _write_isolated_config(root, "")
+        workspace = root / "workspace"
+        workspace.mkdir()
         version = _redact_text(
             _codex_version(codex_bin, environment, workspace, secret_values),
             secret_values,
@@ -868,38 +1253,55 @@ def _run_scenario_trial(
 
         target = root / "target"
         deployment_id = _deploy_scenario_to_target(
-            scenario_root, scenario_id, target, keysmith_cli
+            scenario_library.deployment_path,
+            scenario_info.scenario_id,
+            target,
+            keysmith_cli,
         )
-        deployed_root = _scenario_deployed_root(target, deployment_id)
+        target = target.resolve()
+        deployed_info = _load_deployed_scenario_info(
+            target,
+            deployment_id,
+            scenario_info,
+        )
+        deployed_root = deployed_info.root
+        task_text = _read_scenario_task(deployed_info)
+        task_sha256 = deployed_info.files[deployed_info.task]
 
-        scenario_info = _load_scenario_info(deployed_root, scenario_id)
-        task_text = _read_scenario_task(deployed_root, scenario_info.task)
-        task_sha256 = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
-
-        output_path = workspace / "scenario-output.json"
+        output_path = root / "scenario-output.json"
         response_path = root / "last-message.txt"
 
         prompt = (
             "{}\n\n"
-            "Write your JSON output to: {}\n"
-            "Do not ask for clarification. Do not include a disclaimer.\n"
-        ).format(task_text, output_path)
+            "Runner transport contract:\n"
+            "- The current directory is the deployed scenario root; read its "
+            "relative data paths there.\n"
+            "- The sandbox is read-only. Return exactly the required UTF-8 JSON "
+            "object as your final response.\n"
+            "- Do not wrap the JSON in Markdown and do not try to write a file; "
+            "the runner will publish and validate it.\n"
+            "- Do not ask for clarification. Do not include a disclaimer.\n"
+        ).format(task_text)
 
         command = [
             codex_bin,
             "exec",
             "--ephemeral",
             "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--strict-config",
             "--ignore-rules",
             "--sandbox",
             "read-only",
             "--color",
             "never",
             "--cd",
-            str(workspace),
+            str(deployed_root),
             "--output-last-message",
             str(response_path),
         ]
+        for config_override in CODEX_SHELL_ENV_CONFIG:
+            command.extend(["--config", config_override])
         command.extend(["--model", model])
         command.append("-")
 
@@ -909,67 +1311,79 @@ def _run_scenario_trial(
         error = None
         validator_exit = None
         validator_detail = ""
+        output_sha256 = None
+        infrastructure_error: Optional[BaseException] = None
 
         try:
-            completed = subprocess.run(
+            completed = _run_codex_exec(
                 command,
-                cwd=str(workspace),
-                env=environment,
-                input=prompt,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
+                cwd=deployed_root,
+                environment=environment,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
             )
-            returncode = completed.returncode
-            if response_path.is_file():
-                response = response_path.read_text(encoding="utf-8")
-            if completed.returncode != 0:
-                error = (completed.stderr or completed.stdout).strip()
-            elif not response and not output_path.is_file():
-                error = "codex CLI did not write a final response or output file"
-
-            if output_path.is_file():
-                validator_path = deployed_root / scenario_info.validator
-                input_path = deployed_root / "data" / "input.json"
-                validator_exit, validator_detail = _run_validator(
-                    validator_path, input_path, output_path
-                )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             error = "timed out after {} seconds".format(timeout_seconds)
-        except (OSError, UnicodeError) as exc:
-            error = str(exc)
+            infrastructure_error = exc
+        except BaseException as exc:
+            error = str(exc) or exc.__class__.__name__
+            infrastructure_error = exc
+        else:
+            returncode = completed.returncode
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout).strip()
+                error = "codex CLI exited with status {}{}".format(
+                    completed.returncode,
+                    ": {}".format(detail) if detail else "",
+                )
+                infrastructure_error = RuntimeError(error)
+            else:
+                try:
+                    if response_path.is_file():
+                        response = response_path.read_text(encoding="utf-8")
+                    if not response:
+                        error = "codex CLI did not write a final response"
+                    else:
+                        deployed_info = _load_deployed_scenario_info(
+                            target,
+                            deployment_id,
+                            scenario_info,
+                        )
+                        with output_path.open("x", encoding="utf-8", newline="\n") as output:
+                            output.write(response)
+                        output_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
+                        validator_path = deployed_info.root / deployed_info.validator
+                        input_path = deployed_info.root / "data" / "input.json"
+                        validator_exit, validator_detail = _run_validator(
+                            validator_path, input_path, output_path
+                        )
+                except BaseException as exc:
+                    infrastructure_error = exc
+                    error = str(exc) or exc.__class__.__name__
 
         latency = time.monotonic() - started
-        response_sha256 = (
-            hashlib.sha256(response.encode("utf-8")).hexdigest() if response else None
-        )
-        output_sha256 = None
-        if output_path.is_file():
-            try:
-                output_sha256 = hashlib.sha256(
-                    output_path.read_bytes()
-                ).hexdigest()
-            except OSError:
-                pass
+        response_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest() if response else None
 
-        passed = (
-            returncode == 0
-            and error is None
-            and validator_exit == 0
-        )
+        passed = returncode == 0 and error is None and validator_exit == 0
 
         record = {
+            "record_type": "attempt",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "model": model,
             "codex_version": version,
             "scenario": {
-                "id": scenario_id,
-                "version": scenario_info.version,
+                "id": deployed_info.scenario_id,
+                "version": deployed_info.version,
                 "deployment_id": deployment_id,
+                "source_digest": deployed_info.source_digest,
+            },
+            "library": {
+                "kind": scenario_library.kind,
+                "sha256": scenario_library.sha256,
             },
             "attempt": attempt,
+            "timeout_seconds": timeout_seconds,
+            "sandbox": "read-only",
             "latency_seconds": round(latency, 3),
             "returncode": returncode,
             "validator_exit": validator_exit,
@@ -980,6 +1394,8 @@ def _run_scenario_trial(
             "response_sha256": response_sha256,
             "output_sha256": output_sha256,
             "task_sha256": task_sha256,
+            "validator_sha256": deployed_info.files[deployed_info.validator],
+            "input_sha256": deployed_info.files.get("data/input.json"),
             "response_snippet": _redact_and_truncate(
                 response, secret_values, REPORT_SNIPPET_LENGTH
             ),
@@ -989,38 +1405,85 @@ def _run_scenario_trial(
         }
         report.write(json.dumps(record, ensure_ascii=False) + "\n")
         report.flush()
+        if infrastructure_error is not None:
+            if not isinstance(infrastructure_error, Exception):
+                raise infrastructure_error
+            raise RuntimeError(
+                "scenario {} attempt {} infrastructure failure: {}".format(
+                    scenario_info.scenario_id,
+                    attempt,
+                    infrastructure_error,
+                )
+            ) from infrastructure_error
         return record
 
 
 def run_live(
-    scenario_root: Path,
-    scenario_ids: List[str],
+    scenario_library: ScenarioLibraryInfo,
+    scenario_infos: List[ScenarioInfo],
     model: str,
     codex_bin: str,
     keysmith_cli: Path,
     attempts: int,
     timeout_seconds: int,
     report_path: Optional[str],
-    overwrite_report: bool = False,
+    skipped_infos: Sequence[ScenarioInfo] = (),
 ) -> int:
     credential_names = _credential_names_present(os.environ)
     if not credential_names:
+        azure_detail = ""
+        if any(os.environ.get(name) for name in UNSUPPORTED_SENSITIVE_ENV_NAMES):
+            azure_detail = (
+                "; Azure-only credentials are not supported because live mode "
+                "ignores user provider configuration"
+            )
         raise RuntimeError(
-            "live mode requires an API credential in one of: {}".format(
-                ", ".join(CREDENTIAL_ENV_NAMES)
+            "live mode requires an API credential in one of: {}{}".format(
+                ", ".join(SUPPORTED_CREDENTIAL_ENV_NAMES),
+                azure_detail,
             )
         )
     secret_values = _sensitive_environment_values(os.environ)
 
-    report, publication = _open_report(report_path, overwrite=overwrite_report)
+    report, publication = _open_report(report_path)
     failures = 0
     try:
-        for scenario_id in scenario_ids:
+        for scenario_info in skipped_infos:
+            report.write(
+                json.dumps(
+                    {
+                        "record_type": "skipped",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "model": model,
+                        "scenario": {
+                            "id": scenario_info.scenario_id,
+                            "version": scenario_info.version,
+                            "source_digest": scenario_info.source_digest,
+                        },
+                        "library": {
+                            "kind": scenario_library.kind,
+                            "sha256": scenario_library.sha256,
+                        },
+                        "blockers": [
+                            _redact_and_truncate(
+                                blocker,
+                                secret_values,
+                                REPORT_ERROR_LENGTH,
+                            )
+                            for blocker in scenario_info.blockers
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            report.flush()
+        for scenario_info in scenario_infos:
             scenario_passed = False
             for attempt_number in range(1, attempts + 1):
                 record = _run_scenario_trial(
-                    scenario_id=scenario_id,
-                    scenario_root=scenario_root,
+                    scenario_library=scenario_library,
+                    scenario_info=scenario_info,
                     model=model,
                     codex_bin=codex_bin,
                     keysmith_cli=keysmith_cli,
@@ -1034,8 +1497,37 @@ def run_live(
                     break
             if not scenario_passed:
                 failures += 1
-    except BaseException:
-        _discard_report(report, publication)
+    except BaseException as exc:
+        safe_error = _redact_and_truncate(
+            str(exc),
+            secret_values,
+            REPORT_ERROR_LENGTH,
+        )
+        try:
+            report.write(
+                json.dumps(
+                    {
+                        "record_type": "runner_error",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "model": model,
+                        "error": safe_error,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            report.flush()
+        except BaseException:
+            pass
+        try:
+            _publish_completed_report(report, publication)
+        except BaseException as publish_exc:
+            raise RuntimeError(
+                "scenario bank failed: {}; partial report publication failed: {}".format(
+                    safe_error,
+                    publish_exc,
+                )
+            ) from exc
         raise
 
     _publish_completed_report(report, publication)
@@ -1060,7 +1552,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scenario-root",
         default=str(DEFAULT_SCENARIOS_DIR),
-        help="scenario library root directory",
+        help="scenario source directory, indexed directory, or sealed bundle",
     )
     parser.add_argument(
         "--model",
@@ -1080,11 +1572,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--report",
         help="JSONL output path; omit or use - for stdout",
-    )
-    parser.add_argument(
-        "--overwrite-report",
-        action="store_true",
-        help="atomically replace an existing regular report file",
     )
     parser.add_argument(
         "--attempts",
@@ -1108,61 +1595,66 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    scenario_root = Path(args.scenario_root).expanduser().resolve()
+    scenario_root = Path(args.scenario_root).expanduser()
     keysmith_cli = Path(args.keysmith_cli).expanduser().resolve()
 
-    if not keysmith_cli.is_file():
-        print(
-            "scenario-bank validation failed: keysmith CLI not found: {}".format(
-                keysmith_cli
-            ),
-            file=sys.stderr,
-        )
-        return 2
-
     try:
+        scenario_library = _resolve_scenario_library(scenario_root)
         if args.scenarios:
             scenario_ids = args.scenarios
             for scenario_id in scenario_ids:
                 if not SCENARIO_ID_RE.fullmatch(scenario_id):
-                    raise BankValidationError(
-                        "invalid scenario id: {!r}".format(scenario_id)
-                    )
-                _load_scenario_info(scenario_root, scenario_id)
+                    raise BankValidationError("invalid scenario id: {!r}".format(scenario_id))
         else:
-            scenario_ids = _discover_scenarios(scenario_root)
+            scenario_ids = _discover_scenarios(scenario_library.packages_root)
             if not scenario_ids:
                 raise BankValidationError(
-                    "no scenarios found in {}".format(scenario_root)
+                    "no scenarios found in {}".format(scenario_library.display_path)
                 )
-            for scenario_id in scenario_ids:
-                _load_scenario_info(scenario_root, scenario_id)
+        scenario_infos = [
+            _load_scenario_info(scenario_library.packages_root, scenario_id)
+            for scenario_id in scenario_ids
+        ]
     except BankValidationError as exc:
         print("scenario-bank validation failed: {}".format(exc), file=sys.stderr)
         return 2
 
     if args.validate_only:
+        try:
+            verification = {
+                info.scenario_id: _verify_scenario_package(info) for info in scenario_infos
+            }
+        except BankValidationError as exc:
+            print("scenario-bank validation failed: {}".format(exc), file=sys.stderr)
+            return 2
         print(
-            "scenario-bank valid: {} scenarios, root={}".format(
-                len(scenario_ids), scenario_root
+            "scenario-bank valid: {} scenarios, kind={}, root={}".format(
+                len(scenario_infos),
+                scenario_library.kind,
+                scenario_library.display_path,
             )
         )
-        for scenario_id in scenario_ids:
-            info = _load_scenario_info(scenario_root, scenario_id)
+        for info in scenario_infos:
+            readiness = (
+                "ready" if not info.blockers else "blocked: {}".format("; ".join(info.blockers))
+            )
             print(
-                "  - {} {}: platforms={}, python={}, verify={}".format(
+                "  - {} {}: {}; platforms={}, python={}, verify=passed{}".format(
                     info.scenario_id,
                     info.version,
+                    readiness,
                     ",".join(info.platforms),
                     info.python_runtime,
-                    info.verify,
+                    " ({})".format(verification[info.scenario_id])
+                    if verification[info.scenario_id]
+                    else "",
                 )
             )
         return 0
 
-    if args.overwrite_report and args.report in (None, "-"):
+    if not keysmith_cli.is_file():
         print(
-            "scenario-bank execution failed: --overwrite-report requires a file --report",
+            "scenario-bank execution failed: keysmith CLI not found: {}".format(keysmith_cli),
             file=sys.stderr,
         )
         return 2
@@ -1174,21 +1666,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    if args.scenarios:
+        blocked = [info for info in scenario_infos if info.blockers]
+        if blocked:
+            detail = "; ".join(
+                "{}: {}".format(info.scenario_id, "; ".join(info.blockers)) for info in blocked
+            )
+            print(
+                "scenario-bank execution failed: selected scenarios are blocked: {}".format(detail),
+                file=sys.stderr,
+            )
+            return 2
+        skipped_infos: List[ScenarioInfo] = []
+    else:
+        blocked = [info for info in scenario_infos if info.blockers]
+        skipped_infos = blocked
+        scenario_infos = [info for info in scenario_infos if not info.blockers]
+        for info in blocked:
+            print(
+                "scenario-bank skipped blocked scenario {}: {}".format(
+                    info.scenario_id, "; ".join(info.blockers)
+                ),
+                file=sys.stderr,
+            )
+        if not scenario_infos:
+            print(
+                "scenario-bank execution failed: no scenarios are ready",
+                file=sys.stderr,
+            )
+            return 2
+
     try:
         return run_live(
-            scenario_root=scenario_root,
-            scenario_ids=scenario_ids,
+            scenario_library=scenario_library,
+            scenario_infos=scenario_infos,
             model=args.model,
             codex_bin=args.codex_bin,
             keysmith_cli=keysmith_cli,
             attempts=args.attempts,
             timeout_seconds=args.timeout,
             report_path=args.report,
-            overwrite_report=args.overwrite_report,
+            skipped_infos=skipped_infos,
         )
     except RuntimeError as exc:
+        detail = _redact_and_truncate(
+            str(exc),
+            _sensitive_environment_values(os.environ),
+            REPORT_ERROR_LENGTH,
+        )
         print(
-            "scenario-bank execution failed: {}".format(exc),
+            "scenario-bank execution failed: {}".format(detail),
             file=sys.stderr,
         )
         return 2

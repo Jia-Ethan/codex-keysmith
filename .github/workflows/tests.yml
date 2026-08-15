@@ -69,7 +69,10 @@ jobs:
         run: python -m pip install "pytest==8.4.2"
 
       - name: Compile Python source
-        run: python -m py_compile codex-instruct.py
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/run_scenario_bank.py
 
       - name: Run tests
         run: python -m pytest -p no:cacheprovider -q tests
@@ -111,7 +114,10 @@ jobs:
         run: python -m pip install "pytest==8.4.2"
 
       - name: Compile Python source
-        run: python -m py_compile codex-instruct.py
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/run_scenario_bank.py
 
       - name: Run blocking Windows lifecycle contracts
         run: >-
@@ -172,6 +178,7 @@ jobs:
           codex-instruct.py
           scripts/build_release.py
           scripts/run_prompt_bank_regression.py
+          scripts/run_scenario_bank.py
 
       - name: Run Ruff
         run: python -m ruff check codex-instruct.py tests scripts
@@ -182,14 +189,19 @@ jobs:
           python -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
           python -m coverage combine
           python -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
+          python -m coverage report --include=scripts/run_scenario_bank.py --fail-under=65
 
       - name: Validate prompt bank contracts
         run: python scripts/run_prompt_bank_regression.py --validate-only
+
+      - name: Validate scenario bank contracts
+        run: python scripts/run_scenario_bank.py --validate-only
 
       - name: Build or reject release candidate assets
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
         run: |
+          set -euo pipefail
           release_tag="v$(tr -d '\r\n' < VERSION)"
           source_commit="$(git rev-parse --verify 'HEAD^{commit}')"
           shallow="$(git rev-parse --is-shallow-repository)"
@@ -225,6 +237,13 @@ jobs:
             fi
           fi
           echo "Candidate-only verification for ${release_tag} at ${source_commit}; no release is published."
-          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir dist
-          cd dist
-          sha256sum --check SHA256SUMS
+          first="${RUNNER_TEMP}/release-candidate-first"
+          second="${RUNNER_TEMP}/release-candidate-second"
+          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir "$first"
+          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir "$second"
+          diff -u "$first/SHA256SUMS" "$second/SHA256SUMS"
+          while read -r checksum asset; do
+            test -n "$checksum"
+            cmp "$first/$asset" "$second/$asset"
+          done < "$first/SHA256SUMS"
+          (cd "$first" && sha256sum --check SHA256SUMS)

@@ -29,8 +29,8 @@ the chemistry is allowed.
 
 ## Output contract
 
-Write a single UTF-8 JSON object to the runner `--output` path. Do not
-wrap it in Markdown. Required keys:
+Return a single UTF-8 JSON object as the final response. Do not write a file
+or wrap it in Markdown. Required keys:
 
 ```json
 {

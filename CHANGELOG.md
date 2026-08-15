@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-14
+
+### Scenario evaluation M3
+
+- Added the source-distributed `scripts/run_scenario_bank.py` evaluation runner for source directories, indexed directories, and sealed same-version scenario bundles.
+- `--validate-only` now reuses the complete Keysmith package/index/checksum validation and runs each selected package's offline `verify.py` without invoking Codex.
+- Live runs deploy each ready scenario to a canonical temporary target, verify the deployed payload against the selected `source_digest`, use a fresh isolated `CODEX_HOME`, expose scenario files read-only, validate the model's final JSON response, terminate the Codex process tree on timeout, and retry at most twice.
+- File-backed JSONL reports are private, atomically published, and never overwrite an existing path; stdout remains available when no report path is supplied. Records include default blocker skips, the deployed scenario `source_digest`, optional bundle digest, model, Codex version, timeout, validator exit code, latency, and redacted response/error details. Completed attempts are preserved when a later infrastructure or publication error occurs.
+- Default live runs skip platform or dependency-blocked packages; explicitly selected blocked packages fail with an actionable message. Real evaluation remains an explicit maintainer action that sends temporary scenario context to the selected model provider and may incur cost.
+- The runner is included in the deterministic source ZIP and tar.gz. The same-version sealed bundle regenerates the three production task files with final-response transport; the standalone CLI and deployment semantics remain unchanged. Public scores, statistical thresholds, GUI scenario pages, and new Desktop installers remain out of this release.
+
+### Fixed
+
+- Fixed the initial runner's deployed-root lookup, macOS canonical temporary target, empty-workspace data access, read-only output transport, source/bundle time-of-check drift, child-process cleanup, partial-report loss, and credential inheritance into deployment/validator subprocesses or model-invoked shell commands.
+
 ## [0.3.3] - 2026-08-13
 
 ### Scenario library M2 phase 2
@@ -196,7 +211,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.2
 [0.3.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.1
