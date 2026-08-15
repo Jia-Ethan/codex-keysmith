@@ -27,6 +27,7 @@ import builtins
 import ctypes
 import errno
 import hashlib
+import io
 import json
 import locale
 import os
@@ -164,7 +165,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -3665,6 +3666,7 @@ class ScenarioLibrary:
     display_path: Path
     packages_root: Path
     index: Optional[Dict[str, Any]] = None
+    sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -4599,13 +4601,24 @@ def _extract_scenario_bundle_member(
         os.close(descriptor)
 
 
-def _materialize_scenario_bundle(bundle_path: Path) -> Path:
-    digest = _scenario_sha256_file(bundle_path, "scenario bundle")
+def _materialize_scenario_bundle(
+    bundle_path: Path,
+    expected_digest: Optional[str] = None,
+) -> Tuple[Path, str]:
+    content, fingerprint = _read_regular_bytes_with_fingerprint(
+        bundle_path,
+        "scenario bundle",
+    )
+    digest = fingerprint.sha256
+    if expected_digest is not None and digest != expected_digest:
+        raise HooksConflict(
+            "embedded scenario bundle digest mismatch; provide --scenario-root"
+        )
     cached = _SCENARIO_BUNDLE_CACHE.get(digest)
     if cached is not None and _classify_node(cached).kind == "directory":
-        return cached
+        return cached, digest
     try:
-        with zipfile.ZipFile(str(bundle_path), "r") as archive:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as archive:
             names = archive.namelist()
             if not names:
                 raise HooksConflict("scenario bundle is empty")
@@ -4639,7 +4652,7 @@ def _materialize_scenario_bundle(bundle_path: Path) -> Path:
     _SCENARIO_BUNDLE_TEMPDIRS.append(temporary)
     packages_root = extracted_root / SCENARIO_BUNDLE_SCENARIOS_DIRNAME
     _SCENARIO_BUNDLE_CACHE[digest] = packages_root
-    return packages_root
+    return packages_root, digest
 
 
 def _scenario_library_from_directory(root: Path) -> ScenarioLibrary:
@@ -4714,16 +4727,15 @@ def _embedded_scenario_library() -> ScenarioLibrary:
         raise FileNotFoundError(
             "embedded scenario bundle is missing; provide --scenario-root"
         )
-    actual_digest = _scenario_sha256_file(bundle_path, "embedded scenario bundle")
-    if actual_digest != expected_digest:
-        raise HooksConflict(
-            "embedded scenario bundle digest mismatch; provide --scenario-root"
-        )
-    packages_root = _materialize_scenario_bundle(bundle_path)
+    packages_root, actual_digest = _materialize_scenario_bundle(
+        bundle_path,
+        expected_digest=expected_digest,
+    )
     return ScenarioLibrary(
         kind="bundle",
         display_path=bundle_path,
         packages_root=packages_root,
+        sha256=actual_digest,
     )
 
 
@@ -4732,11 +4744,12 @@ def resolve_scenario_library(value: Optional[str]) -> ScenarioLibrary:
         raw = Path(value)
         if _is_scenario_bundle_path(raw):
             bundle_path = _scenario_require_absolute_file(value, "--scenario-root")
-            packages_root = _materialize_scenario_bundle(bundle_path)
+            packages_root, digest = _materialize_scenario_bundle(bundle_path)
             return ScenarioLibrary(
                 kind="bundle",
                 display_path=bundle_path,
                 packages_root=packages_root,
+                sha256=digest,
             )
         root = _scenario_require_absolute_directory(value, "--scenario-root")
         return _scenario_library_from_directory(root)

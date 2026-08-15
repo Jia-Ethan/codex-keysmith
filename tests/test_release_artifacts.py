@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.3.3"
-VERSION = "0.3.3"
+TAG = "v0.3.4"
+VERSION = "0.3.4"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -35,8 +35,9 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
-    "docs/releases/v0.3.3.md",
+    "docs/releases/v0.3.4.md",
     "examples/gpt-unrestricted.md",
+    "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",
     "gui/scripts/build-sidecar.mjs",
@@ -93,7 +94,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.3"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.4"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -107,7 +108,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.3.3.md",
+    "docs/releases/v0.3.4.md",
 )
 
 
@@ -206,9 +207,9 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-08-13".format(VERSION) in changelog
-    assert "Source version v0.3.3" in readme
-    assert "v0.3.3 local candidate" not in readme
+    assert "## [{}] - 2026-08-14".format(VERSION) in changelog
+    assert "Source version v0.3.4" in readme
+    assert "v0.3.4 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
@@ -419,6 +420,8 @@ def test_release_build_is_reproducible_and_contains_required_files(release_build
             assert archive.read(prefix + relative_path) == source_bytes[relative_path]
         executable = archive.getinfo(prefix + "gui/scripts/build-sidecar.mjs")
         assert executable.external_attr >> 16 & 0o777 == 0o755
+        runner = archive.getinfo(prefix + "scripts/run_scenario_bank.py")
+        assert runner.external_attr >> 16 & 0o777 == 0o755
         assert archive.read(prefix + "LICENSE") == (REPO_ROOT / "LICENSE").read_bytes()
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
 
@@ -433,6 +436,7 @@ def test_release_build_is_reproducible_and_contains_required_files(release_build
             assert member.mtime == 0
             assert member.uid == member.gid == 0
         assert tar_members[prefix + "gui/scripts/build-sidecar.mjs"].mode == 0o755
+        assert tar_members[prefix + "scripts/run_scenario_bank.py"].mode == 0o755
 
 
 def test_standalone_script_and_checksums_match_assets(release_builder, tmp_path):
@@ -1250,7 +1254,9 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "Windows experimental atomic no-replace probe passed" not in workflow
     windows_job = workflow.split("\n  windows:", 1)[1].split("\n  quality:", 1)[0]
     assert "runs-on: windows-2025" in windows_job
-    assert "python -m py_compile codex-instruct.py" in windows_job
+    assert "python -m py_compile" in windows_job
+    assert "codex-instruct.py" in windows_job
+    assert "scripts/run_scenario_bank.py" in windows_job
     assert "python -m pytest -p no:cacheprovider -q tests" in windows_job
     quality_job = workflow.split("\n  quality:", 1)[1]
     assert "fetch-depth: 0" in quality_job
@@ -1262,8 +1268,17 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
     assert "Release builder failed for an unexpected reason" in workflow
     assert "correctly refused the conflicting candidate" in workflow
     assert '--source-commit "$source_commit"' in workflow
+    assert "release-candidate-first" in quality_job
+    assert "release-candidate-second" in quality_job
+    assert 'diff -u "$first/SHA256SUMS" "$second/SHA256SUMS"' in quality_job
+    assert 'cmp "$first/$asset" "$second/$asset"' in quality_job
     assert "sha256sum --check SHA256SUMS" in workflow
     assert "--fail-under=81" in workflow
+    assert (
+        "coverage report --include=scripts/run_scenario_bank.py --fail-under=65"
+        in quality_job
+    )
+    assert "python scripts/run_scenario_bank.py --validate-only" in quality_job
 
     release_workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"

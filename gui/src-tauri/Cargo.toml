@@ -1,6 +1,6 @@
 [package]
 name = "codex-keysmith-gui"
-version = "0.3.3"
+version = "0.3.4"
 description = "Visual client for codex-keysmith"
 edition = "2021"
 

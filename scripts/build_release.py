@@ -34,6 +34,7 @@ ARCHIVE_FILES = (
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
     "examples/gpt-unrestricted.md",
+    "scripts/run_scenario_bank.py",
 )
 
 SCENARIO_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -1084,7 +1085,11 @@ def _require_clean_repository(repo_root: Path, output_dir: Path) -> None:
 
 
 def _archive_mode(relative_path: str) -> int:
-    return 0o755 if relative_path == "codex-instruct.py" else 0o644
+    return (
+        0o755
+        if relative_path in {"codex-instruct.py", "scripts/run_scenario_bank.py"}
+        else 0o644
+    )
 
 
 def _archive_name(tag: str, relative_path: str) -> str:

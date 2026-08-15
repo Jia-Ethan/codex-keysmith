@@ -8,7 +8,7 @@
 
 | 版本 | 安全支持 |
 | --- | --- |
-| 最新 `0.1.x` Release | 支持；安全修复以最新补丁版本为准 |
+| 最新正式源码 Release | 支持；安全修复以最新补丁版本为准 |
 | `Unreleased` / `main` | Best effort 开发状态；不视为稳定 Release |
 | 更早版本与未标记快照 | 不支持 |
 
@@ -26,7 +26,13 @@ Windows v0.1.0 fresh deployment 为 known-bad；v0.1.1 及后续版本提供受�
 - 涉及的 deploy、status、recover、restore-hooks 或 uninstall 模式，以及是否存在 `.codex-keysmith-transaction-<id>`；
 - 影响范围，以及已知缓解方式。
 
-提交前删除 token、cookie、用户名、私人路径、完整配置、Prompt Bank 响应和其他可识别数据。维护者会通过 GitHub Security Advisories 跟进；本仓库不承诺固定响应时限。
+提交前删除 token、cookie、用户名、私人路径、完整配置、Prompt Bank / Scenario Bank 响应和其他可识别数据。维护者会通过 GitHub Security Advisories 跟进；本仓库不承诺固定响应时限。
+
+## 场景评估信任边界
+
+只对同版本 Release 场景 bundle 或已人工审阅的本地场景目录运行 Scenario Bank。`verify.py` 与 `validator.py` 是会在本机执行的 Python 代码；runner 使用 `python -I -B` 和不含模型凭证的最小环境，但这不是操作系统级读取或网络沙箱。第三方场景包仍可能以当前账户权限访问其他本地资源或网络。
+
+Live runner 使用临时工作目录、隔离 `HOME` / `CODEX_HOME`、`--ignore-user-config`、严格 shell 环境策略和 Codex `read-only` sandbox，避免主动加载用户项目或 live Codex 配置，并阻止模型工具写入场景目录。模型工具的 shell 仅继承平台核心环境，并显式过滤 API 凭证、代理和模型服务地址。该 sandbox 不应被表述为对当前账户全部可读文件的强读取隔离。只在已审阅场景上运行，使用专用低权限凭证，并在公开报告前人工复核脱敏结果。
 
 ## 回滚边界
 
@@ -48,7 +54,7 @@ v0.1.0 之前没有部署清单的状态不属于自动卸载所有权。成功�
 
 | Version | Security support |
 | --- | --- |
-| Latest `0.1.x` Release | Supported; fixes target the latest patch release |
+| Latest formal source Release | Supported; fixes target the latest patch release |
 | `Unreleased` / `main` | Best-effort development state, not a stable Release |
 | Older releases and untagged snapshots | Unsupported |
 
@@ -66,7 +72,13 @@ Include:
 - whether deploy, status, recover, restore-hooks, or uninstall is involved, and whether `.codex-keysmith-transaction-<id>` exists;
 - impact and any known mitigation.
 
-Remove tokens, cookies, usernames, private paths, complete configuration, prompt-bank responses, and other identifying data. Maintainers will follow up through GitHub Security Advisories; this repository does not promise a fixed response time.
+Remove tokens, cookies, usernames, private paths, complete configuration, prompt-bank or scenario-bank responses, and other identifying data. Maintainers will follow up through GitHub Security Advisories; this repository does not promise a fixed response time.
+
+## Scenario evaluation trust boundary
+
+Run Scenario Bank only against the same-version Release bundle or a locally reviewed scenario directory. `verify.py` and `validator.py` are Python programs executed on the host. The runner uses `python -I -B` and a minimal environment without model credentials, but this is not an operating-system read or network sandbox; a third-party package may still access other resources available to the current account.
+
+The live runner uses temporary directories, isolated `HOME` / `CODEX_HOME`, `--ignore-user-config`, a strict shell-environment policy, and the Codex `read-only` sandbox so it does not intentionally load a user project or live Codex configuration and model tools cannot write the scenario directory. Model-invoked shell commands inherit only the platform core environment and explicitly filter API credentials, proxies, and model-service endpoints. Do not describe that sandbox as strong read isolation from every file visible to the current account. Use reviewed packages, a dedicated low-privilege credential, and manual review before publishing a redacted report.
 
 ## Rollback boundary
 
