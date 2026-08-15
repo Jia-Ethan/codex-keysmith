@@ -736,6 +736,18 @@ describe("parseScenarioStatus", () => {
     expect(parsed.state).toBe("not-installed");
     expect(parsed.deployments).toHaveLength(0);
   });
+
+  it("保留 conflict blocker 供 GUI 展示", () => {
+    const parsed = parseScenarioStatus(
+      "[Scenario target] /private/tmp/project\n"
+      + "[Scenario state] conflict\n"
+      + "[Blocked] scenario control directory contains unknown members: unknown\n",
+    );
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.blockers).toEqual([
+      "scenario control directory contains unknown members: unknown",
+    ]);
+  });
 });
 
 describe("parseScenarioDeployPreview", () => {
@@ -782,9 +794,16 @@ describe("parseScenarioUninstallPreview / recover", () => {
 });
 
 describe("extractCanonicalTarget", () => {
-  it("从间接路径错误中取出规范路径", () => {
-    expect(extractCanonicalTarget(
+  it.each([
+    [
       "[Error] --target-dir resolves through an indirect path; use the canonical path: /private/tmp/project",
-    )).toBe("/private/tmp/project");
+      "/private/tmp/project",
+    ],
+    [
+      "[Error] --target-dir resolves to a different path; use the canonical absolute path: C:\\Projects\\target",
+      "C:\\Projects\\target",
+    ],
+  ])("兼容普通与 Windows absolute canonical 文案", (output, expected) => {
+    expect(extractCanonicalTarget(output)).toBe(expected);
   });
 });

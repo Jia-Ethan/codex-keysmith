@@ -6,13 +6,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-15
+
 ### Desktop
 
 - Added a source-only GUI Scenarios view: package list, detail, explicit target directory, preview-gated deploy/uninstall/recovery, and target status. The GUI still only calls CLI scenario commands. No new DMG/NSIS is published in this change.
 
 ### Fixed
 
-- Live `scripts/run_scenario_bank.py` now turns `OPENAI_BASE_URL` into an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.
+- The GUI Scenarios view now binds each preview to its canonical target and scenario/deployment identity, discards stale async responses, recognizes Windows canonical-path retries, preserves blocker/stdout/stderr/timeout diagnostics, and refreshes target status after every write attempt.
+- Live `scripts/run_scenario_bank.py` now validates `OPENAI_BASE_URL` as an absolute `http://` or `https://` root with a non-empty canonical host, rejects userinfo/query/fragment components, normalizes host/trailing-slash variants, and injects the result as an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`; reports and raised failures redact API keys plus raw/normalized endpoints. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.
+- Updated the locked dev-only `nanoid` build dependency to `3.3.18`, closing GHSA-2v37-7h3g-55p8 without changing runtime dependencies.
 
 ## [0.3.4] - 2026-08-14
 
@@ -219,7 +223,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.2

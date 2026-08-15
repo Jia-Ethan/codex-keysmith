@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.4" src="https://img.shields.io/badge/source-v0.3.4-0099CC">
+  <img alt="Source version v0.3.5" src="https://img.shields.io/badge/source-v0.3.5-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -50,7 +50,7 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.3.4`。源码 GUI 已包含场景库页（列表、显式目标目录、preview 门禁、status、卸载、恢复），冻结 sidecar 仍嵌入同版本场景 bundle。公开安装包仍是 [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6)，不包含该场景页，也不发布新的 DMG / NSIS。
+- 当前统一源码版本为 `0.3.5`。本版发布源码 GUI 场景库页（列表、显式目标目录、preview 门禁、status、卸载、恢复），并收紧 M3 runner 的兼容 endpoint 校验、规范化与脱敏；冻结 sidecar 仍嵌入同版本场景 bundle。公开安装包仍是 [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6)，不包含该场景页，也不发布新的 DMG / NSIS。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
@@ -132,7 +132,7 @@ python3 scripts/run_scenario_bank.py --validate-only \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
 
-Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。可选 `OPENAI_BASE_URL` 指向 OpenAI 兼容根路径（通常含 `/v1`）；runner 不会读取 live `~/.codex/config.toml`，而是在隔离 `CODEX_HOME` 里注入临时 custom provider。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout。
+Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。可选 `OPENAI_BASE_URL` 指向 OpenAI 兼容根路径（通常含 `/v1`），且必须是带非空 host 的绝对 `http://` 或 `https://` URL；禁止 userinfo、query 和 fragment，scheme、host 与末尾斜杠会在使用前规范化。runner 不会读取 live `~/.codex/config.toml`，而是在隔离 `CODEX_HOME` 里注入临时 custom provider。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout；报告与抛出的 live-mode 错误会脱敏已识别凭证、原始 endpoint 和规范化 endpoint。
 
 ```bash
 OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
