@@ -69,7 +69,7 @@ cargo check --manifest-path src-tauri/Cargo.toml --locked
 
 - **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情；完整的非零状态报告继续显示目录卡片，并保留退出码、stderr 与完整 CLI 输出。
 - **部署向导**：选择内容、dry-run 预览、确认执行；非零退出、超时、空输出和阻塞项全部阻断。
-- **场景库**：列出 sidecar/源码场景包，选择显式目标目录后预览部署、查看 status、按 `deployment_id` 卸载、恢复中断事务。GUI 不写 `<target>/.codex-keysmith/`。
+- **场景库**：列出 sidecar/源码场景包，选择显式目标目录后预览部署、查看 status、按 `deployment_id` 卸载、恢复中断事务。预览绑定当时的规范目标与场景/部署标识，选择变化后立即失效；写操作无论成功、失败或超时都会保留 stdout/stderr 并刷新目标状态。GUI 不写 `<target>/.codex-keysmith/`。
 - **管理**：卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。
 - **窗口生命周期**：单实例运行；所有 Keysmith CLI/status/manifest 后端调用使用生命周期租约，写操作额外使用全局互斥锁，关闭时先建立退出屏障，禁止新调用进入，并在最后一个租约完成后销毁窗口。
 - **设置**：可选 CLI 路径覆盖、默认 `.codex` 目录、中英双语和主题。

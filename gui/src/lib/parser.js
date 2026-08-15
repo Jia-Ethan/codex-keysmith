@@ -451,7 +451,7 @@ const SCENARIO_INVALID_ITEM_RE = /^- ([^:]+): invalid \((.+)\)$/;
 const SCENARIO_DEPLOYMENT_RE =
   /^\[Deployment\] ([0-9a-f]{32}) scenario=(\S+) version=(\S+) state=(\S+) root=(.+)$/;
 const SCENARIO_CANONICAL_PATH_RE =
-  /use the canonical path: (.+)$/m;
+  /use the canonical(?: absolute)? path: (.+)$/m;
 const VALID_SCENARIO_STATES = new Set([
   "active",
   "conflict",

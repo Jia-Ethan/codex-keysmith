@@ -30,6 +30,7 @@ import errno
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import re
@@ -44,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 try:
     import pwd
@@ -218,16 +219,21 @@ def _secret_fragments(value: str) -> List[str]:
 
 
 def _sensitive_environment_values(source: Dict[str, str]) -> List[str]:
-    return sorted(
-        {
-            fragment
-            for name in SENSITIVE_ENV_NAMES
-            if source.get(name)
-            for fragment in _secret_fragments(source[name])
-        },
-        key=len,
-        reverse=True,
-    )
+    fragments = {
+        fragment
+        for name in SENSITIVE_ENV_NAMES
+        if source.get(name)
+        for fragment in _secret_fragments(source[name])
+    }
+    raw_base_url = source.get("OPENAI_BASE_URL")
+    if raw_base_url:
+        try:
+            normalized_base_url = _normalize_openai_base_url(raw_base_url)
+        except RuntimeError:
+            pass
+        else:
+            fragments.update(_secret_fragments(normalized_base_url))
+    return sorted(fragments, key=len, reverse=True)
 
 
 def _redact_text(value: Optional[str], secret_values: Sequence[str]) -> Optional[str]:
@@ -267,8 +273,63 @@ def _toml_basic_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _canonical_url_host(hostname: str) -> Tuple[str, bool]:
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if ":" in hostname:
+            raise RuntimeError("OPENAI_BASE_URL contains an invalid host") from None
+        try:
+            return hostname.encode("idna").decode("ascii").lower(), False
+        except UnicodeError:
+            raise RuntimeError("OPENAI_BASE_URL contains an invalid host") from None
+    return address.compressed, address.version == 6
+
+
 def _normalize_openai_base_url(value: str) -> str:
-    return value.strip().rstrip("/")
+    candidate = value.strip()
+    if any(
+        character.isspace() or not character.isprintable()
+        for character in candidate
+    ):
+        raise RuntimeError(
+            "OPENAI_BASE_URL must not contain whitespace or non-printable characters"
+        )
+    if "\\" in candidate:
+        raise RuntimeError("OPENAI_BASE_URL must use URL path separators, not backslashes")
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        raise RuntimeError("OPENAI_BASE_URL must be a valid absolute URL") from None
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise RuntimeError("OPENAI_BASE_URL must use http:// or https://")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError(
+            "OPENAI_BASE_URL must not contain userinfo credentials; use OPENAI_API_KEY"
+        )
+    if "?" in candidate:
+        raise RuntimeError("OPENAI_BASE_URL must not contain query parameters")
+    if "#" in candidate:
+        raise RuntimeError("OPENAI_BASE_URL must not contain a fragment")
+
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise RuntimeError("OPENAI_BASE_URL contains an invalid host or port") from None
+    if not parsed.netloc or not hostname:
+        raise RuntimeError("OPENAI_BASE_URL must include a non-empty host")
+    if parsed.netloc.endswith(":") and port is None:
+        raise RuntimeError("OPENAI_BASE_URL contains an invalid host or port")
+
+    canonical_host, is_ipv6 = _canonical_url_host(hostname)
+    netloc = "[{}]".format(canonical_host) if is_ipv6 else canonical_host
+    if port is not None:
+        netloc = "{}:{}".format(netloc, port)
+    path = parsed.path.rstrip("/")
+    return urlunsplit((scheme, netloc, path, "", ""))
 
 
 def _codex_provider_config(environment: Dict[str, str]) -> Tuple[str, ...]:
@@ -319,6 +380,10 @@ def _isolated_environment(root: Path) -> Dict[str, str]:
     environment["HOME"] = str(home)
     environment["USERPROFILE"] = str(home)
     environment["CODEX_HOME"] = str(codex_home)
+    if _is_nonempty_string(environment.get("OPENAI_BASE_URL")):
+        environment["OPENAI_BASE_URL"] = _normalize_openai_base_url(
+            environment["OPENAI_BASE_URL"]
+        )
     if not environment.get("OPENAI_API_KEY") and environment.get("CODEX_API_KEY"):
         environment["OPENAI_API_KEY"] = environment["CODEX_API_KEY"]
     environment.pop("CODEX_API_KEY", None)
@@ -1467,13 +1532,18 @@ def _run_scenario_trial(
         if infrastructure_error is not None:
             if not isinstance(infrastructure_error, Exception):
                 raise infrastructure_error
+            safe_infrastructure_detail = _redact_and_truncate(
+                error,
+                secret_values,
+                REPORT_ERROR_LENGTH,
+            )
             raise RuntimeError(
                 "scenario {} attempt {} infrastructure failure: {}".format(
                     scenario_info.scenario_id,
                     attempt,
-                    infrastructure_error,
+                    safe_infrastructure_detail or infrastructure_error.__class__.__name__,
                 )
-            ) from infrastructure_error
+            ) from None
         return record
 
 
@@ -1502,6 +1572,9 @@ def run_live(
                 azure_detail,
             )
         )
+    # Reject unsafe or ambiguous provider roots before opening a report or
+    # starting any live attempt.
+    _codex_provider_config(os.environ)
     secret_values = _sensitive_environment_values(os.environ)
 
     report, publication = _open_report(report_path)
@@ -1581,12 +1654,19 @@ def run_live(
         try:
             _publish_completed_report(report, publication)
         except BaseException as publish_exc:
+            safe_publish_error = _redact_and_truncate(
+                str(publish_exc) or publish_exc.__class__.__name__,
+                secret_values,
+                REPORT_ERROR_LENGTH,
+            )
             raise RuntimeError(
                 "scenario bank failed: {}; partial report publication failed: {}".format(
                     safe_error,
-                    publish_exc,
+                    safe_publish_error,
                 )
-            ) from exc
+            ) from None
+        if isinstance(exc, Exception):
+            raise RuntimeError(safe_error or exc.__class__.__name__) from None
         raise
 
     _publish_completed_report(report, publication)
