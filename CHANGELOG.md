@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Desktop
+
+- Added a source-only GUI Scenarios view: package list, detail, explicit target directory, preview-gated deploy/uninstall/recovery, and target status. The GUI still only calls CLI scenario commands. No new DMG/NSIS is published in this change.
+
 ### Fixed
 
 - Live `scripts/run_scenario_bank.py` now turns `OPENAI_BASE_URL` into an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.

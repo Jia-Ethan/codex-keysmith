@@ -50,7 +50,7 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.3.4`；本线新增随源码 ZIP / tar.gz 分发的 M3 场景评估 runner，并同步更新同版本密封 bundle 中三个生产场景的 final-response 输出契约。单文件 CLI 和既有部署语义保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库或评估 runner。
+- 当前统一源码版本为 `0.3.4`。源码 GUI 已包含场景库页（列表、显式目标目录、preview 门禁、status、卸载、恢复），冻结 sidecar 仍嵌入同版本场景 bundle。公开安装包仍是 [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6)，不包含该场景页，也不发布新的 DMG / NSIS。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
@@ -144,7 +144,7 @@ OPENAI_API_KEY=YOUR_KEY OPENAI_BASE_URL=https://HOST/v1 \
   --report /absolute/reports/scenario-bank.jsonl
 ```
 
-Live 评估会把临时场景上下文发送到所选模型服务，可能产生费用。`verify.py` / `validator.py` 是本机执行代码，只应使用同版本 Release bundle 或已审阅场景目录；完整边界见 [`SECURITY.md`](SECURITY.md)。公开跑分、GUI 场景页和新的 Desktop 安装包仍不在范围内。首批私有评测协议见 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md#8-评估引擎m3)。
+Live 评估会把临时场景上下文发送到所选模型服务，可能产生费用。`verify.py` / `validator.py` 是本机执行代码，只应使用同版本 Release bundle 或已审阅场景目录；完整边界见 [`SECURITY.md`](SECURITY.md)。公开跑分和新的 Desktop 安装包仍不在范围内。源码 GUI 场景页见 [`gui/SPEC.md`](gui/SPEC.md)。首批私有评测协议见 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md#8-评估引擎m3)。
 
 ### 与 CCSwitch 配置切换配合
 

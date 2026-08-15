@@ -6,6 +6,8 @@ import {
   cliRuntime,
   cliVersion,
   detectCli,
+  fetchScenarioDeployPreview,
+  fetchScenarioList,
   fetchStatus,
   readManifest,
   resolveCli,
@@ -376,5 +378,59 @@ describe("fetchStatus", () => {
     expect(error.stderr).toBe("runner diagnostic");
     expect(error.message).toContain("runner diagnostic");
     expect(error.message).toContain("partial status report");
+  });
+});
+
+describe("scenario CLI wrappers", () => {
+  it("lists packages from --scenario-list", async () => {
+    invoke.mockResolvedValue({
+      stdout: `[Scenario library] /repo/scenarios
+- example_fixture 1.0.0: ready; platforms=darwin,linux,win32; python=>=3.9,<3.15; requires=none; verify=verify.py
+`,
+      stderr: "",
+      exit_code: 0,
+      timed_out: false,
+    });
+    const parsed = await fetchScenarioList();
+    expect(parsed.packages).toHaveLength(1);
+    expect(parsed.packages[0].id).toBe("example_fixture");
+    expect(parsed.gate.ok).toBe(true);
+    expect(invoke).toHaveBeenCalledWith(
+      "cli_run",
+      expect.objectContaining({ args: ["--scenario-list", "--lang", "en"] }),
+    );
+  });
+
+  it("retries deploy preview with the canonical target", async () => {
+    invoke
+      .mockResolvedValueOnce({
+        stdout: "[Error] --target-dir resolves through an indirect path; use the canonical path: /private/tmp/project",
+        stderr: "",
+        exit_code: 1,
+        timed_out: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: `[Scenario deploy] example_fixture 1.0.0
+[Target] /private/tmp/project
+[Source] /repo/scenarios/example_fixture
+[Files] 5
+[Preview] no files were changed; add --yes to deploy
+`,
+        stderr: "",
+        exit_code: 0,
+        timed_out: false,
+      });
+    const parsed = await fetchScenarioDeployPreview("example_fixture", "/tmp/project");
+    expect(parsed.canonicalTarget).toBe("/private/tmp/project");
+    expect(parsed.gate.ok).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1][1].args).toEqual([
+      "--deploy-scenario",
+      "example_fixture",
+      "--target-dir",
+      "/private/tmp/project",
+      "--lang",
+      "en",
+    ]);
   });
 });
