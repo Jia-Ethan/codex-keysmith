@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.3" src="https://img.shields.io/badge/source-v0.3.3-0099CC">
+  <img alt="Source version v0.3.4" src="https://img.shields.io/badge/source-v0.3.4-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -50,11 +50,11 @@ npm install
 npm run tauri dev
 ```
 
-- 当前统一源码版本为 `0.3.3`；本线新增同版本密封场景 bundle，单文件 CLI 需显式 `--scenario-root` 指向该 bundle 或源码目录，冻结 sidecar 则嵌入同一 bundle。已发布的 `v0.3.2` tag 与资产保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库更新。
+- 当前统一源码版本为 `0.3.4`；本线新增随源码 ZIP / tar.gz 分发的 M3 场景评估 runner，并同步更新同版本密封 bundle 中三个生产场景的 final-response 输出契约。单文件 CLI 和既有部署语义保持不变。[`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) 仍是当前 macOS Apple Silicon DMG 与 Windows x64 NSIS 预发布版本，不包含 v0.3 场景库或评估 runner。
 - macOS 用户下载 `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`；Windows 用户下载 `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`。两个安装包都内置独立 CLI sidecar，使用时无需额外安装 Python。
 - 本次 Desktop Beta 未进行 Apple 签名/公证或 Authenticode 签名。macOS 可能触发 Gatekeeper，Windows 可能显示 Unknown publisher 或 SmartScreen 警告；两平台均未经过实体设备验收。
 - Windows 安装包使用 current-user NSIS 和静默 WebView2 download bootstrapper，不提供 MSI、ARM64 或正式 Windows 支持承诺。底层 Windows CLI fresh deployment 继续遵循 `EXPLICIT_BETA`。
-- 当前应用不主动收集或上传用户数据；签名边界见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)，本地数据说明见 [`PRIVACY.md`](PRIVACY.md)。SignPath Foundation 申请仍在审核中，当前预发布资产并未使用 SignPath 签名。
+- 常规 CLI / Desktop 操作不主动收集或上传用户数据；M3 live runner 只有在维护者显式执行时才会把临时场景上下文发送到所选模型服务。签名边界见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)，数据说明见 [`PRIVACY.md`](PRIVACY.md)。SignPath Foundation 申请仍在审核中，当前预发布资产并未使用 SignPath 签名。
 
 ### 快速开始（macOS / Linux）
 
@@ -122,6 +122,25 @@ awk '$2 == "codex-keysmith-scenarios-vX.Y.Z.bundle"' SHA256SUMS | shasum -a 256 
 python3 codex-instruct-vX.Y.Z.py --scenario-list \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
+
+### 场景评估（v0.3 M3）
+
+`scripts/run_scenario_bank.py` 只随源码 ZIP / tar.gz 分发，依赖同目录的 `codex-instruct.py`。离线模式会完整校验场景包、index、摘要与 `verify.py`，不调用模型：
+
+```bash
+python3 scripts/run_scenario_bank.py --validate-only \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+```
+
+Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout。
+
+```bash
+OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
+  --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/example-fixture.jsonl
+```
+
+Live 评估会把临时场景上下文发送到所选模型服务，可能产生费用。`verify.py` / `validator.py` 是本机执行代码，只应使用同版本 Release bundle 或已审阅场景目录；完整边界见 [`SECURITY.md`](SECURITY.md)。公开跑分、统计阈值、GUI 场景页和新的 Desktop 安装包不在本次范围内。
 
 ### 与 CCSwitch 配置切换配合
 

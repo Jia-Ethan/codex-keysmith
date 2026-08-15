@@ -148,6 +148,34 @@ def test_bundle_write_is_byte_identical_across_two_runs(tmp_path):
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_bundle_materialization_uses_one_stable_snapshot(tmp_path, monkeypatch):
+    bundle, expected_digest = _write_bundle(tmp_path / "assets")
+    original_read = codex_instruct._read_regular_bytes_with_fingerprint
+    codex_instruct._SCENARIO_BUNDLE_CACHE.clear()
+
+    def read_then_replace(path, label):
+        content, fingerprint = original_read(path, label)
+        if path == bundle:
+            bundle.write_bytes(b"replaced after stable read\n")
+        return content, fingerprint
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_read_regular_bytes_with_fingerprint",
+        read_then_replace,
+    )
+
+    library = codex_instruct.resolve_scenario_library(str(bundle))
+    package = codex_instruct.load_scenario_package(
+        library.packages_root,
+        "example_fixture",
+    )
+
+    assert library.sha256 == expected_digest
+    assert package.scenario_id == "example_fixture"
+    assert bundle.read_bytes() == b"replaced after stable read\n"
+
+
 @pytest.mark.parametrize("root_kind", ["source-dir", "indexed-dir", "bundle"])
 def test_scenario_root_kinds_share_example_fixture_lifecycle(tmp_path, root_kind):
     bundle, _digest = _write_bundle(tmp_path / "assets")

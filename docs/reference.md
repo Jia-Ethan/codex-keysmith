@@ -210,6 +210,27 @@ python3 codex-instruct.py --scenario-recover --target-dir /absolute/project --ye
 
 完整 schema、事务 phase、M1/M2 边界见 [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md)。
 
+### 场景评估（v0.3 M3）
+
+源码 ZIP / tar.gz 内的 `scripts/run_scenario_bank.py` 可读取源码 `scenarios/`、带 `index.json` 的解包目录或同版本密封 `.bundle`。它依赖同一源码树的 `codex-instruct.py`，不进入单文件 CLI 或当前 Desktop 安装包。
+
+```bash
+python3 scripts/run_scenario_bank.py --validate-only \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+
+OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
+  --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/example-fixture.jsonl
+```
+
+- `--validate-only` 复用完整场景库、index、成员摘要和路径安全校验，并执行每个选中包的离线 `verify.py`；不调用 Codex。依赖或平台 blocker 会显示，但不把完整包误判为损坏。
+- `verify.py` 与 `validator.py` 是本机执行代码；只使用同版本 Release bundle 或已审阅目录。无凭证最小环境不是操作系统级读取/网络沙箱，完整信任边界见 [`../SECURITY.md`](../SECURITY.md)。
+- Live 模式要求 `--model` 与 `OPENAI_API_KEY`。`CODEX_API_KEY` 仅作为 runner 兼容别名映射到 `OPENAI_API_KEY`；由于 live 模式忽略用户 provider 配置，只有 Azure 凭证的环境不受支持。默认运行当前平台和依赖已满足的包；显式选择受阻包时以退出码 `2` 停止。
+- 每次尝试使用 canonical 临时 target、隔离 `HOME` / `CODEX_HOME` 和只读已部署场景目录。部署完成后会从 target manifest 复核实际 `source_digest`、成员摘要和 payload；Codex 使用严格配置，模型工具的 shell 仅继承平台核心环境，并显式过滤 API 凭证、代理和模型服务地址。模型以 final response 返回单个 JSON 对象；runner 在沙箱外写入临时输出，再以 `python -I -B` 和无凭证最小环境运行 validator。Codex、部署、`verify.py` 或 validator 超时时，runner 会终止对应进程树。
+- validator 退出码 `0` 记为通过，`1` / `2` 记为失败并按 `--attempts` 重试。基础设施或安全校验异常使用退出码 `2`；已完成但未通过的 bank 使用退出码 `1`。默认 blocker skip 会写入报告；后续 runner 异常会追加 `runner_error`，保留此前已完成记录。
+- 报告记录场景 `source_digest`、bundle SHA-256（如适用）、模型、Codex 版本、超时、尝试序号、validator 退出码、耗时和脱敏结果。指定 `--report` 文件路径时，以私有权限写入临时文件后原子 no-replace 发布；已有路径、symlink 或非普通节点均拒绝，不提供覆盖选项。若最终路径发生并发冲突或发布失败，完整临时证据会保留在私有临时路径。省略 `--report` 或使用 `-` 时输出到 stdout。
+- Live 评估会把临时场景任务和 fixture 数据发送到所选模型服务，可能产生费用。runner 不主动加载用户项目或 live `~/.codex/config.toml`；Codex `read-only` sandbox 阻止写入，但不声明对当前账户全部可读文件的强读取隔离。报告默认不进入仓库、README 或 Release 描述。
+
 ### 参数与退出码
 
 | 参数 | 说明 |
@@ -270,14 +291,16 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_prompt_bank_regression.py \
 ### 维护者验证
 
 ```bash
-python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
 python3 -m pytest -p no:cacheprovider -q tests
 python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
 python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
 python3 -m coverage combine
 python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
+python3 -m coverage report --include=scripts/run_scenario_bank.py --fail-under=65
 python3 scripts/run_prompt_bank_regression.py --validate-only
+python3 scripts/run_scenario_bank.py --validate-only
 (
   cd gui
   npm ci
@@ -428,6 +451,27 @@ Source mode defaults to the repository `scenarios/` directory. `--scenario-root`
 
 Full schema and phase boundaries: [`v0.3-scenario-deployment-design.md`](v0.3-scenario-deployment-design.md).
 
+### Scenario evaluation (v0.3 M3)
+
+`scripts/run_scenario_bank.py` in the source ZIP/tar.gz accepts the source `scenarios/` tree, an unpacked indexed directory, or a same-version sealed `.bundle`. It requires the adjacent `codex-instruct.py` and is not included in the standalone CLI or current Desktop installers.
+
+```bash
+python3 scripts/run_scenario_bank.py --validate-only \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+
+OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
+  --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/example-fixture.jsonl
+```
+
+- `--validate-only` reuses full library, index, member-digest, and path-safety validation and runs each selected package's offline `verify.py` without invoking Codex. Platform or dependency blockers are reported without treating a complete package as corrupt.
+- `verify.py` and `validator.py` are host-executed code. Use only the same-version Release bundle or a reviewed directory. A credential-free minimal environment is not an operating-system read/network sandbox; see [`../SECURITY.md`](../SECURITY.md).
+- Live mode requires `--model` and `OPENAI_API_KEY`. `CODEX_API_KEY` is accepted only as a runner compatibility alias and is mapped to `OPENAI_API_KEY`; Azure-only credentials are unsupported because live mode ignores user provider configuration. The default bank runs ready packages only; explicitly selected blocked packages stop with exit code `2`.
+- Every attempt uses a canonical temporary target, isolated `HOME` / `CODEX_HOME`, and the deployed scenario directory in read-only mode. After deployment, the runner rechecks the actual target manifest `source_digest`, member hashes, and payload. Codex runs with strict configuration; model-invoked shell commands inherit only the platform core environment and explicitly filter API credentials, proxies, and model-service endpoints. The model returns one JSON object as its final response; the runner writes it outside the sandbox and launches the validator with `python -I -B` and a credential-free minimal environment. If Codex, deployment, `verify.py`, or the validator times out, the runner terminates that process tree.
+- Validator exit `0` passes; `1` / `2` fail and may retry up to `--attempts`. Infrastructure or safety-validation errors use runner exit `2`; a completed bank with one or more failed scenarios uses exit `1`. Default blocker skips are recorded, and a later runner failure appends `runner_error` while preserving completed records.
+- Reports include the scenario `source_digest`, bundle SHA-256 when applicable, model, Codex version, timeout, attempt, validator exit, latency, and redacted output details. When `--report` names a file, a private temporary file is atomically published with no replacement; existing paths, symlinks, and non-regular nodes are rejected, and no overwrite option is exposed. If final publication is blocked by a race or filesystem error, the complete private temporary evidence is retained. Omitting `--report` or using `-` writes JSONL to stdout.
+- Live evaluation sends the temporary scenario task and fixture data to the selected model service and may incur cost. The runner does not intentionally load user projects or live `~/.codex/config.toml`; Codex `read-only` prevents writes but is not claimed as strong read isolation from every file visible to the current account. Reports are not published automatically.
+
 ### Options and exit codes
 
 | Option | Description |
@@ -481,14 +525,16 @@ At most 12 cases, 2 attempts each: 24 real requests, ~48-minute theoretical time
 ### Maintainer verification
 
 ```bash
-python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
 python3 -m pytest -p no:cacheprovider -q tests
 python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
 python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
 python3 -m coverage combine
 python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
+python3 -m coverage report --include=scripts/run_scenario_bank.py --fail-under=65
 python3 scripts/run_prompt_bank_regression.py --validate-only
+python3 scripts/run_scenario_bank.py --validate-only
 (
   cd gui
   npm ci

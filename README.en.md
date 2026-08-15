@@ -38,11 +38,11 @@ npm install
 npm run tauri dev
 ```
 
-- The unified source version is `0.3.3`; this line adds the same-version sealed scenario bundle. The standalone CLI requires an explicit `--scenario-root` pointing at that bundle or a source directory, while the frozen sidecar embeds the same bundle. The published `v0.3.2` tag and assets stay unchanged. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library.
+- The unified source version is `0.3.4`; this line adds the M3 scenario evaluation runner to the source ZIP and tar.gz and updates the three production tasks in the same-version sealed bundle to use final-response transport. The standalone CLI and existing deployment semantics are unchanged. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library or evaluation runner.
 - macOS users download `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`; Windows users download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. Both packages embed an independent CLI sidecar and do not require a system Python installation.
 - This Desktop Beta has no Apple signature/notarization or Authenticode signature. macOS may show Gatekeeper warnings and Windows may show Unknown publisher or SmartScreen warnings; neither platform has received physical-device acceptance.
 - The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
-- The application does not proactively collect or upload user data. See [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) and [`PRIVACY.md`](PRIVACY.md). The SignPath Foundation application is pending, and the current prerelease assets are not SignPath-signed.
+- Normal CLI and Desktop operations do not proactively collect or upload user data. The M3 live runner sends temporary scenario context to the selected model service only when a maintainer explicitly runs it. See [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) and [`PRIVACY.md`](PRIVACY.md). The SignPath Foundation application is pending, and the current prerelease assets are not SignPath-signed.
 
 ### Quick start (macOS / Linux)
 
@@ -110,6 +110,25 @@ awk '$2 == "codex-keysmith-scenarios-vX.Y.Z.bundle"' SHA256SUMS | shasum -a 256 
 python3 codex-instruct-vX.Y.Z.py --scenario-list \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
+
+### Scenario evaluation (v0.3 M3)
+
+`scripts/run_scenario_bank.py` is distributed only in the source ZIP and tar.gz and uses the adjacent `codex-instruct.py`. Offline mode performs full package, index, checksum, and `verify.py` validation without invoking a model:
+
+```bash
+python3 scripts/run_scenario_bank.py --validate-only \
+  --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
+```
+
+Live mode requires an explicit model and `OPENAI_API_KEY`; `CODEX_API_KEY` is accepted as a runner compatibility alias. The runner executes only scenarios whose platform and dependencies are ready, using a temporary target, isolated `CODEX_HOME`, and read-only scenario directory. Model-invoked shell commands inherit only the platform core environment and explicitly filter API credentials, proxies, and model-service endpoints. The runner then validates the model's final JSON. With a file path in `--report`, reports use private atomic publication, record default skips, never replace an existing path, and preserve temporary evidence if final publication is blocked. Omitting `--report` or using `-` writes JSONL to stdout.
+
+```bash
+OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
+  --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/example-fixture.jsonl
+```
+
+Live evaluation sends temporary scenario context to the selected model service and may incur cost. `verify.py` / `validator.py` are host-executed code, so use only the same-version Release bundle or a reviewed scenario directory; see [`SECURITY.md`](SECURITY.md). Public scores, statistical thresholds, GUI scenario pages, and new Desktop installers remain outside this release.
 
 ### Using CCSwitch profiles as an activation switch
 
