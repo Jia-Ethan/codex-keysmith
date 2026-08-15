@@ -333,7 +333,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M3 管理操作** ✅ | 卸载 / 恢复 hooks / 恢复中断 | 与 CLI 逐层回滚语义一致；残留场景可恢复 |
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
 | **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
-| **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；展示平台/依赖 blocker；不发新 Desktop 安装包 |
+| **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；预览绑定规范目标与场景/部署标识，选择变化后失效；状态与写结果保留 blocker、stdout/stderr，并在每次写操作后刷新；不发新 Desktop 安装包 |
 
 ## 10. 交接说明（给接手 Agent）
 

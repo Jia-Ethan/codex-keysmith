@@ -232,6 +232,69 @@ def test_codex_provider_config_absent_without_base_url(scenario_bank_runner):
     assert all("model_provider" not in item for item in overrides)
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://gateway.example.test/", "https://gateway.example.test"),
+        (" https://lgw.example.test/v1/// ", "https://lgw.example.test/v1"),
+        ("HTTP://localhost:8080/", "http://localhost:8080"),
+        ("https://127.0.0.1:9443/root/", "https://127.0.0.1:9443/root"),
+        ("https://MUNICH.example/v1/", "https://munich.example/v1"),
+        ("https://m\u00fcnich.example/v1/", "https://xn--mnich-kva.example/v1"),
+        (
+            "https://[2001:0DB8:0:0:0:0:0:1]:8443/v1/",
+            "https://[2001:db8::1]:8443/v1",
+        ),
+    ],
+)
+def test_normalize_openai_base_url_accepts_only_root_urls(
+    scenario_bank_runner,
+    raw,
+    expected,
+):
+    assert scenario_bank_runner._normalize_openai_base_url(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        ("ftp://gateway.example.test/v1", "must use http:// or https://"),
+        ("https:///v1", "must include a non-empty host"),
+        (
+            "https://user:USERINFO_SECRET@gateway.example.test/v1",
+            "must not contain userinfo credentials",
+        ),
+        (
+            "https://gateway.example.test/v1?token=QUERY_SECRET",
+            "must not contain query parameters",
+        ),
+        (
+            "https://gateway.example.test/v1#FRAGMENT_SECRET",
+            "must not contain a fragment",
+        ),
+        ("https://gateway.example.test:bad/v1", "contains an invalid host or port"),
+        ("https://gateway.example.test:/v1", "contains an invalid host or port"),
+        ("https://gateway.example.test:65536/v1", "contains an invalid host or port"),
+        ("https://[2001:db8::1/v1", "must be a valid absolute URL"),
+        ("https://gateway.example.test /v1", "must not contain whitespace"),
+        ("https://gateway\x80.example/v1", "non-printable characters"),
+        ("https://gateway.example/v1\u202ex", "non-printable characters"),
+        ("https://gateway.example.test\\v1", "must use URL path separators"),
+    ],
+)
+def test_normalize_openai_base_url_rejects_unsafe_or_ambiguous_values(
+    scenario_bank_runner,
+    raw,
+    error,
+):
+    with pytest.raises(RuntimeError, match=error) as raised:
+        scenario_bank_runner._normalize_openai_base_url(raw)
+
+    assert raw not in str(raised.value)
+    for secret in ("USERINFO_SECRET", "QUERY_SECRET", "FRAGMENT_SECRET"):
+        assert secret not in str(raised.value)
+
+
 def test_codex_provider_config_injects_isolated_compatible_endpoint(scenario_bank_runner):
     overrides = scenario_bank_runner._codex_provider_config(
         {"OPENAI_BASE_URL": "https://lgw.example.test/v1/"}
@@ -264,7 +327,7 @@ def test_live_trial_injects_openai_base_url_as_isolated_provider(
     seen = {}
 
     def fake_codex_exec(command, **kwargs):
-        assert kwargs["environment"]["OPENAI_BASE_URL"] == "https://lgw.example.test/v1/"
+        assert kwargs["environment"]["OPENAI_BASE_URL"] == "https://lgw.example.test/v1"
         config_overrides = {
             command[index + 1] for index, value in enumerate(command[:-1]) if value == "--config"
         }
@@ -296,6 +359,44 @@ def test_live_trial_injects_openai_base_url_as_isolated_provider(
     assert secret not in report_path.read_text(encoding="utf-8")
 
 
+def test_invalid_openai_base_url_fails_before_report_or_live_attempt(
+    scenario_bank_runner,
+    monkeypatch,
+    tmp_path,
+):
+    library, info = _ready_example(scenario_bank_runner)
+    endpoint = "https://gateway.example.test/v1?token=QUERY_SECRET"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-scenario-bank-invalid-url-12345678")
+    monkeypatch.setenv("OPENAI_BASE_URL", endpoint)
+    monkeypatch.setattr(
+        scenario_bank_runner,
+        "_run_scenario_trial",
+        lambda **_kwargs: pytest.fail("invalid provider URL reached a live attempt"),
+    )
+    monkeypatch.setattr(
+        scenario_bank_runner,
+        "_open_report",
+        lambda _path: pytest.fail("invalid provider URL reached report creation"),
+    )
+    report_path = tmp_path / "invalid-url.jsonl"
+
+    with pytest.raises(RuntimeError, match="must not contain query parameters") as raised:
+        scenario_bank_runner.run_live(
+            scenario_library=library,
+            scenario_infos=[info],
+            model="test-model",
+            codex_bin="fake-codex",
+            keysmith_cli=KEYSMITH_PATH,
+            attempts=1,
+            timeout_seconds=60,
+            report_path=str(report_path),
+        )
+
+    assert endpoint not in str(raised.value)
+    assert "QUERY_SECRET" not in str(raised.value)
+    assert not report_path.exists()
+
+
 def test_codex_nonzero_is_infrastructure_failure_and_preserves_attempt(
     scenario_bank_runner,
     monkeypatch,
@@ -303,16 +404,27 @@ def test_codex_nonzero_is_infrastructure_failure_and_preserves_attempt(
 ):
     library, info = _ready_example(scenario_bank_runner)
     secret = "sk-scenario-bank-error-12345678"
+    endpoint = " HTTPS://PRIVATE-GATEWAY.EXAMPLE.TEST/v1/// "
+    normalized_endpoint = "https://private-gateway.example.test/v1"
     monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("OPENAI_BASE_URL", endpoint)
     _install_fake_subprocess_runtime(scenario_bank_runner, monkeypatch, secret)
 
     def fake_codex_exec(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 1, "", "request failed with {}".format(secret))
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "request failed with {} at {}/responses".format(
+                secret,
+                normalized_endpoint,
+            ),
+        )
 
     monkeypatch.setattr(scenario_bank_runner, "_run_codex_exec", fake_codex_exec)
     report_path = tmp_path / "failed.jsonl"
 
-    with pytest.raises(RuntimeError, match="codex CLI exited with status 1"):
+    with pytest.raises(RuntimeError, match="codex CLI exited with status 1") as raised:
         scenario_bank_runner.run_live(
             scenario_library=library,
             scenario_infos=[info],
@@ -324,17 +436,23 @@ def test_codex_nonzero_is_infrastructure_failure_and_preserves_attempt(
             report_path=str(report_path),
         )
 
+    assert secret not in str(raised.value)
+    assert endpoint not in str(raised.value)
+    assert normalized_endpoint not in str(raised.value)
     report_text = report_path.read_text(encoding="utf-8")
     records = [json.loads(line) for line in report_text.splitlines()]
     assert len(records) == 2
     assert records[0]["record_type"] == "attempt"
     assert records[0]["passed"] is False
     assert records[0]["error"] == (
-        "codex CLI exited with status 1: request failed with <redacted>"
+        "codex CLI exited with status 1: request failed with <redacted> at "
+        "<redacted>/responses"
     )
     assert records[1]["record_type"] == "runner_error"
     assert "codex CLI exited with status 1" in records[1]["error"]
     assert secret not in report_text
+    assert endpoint not in report_text
+    assert normalized_endpoint not in report_text
 
 
 @pytest.mark.parametrize(
@@ -761,14 +879,18 @@ def test_partial_paid_results_are_published_on_runner_error(
 ):
     library, info = _ready_example(scenario_bank_runner)
     secret = "sk-scenario-bank-infrastructure-12345678"
+    endpoint = "https://private-gateway.example.test/v1/"
     monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("OPENAI_BASE_URL", endpoint)
     calls = 0
 
     def fake_trial(*, report, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 2:
-            raise RuntimeError("infrastructure failed with {}".format(secret))
+            raise RuntimeError(
+                "infrastructure failed with {} at {}".format(secret, endpoint)
+            )
         record = {"record_type": "attempt", "passed": True}
         report.write(json.dumps(record) + "\n")
         report.flush()
@@ -777,7 +899,7 @@ def test_partial_paid_results_are_published_on_runner_error(
     monkeypatch.setattr(scenario_bank_runner, "_run_scenario_trial", fake_trial)
     report_path = tmp_path / "partial.jsonl"
 
-    with pytest.raises(RuntimeError, match="infrastructure failed"):
+    with pytest.raises(RuntimeError, match="infrastructure failed") as raised:
         scenario_bank_runner.run_live(
             scenario_library=library,
             scenario_infos=[info, info],
@@ -789,11 +911,55 @@ def test_partial_paid_results_are_published_on_runner_error(
             report_path=str(report_path),
         )
 
+    assert secret not in str(raised.value)
+    assert endpoint not in str(raised.value)
+    assert "private-gateway.example.test" not in str(raised.value)
     records = [json.loads(line) for line in report_path.read_text().splitlines()]
     assert records[0] == {"record_type": "attempt", "passed": True}
     assert records[1]["record_type"] == "runner_error"
-    assert records[1]["error"] == "infrastructure failed with <redacted>"
+    assert records[1]["error"] == "infrastructure failed with <redacted> at <redacted>"
     assert secret not in report_path.read_text(encoding="utf-8")
+    assert endpoint not in report_path.read_text(encoding="utf-8")
+
+
+def test_runner_error_publication_failure_is_redacted(
+    scenario_bank_runner,
+    monkeypatch,
+    tmp_path,
+):
+    library, info = _ready_example(scenario_bank_runner)
+    secret = "sk-scenario-bank-publication-12345678"
+    endpoint = "https://private-gateway.example.test/v1/"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("OPENAI_BASE_URL", endpoint)
+
+    def fake_trial(**_kwargs):
+        raise RuntimeError("attempt failed with {} at {}".format(secret, endpoint))
+
+    def fake_publish(report, _publication):
+        report.close()
+        raise RuntimeError("publish failed with {} at {}".format(secret, endpoint))
+
+    monkeypatch.setattr(scenario_bank_runner, "_run_scenario_trial", fake_trial)
+    monkeypatch.setattr(scenario_bank_runner, "_publish_completed_report", fake_publish)
+
+    with pytest.raises(RuntimeError, match="partial report publication failed") as raised:
+        scenario_bank_runner.run_live(
+            scenario_library=library,
+            scenario_infos=[info],
+            model="test-model",
+            codex_bin="fake-codex",
+            keysmith_cli=KEYSMITH_PATH,
+            attempts=1,
+            timeout_seconds=60,
+            report_path=str(tmp_path / "publication-failure.jsonl"),
+        )
+
+    detail = str(raised.value)
+    assert secret not in detail
+    assert endpoint not in detail
+    assert "private-gateway.example.test" not in detail
+    assert raised.value.__cause__ is None
 
 
 def test_default_blocker_skips_are_recorded(

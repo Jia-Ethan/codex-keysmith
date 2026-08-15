@@ -12,7 +12,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- Live `scripts/run_scenario_bank.py` now turns `OPENAI_BASE_URL` into an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.
+- The GUI Scenarios view now binds each preview to its canonical target and scenario/deployment identity, discards stale async responses, recognizes Windows canonical-path retries, preserves blocker/stdout/stderr/timeout diagnostics, and refreshes target status after every write attempt.
+- Live `scripts/run_scenario_bank.py` now validates `OPENAI_BASE_URL` as an absolute `http://` or `https://` root with a non-empty canonical host, rejects userinfo/query/fragment components, normalizes host/trailing-slash variants, and injects the result as an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`; reports and raised failures redact API keys plus raw/normalized endpoints. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.
 
 ## [0.3.4] - 2026-08-14
 

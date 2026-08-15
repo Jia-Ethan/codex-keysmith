@@ -132,7 +132,7 @@ python3 scripts/run_scenario_bank.py --validate-only \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
 
-Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。可选 `OPENAI_BASE_URL` 指向 OpenAI 兼容根路径（通常含 `/v1`）；runner 不会读取 live `~/.codex/config.toml`，而是在隔离 `CODEX_HOME` 里注入临时 custom provider。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout。
+Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。可选 `OPENAI_BASE_URL` 指向 OpenAI 兼容根路径（通常含 `/v1`），且必须是带非空 host 的绝对 `http://` 或 `https://` URL；禁止 userinfo、query 和 fragment，scheme、host 与末尾斜杠会在使用前规范化。runner 不会读取 live `~/.codex/config.toml`，而是在隔离 `CODEX_HOME` 里注入临时 custom provider。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout；报告与抛出的 live-mode 错误会脱敏已识别凭证、原始 endpoint 和规范化 endpoint。
 
 ```bash
 OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
