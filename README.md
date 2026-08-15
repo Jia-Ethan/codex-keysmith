@@ -132,15 +132,19 @@ python3 scripts/run_scenario_bank.py --validate-only \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
 
-Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout。
+Live 模式需要显式模型和 `OPENAI_API_KEY`；也可用 `CODEX_API_KEY` 作为本 runner 的兼容别名。可选 `OPENAI_BASE_URL` 指向 OpenAI 兼容根路径（通常含 `/v1`）；runner 不会读取 live `~/.codex/config.toml`，而是在隔离 `CODEX_HOME` 里注入临时 custom provider。runner 只执行当前平台与依赖已满足的场景；每次尝试使用临时 target、隔离 `CODEX_HOME` 和只读场景目录，模型工具的 shell 仅继承平台核心环境并过滤 API 凭证、代理与模型服务地址，随后用 validator 校验模型最终 JSON。指定 `--report` 文件路径时，报告使用私有权限原子发布并记录默认跳过项；若目标路径已存在则停止且保留临时结果，不覆盖旧报告。省略 `--report` 或使用 `-` 时输出到 stdout。
 
 ```bash
 OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
   --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
   --report /absolute/reports/example-fixture.jsonl
+
+OPENAI_API_KEY=YOUR_KEY OPENAI_BASE_URL=https://HOST/v1 \
+  python3 scripts/run_scenario_bank.py --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/scenario-bank.jsonl
 ```
 
-Live 评估会把临时场景上下文发送到所选模型服务，可能产生费用。`verify.py` / `validator.py` 是本机执行代码，只应使用同版本 Release bundle 或已审阅场景目录；完整边界见 [`SECURITY.md`](SECURITY.md)。公开跑分、统计阈值、GUI 场景页和新的 Desktop 安装包不在本次范围内。
+Live 评估会把临时场景上下文发送到所选模型服务，可能产生费用。`verify.py` / `validator.py` 是本机执行代码，只应使用同版本 Release bundle 或已审阅场景目录；完整边界见 [`SECURITY.md`](SECURITY.md)。公开跑分、GUI 场景页和新的 Desktop 安装包仍不在范围内。首批私有评测协议见 [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md#8-评估引擎m3)。
 
 ### 与 CCSwitch 配置切换配合
 

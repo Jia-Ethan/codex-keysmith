@@ -208,6 +208,94 @@ def test_live_trial_reads_deployed_root_and_validates_final_response(
     _assert_private_report(scenario_bank_runner, report_path)
 
 
+def test_codex_failure_detail_prefers_error_lines(scenario_bank_runner):
+    detail = scenario_bank_runner._codex_failure_detail(
+        "OpenAI Codex header\nuser\nlong prompt",
+        "ERROR: Reconnecting... 5/5\n"
+        "ERROR: This content was flagged for possible cybersecurity risk.",
+    )
+    assert detail == (
+        "ERROR: Reconnecting... 5/5\n"
+        "ERROR: This content was flagged for possible cybersecurity risk."
+    )
+    assert scenario_bank_runner._codex_failure_detail(
+        "",
+        "request failed with boom",
+    ) == "request failed with boom"
+
+
+def test_codex_provider_config_absent_without_base_url(scenario_bank_runner):
+    assert scenario_bank_runner._codex_provider_config({}) == ()
+    assert scenario_bank_runner._codex_provider_config({"OPENAI_BASE_URL": "   "}) == ()
+    overrides = scenario_bank_runner._codex_exec_config_overrides({})
+    assert overrides == scenario_bank_runner.CODEX_SHELL_ENV_CONFIG
+    assert all("model_provider" not in item for item in overrides)
+
+
+def test_codex_provider_config_injects_isolated_compatible_endpoint(scenario_bank_runner):
+    overrides = scenario_bank_runner._codex_provider_config(
+        {"OPENAI_BASE_URL": "https://lgw.example.test/v1/"}
+    )
+    assert 'model_provider="custom"' in overrides
+    assert 'model_providers.custom.name="openai"' in overrides
+    assert 'model_providers.custom.wire_api="responses"' in overrides
+    assert 'model_providers.custom.base_url="https://lgw.example.test/v1"' in overrides
+    assert 'model_providers.custom.env_key="OPENAI_API_KEY"' in overrides
+    assert "model_providers.custom.supports_websockets=false" in overrides
+    combined = scenario_bank_runner._codex_exec_config_overrides(
+        {"OPENAI_BASE_URL": "https://lgw.example.test/v1/"}
+    )
+    assert combined[: len(scenario_bank_runner.CODEX_SHELL_ENV_CONFIG)] == (
+        scenario_bank_runner.CODEX_SHELL_ENV_CONFIG
+    )
+    assert combined[len(scenario_bank_runner.CODEX_SHELL_ENV_CONFIG) :] == overrides
+
+
+def test_live_trial_injects_openai_base_url_as_isolated_provider(
+    scenario_bank_runner,
+    monkeypatch,
+    tmp_path,
+):
+    library, info = _ready_example(scenario_bank_runner)
+    secret = "sk-scenario-bank-base-url-12345678"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://lgw.example.test/v1/")
+    _install_fake_subprocess_runtime(scenario_bank_runner, monkeypatch, secret)
+    seen = {}
+
+    def fake_codex_exec(command, **kwargs):
+        assert kwargs["environment"]["OPENAI_BASE_URL"] == "https://lgw.example.test/v1/"
+        config_overrides = {
+            command[index + 1] for index, value in enumerate(command[:-1]) if value == "--config"
+        }
+        seen["config_overrides"] = config_overrides
+        assert 'model_provider="custom"' in config_overrides
+        assert 'model_providers.custom.base_url="https://lgw.example.test/v1"' in config_overrides
+        response_path = Path(command[command.index("--output-last-message") + 1])
+        source = json.loads((kwargs["cwd"] / "data" / "input.json").read_text(encoding="utf-8"))
+        response_path.write_text(
+            json.dumps({"message": source["message"], "length": len(source["message"])}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(scenario_bank_runner, "_run_codex_exec", fake_codex_exec)
+    report_path = tmp_path / "base-url.jsonl"
+    result = scenario_bank_runner.run_live(
+        scenario_library=library,
+        scenario_infos=[info],
+        model="test-model",
+        codex_bin="fake-codex",
+        keysmith_cli=KEYSMITH_PATH,
+        attempts=1,
+        timeout_seconds=60,
+        report_path=str(report_path),
+    )
+    assert result == 0
+    assert seen["config_overrides"]
+    assert secret not in report_path.read_text(encoding="utf-8")
+
+
 def test_codex_nonzero_is_infrastructure_failure_and_preserves_attempt(
     scenario_bank_runner,
     monkeypatch,

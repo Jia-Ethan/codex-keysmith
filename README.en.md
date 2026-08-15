@@ -120,15 +120,19 @@ python3 scripts/run_scenario_bank.py --validate-only \
   --scenario-root /absolute/codex-keysmith-scenarios-vX.Y.Z.bundle
 ```
 
-Live mode requires an explicit model and `OPENAI_API_KEY`; `CODEX_API_KEY` is accepted as a runner compatibility alias. The runner executes only scenarios whose platform and dependencies are ready, using a temporary target, isolated `CODEX_HOME`, and read-only scenario directory. Model-invoked shell commands inherit only the platform core environment and explicitly filter API credentials, proxies, and model-service endpoints. The runner then validates the model's final JSON. With a file path in `--report`, reports use private atomic publication, record default skips, never replace an existing path, and preserve temporary evidence if final publication is blocked. Omitting `--report` or using `-` writes JSONL to stdout.
+Live mode requires an explicit model and `OPENAI_API_KEY`; `CODEX_API_KEY` is accepted as a runner compatibility alias. Optional `OPENAI_BASE_URL` may point at an OpenAI-compatible root (usually including `/v1`). The runner never reads live `~/.codex/config.toml`; it injects a temporary custom provider into the isolated `CODEX_HOME`. The runner executes only scenarios whose platform and dependencies are ready, using a temporary target, isolated `CODEX_HOME`, and read-only scenario directory. Model-invoked shell commands inherit only the platform core environment and explicitly filter API credentials, proxies, and model-service endpoints. The runner then validates the model's final JSON. With a file path in `--report`, reports use private atomic publication, record default skips, never replace an existing path, and preserve temporary evidence if final publication is blocked. Omitting `--report` or using `-` writes JSONL to stdout.
 
 ```bash
 OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
   --scenario example_fixture --model MODEL --attempts 2 --timeout 600 \
   --report /absolute/reports/example-fixture.jsonl
+
+OPENAI_API_KEY=YOUR_KEY OPENAI_BASE_URL=https://HOST/v1 \
+  python3 scripts/run_scenario_bank.py --model MODEL --attempts 2 --timeout 600 \
+  --report /absolute/reports/scenario-bank.jsonl
 ```
 
-Live evaluation sends temporary scenario context to the selected model service and may incur cost. `verify.py` / `validator.py` are host-executed code, so use only the same-version Release bundle or a reviewed scenario directory; see [`SECURITY.md`](SECURITY.md). Public scores, statistical thresholds, GUI scenario pages, and new Desktop installers remain outside this release.
+Live evaluation sends temporary scenario context to the selected model service and may incur cost. `verify.py` / `validator.py` are host-executed code, so use only the same-version Release bundle or a reviewed scenario directory; see [`SECURITY.md`](SECURITY.md). Public scores, GUI scenario pages, and new Desktop installers remain out of scope. The first private evaluation protocol is recorded in [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md).
 
 ### Using CCSwitch profiles as an activation switch
 
