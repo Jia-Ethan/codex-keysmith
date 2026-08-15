@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard,
   Rocket,
+  Boxes,
   Wrench,
   Settings,
   KeyRound,
@@ -23,6 +24,7 @@ import {
 const NAV = [
   { key: "dashboard", icon: LayoutDashboard },
   { key: "deploy", icon: Rocket },
+  { key: "scenarios", icon: Boxes },
   { key: "manage", icon: Wrench },
   { key: "settings", icon: Settings },
 ];
