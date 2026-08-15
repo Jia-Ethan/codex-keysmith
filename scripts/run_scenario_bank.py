@@ -118,6 +118,8 @@ CODEX_SHELL_ENV_CONFIG = (
         json.dumps(list(CODEX_SHELL_EXCLUDED_ENV_NAMES), separators=(",", ":"))
     ),
 )
+COMPAT_PROVIDER_NAME = "custom"
+COMPAT_PROVIDER_WIRE_API = "responses"
 LOCAL_RUNTIME_ENV_NAMES = (
     "PATH",
     "PATHEXT",
@@ -242,6 +244,16 @@ def _redact_text(value: Optional[str], secret_values: Sequence[str]) -> Optional
     return redacted
 
 
+def _codex_failure_detail(stdout: Optional[str], stderr: Optional[str]) -> str:
+    combined = "\n".join(part for part in (stderr or "", stdout or "") if part)
+    error_lines = [
+        line for line in combined.splitlines() if line.startswith("ERROR:")
+    ]
+    if error_lines:
+        return "\n".join(error_lines[-3:])
+    return combined.strip()
+
+
 def _redact_and_truncate(
     value: Optional[str], secret_values: Sequence[str], limit: int
 ) -> Optional[str]:
@@ -249,6 +261,53 @@ def _redact_and_truncate(
     if redacted is None:
         return None
     return redacted[:limit]
+
+
+def _toml_basic_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _normalize_openai_base_url(value: str) -> str:
+    return value.strip().rstrip("/")
+
+
+def _codex_provider_config(environment: Dict[str, str]) -> Tuple[str, ...]:
+    """Translate OPENAI_BASE_URL into isolated Codex --config overrides.
+
+    Live mode never reads ~/.codex/config.toml. Codex itself ignores
+    OPENAI_BASE_URL when --ignore-user-config is set, so a compatible
+    endpoint must be injected as a temporary custom provider.
+    """
+    raw = environment.get("OPENAI_BASE_URL")
+    if not _is_nonempty_string(raw):
+        return ()
+    base_url = _normalize_openai_base_url(raw)
+    if not base_url:
+        return ()
+    return (
+        'model_provider="{}"'.format(COMPAT_PROVIDER_NAME),
+        "model_providers.{}.name={}".format(
+            COMPAT_PROVIDER_NAME,
+            _toml_basic_string("openai"),
+        ),
+        "model_providers.{}.wire_api={}".format(
+            COMPAT_PROVIDER_NAME,
+            _toml_basic_string(COMPAT_PROVIDER_WIRE_API),
+        ),
+        "model_providers.{}.base_url={}".format(
+            COMPAT_PROVIDER_NAME,
+            _toml_basic_string(base_url),
+        ),
+        "model_providers.{}.env_key={}".format(
+            COMPAT_PROVIDER_NAME,
+            _toml_basic_string("OPENAI_API_KEY"),
+        ),
+        "model_providers.{}.supports_websockets=false".format(COMPAT_PROVIDER_NAME),
+    )
+
+
+def _codex_exec_config_overrides(environment: Dict[str, str]) -> Tuple[str, ...]:
+    return CODEX_SHELL_ENV_CONFIG + _codex_provider_config(environment)
 
 
 def _isolated_environment(root: Path) -> Dict[str, str]:
@@ -1300,7 +1359,7 @@ def _run_scenario_trial(
             "--output-last-message",
             str(response_path),
         ]
-        for config_override in CODEX_SHELL_ENV_CONFIG:
+        for config_override in _codex_exec_config_overrides(environment):
             command.extend(["--config", config_override])
         command.extend(["--model", model])
         command.append("-")
@@ -1331,7 +1390,7 @@ def _run_scenario_trial(
         else:
             returncode = completed.returncode
             if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout).strip()
+                detail = _codex_failure_detail(completed.stdout, completed.stderr)
                 error = "codex CLI exited with status {}{}".format(
                     completed.returncode,
                     ": {}".format(detail) if detail else "",

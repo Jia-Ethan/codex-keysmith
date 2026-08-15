@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Live `scripts/run_scenario_bank.py` now turns `OPENAI_BASE_URL` into an isolated Codex custom provider (`wire_api=responses`, `env_key=OPENAI_API_KEY`, websockets disabled). Compatible endpoints no longer fall through to `api.openai.com` under `--ignore-user-config`. Codex stderr `ERROR:` lines are preferred when a nonzero exec is recorded.
+
 ## [0.3.4] - 2026-08-14
 
 ### Scenario evaluation M3
