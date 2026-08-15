@@ -38,7 +38,7 @@ npm install
 npm run tauri dev
 ```
 
-- The unified source version is `0.3.4`; this line adds the M3 scenario evaluation runner to the source ZIP and tar.gz and updates the three production tasks in the same-version sealed bundle to use final-response transport. The standalone CLI and existing deployment semantics are unchanged. [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) remains the current prerelease for the Apple Silicon macOS DMG and Windows x64 NSIS installer and does not include the v0.3 scenario library or evaluation runner.
+- The unified source version is `0.3.4`. The source GUI now includes a Scenarios view (list, explicit target directory, preview gate, status, uninstall, recovery), and frozen sidecars still embed the same-version scenario bundle. The published installer remains [`desktop-v0.2.0-beta.6`](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.2.0-beta.6) and does not include that view or a new DMG/NSIS.
 - macOS users download `codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`; Windows users download `codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`. Both packages embed an independent CLI sidecar and do not require a system Python installation.
 - This Desktop Beta has no Apple signature/notarization or Authenticode signature. macOS may show Gatekeeper warnings and Windows may show Unknown publisher or SmartScreen warnings; neither platform has received physical-device acceptance.
 - The Windows package uses current-user NSIS and a silent WebView2 download bootstrapper. It does not provide MSI, ARM64, or a formal Windows support commitment; the underlying Windows CLI fresh-deployment path remains `EXPLICIT_BETA`.
@@ -132,7 +132,7 @@ OPENAI_API_KEY=YOUR_KEY OPENAI_BASE_URL=https://HOST/v1 \
   --report /absolute/reports/scenario-bank.jsonl
 ```
 
-Live evaluation sends temporary scenario context to the selected model service and may incur cost. `verify.py` / `validator.py` are host-executed code, so use only the same-version Release bundle or a reviewed scenario directory; see [`SECURITY.md`](SECURITY.md). Public scores, GUI scenario pages, and new Desktop installers remain out of scope. The first private evaluation protocol is recorded in [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md).
+Live evaluation sends temporary scenario context to the selected model service and may incur cost. `verify.py` / `validator.py` are host-executed code, so use only the same-version Release bundle or a reviewed scenario directory; see [`SECURITY.md`](SECURITY.md). Public scores and new Desktop installers remain out of scope. Source GUI scenario pages are documented in [`gui/SPEC.md`](gui/SPEC.md). The first private evaluation protocol is recorded in [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md).
 
 ### Using CCSwitch profiles as an activation switch
 

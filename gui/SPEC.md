@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：v0.2.0 已具备 React 前端、PyInstaller sidecar、macOS app/dmg 与 Windows x64 NSIS；`desktop-v0.2.0-beta.6` 统一提供两平台 unsigned Desktop Beta，正式签名、公证与实体设备验收仍待完成
+> 状态：源码 v0.3.4 已具备指令层 GUI（M1–M5）与场景库页（场景 M4 实现，未发新 Desktop 安装包）；公开安装包仍是 `desktop-v0.2.0-beta.6`。正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **M1–M3 完整实现 + macOS/Windows unsigned Desktop Beta** | GitHub 原生 CI 构建并统一公开 Pre-release；未签名、无实体设备验收，不等于正式平台支持 |
+| 本轮交付 | **指令层 M1–M5 + 场景库页实现** | 场景页只调用 CLI 场景命令；本轮不发布新的 DMG / NSIS |
 
 ## 3. 总体架构
 
@@ -79,6 +79,11 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | `--uninstall` | 按 manifest 分层卸载 | Manage 页 |
 | `--restore-hooks` | 仅恢复 hooks.json | Manage 页 |
 | `--recover` | 恢复中断事务 | Manage 页（有残留时高亮提示） |
+| `--scenario-list` | 列出场景包与平台/依赖 blocker | Scenarios 页 |
+| `--deploy-scenario` | 预览或部署一个场景包 | Scenarios 页；必须绝对 `--target-dir` |
+| `--scenario-status` | 目标目录场景状态 | Scenarios 页 |
+| `--scenario-uninstall` | 按 `deployment_id` 预览或卸载 | Scenarios 页 |
+| `--scenario-recover` | 预览或恢复中断场景事务 | Scenarios 页 |
 | `--skip-hooks-isolation` | 部署时跳过 hooks 隔离（需同时 `--codex-dir`） | Deploy 向导高级选项 |
 | `--lang en` | **固定使用** | 所有调用 |
 
@@ -328,6 +333,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M3 管理操作** ✅ | 卸载 / 恢复 hooks / 恢复中断 | 与 CLI 逐层回滚语义一致；残留场景可恢复 |
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
 | **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
+| **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；展示平台/依赖 blocker；不发新 Desktop 安装包 |
 
 ## 10. 交接说明（给接手 Agent）
 
@@ -336,7 +342,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 **已交付（2026-08-07，v0.2.0）：**
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
-- `src/`：React 19 前端，四视图 + react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
+- `src/`：React 19 前端，五视图（Dashboard / Deploy / Scenarios / Manage / Settings）+ react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
 - `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 使用真实 CLI 输出样本覆盖状态、预览和失败关闭边界
 - 本 SPEC.md：解析规范与设计决策
 

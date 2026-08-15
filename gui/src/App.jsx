@@ -17,6 +17,7 @@ import { Dashboard } from "@/views/Dashboard";
 import { Deploy } from "@/views/Deploy";
 import { Manage } from "@/views/Manage";
 import { SettingsView } from "@/views/SettingsView";
+import { Scenarios } from "@/views/Scenarios";
 
 /** 主题：system / light / dark，跟随系统时监听 matchMedia */
 function useTheme() {
@@ -91,6 +92,7 @@ export default function App() {
   const views = {
     dashboard: <Dashboard />,
     deploy: <Deploy />,
+    scenarios: <Scenarios />,
     manage: <Manage />,
     settings: <SettingsView />,
   };
