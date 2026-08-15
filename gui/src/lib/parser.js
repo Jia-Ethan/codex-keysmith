@@ -445,6 +445,322 @@ export function parseUninstallPreview(stdout) {
   return result;
 }
 
+const SCENARIO_LIST_ITEM_RE =
+  /^- ([a-z0-9][a-z0-9_-]*) ([^:]+): (ready|blocked); platforms=([^;]*); python=([^;]*); requires=([^;]*); verify=(.+)$/;
+const SCENARIO_INVALID_ITEM_RE = /^- ([^:]+): invalid \((.+)\)$/;
+const SCENARIO_DEPLOYMENT_RE =
+  /^\[Deployment\] ([0-9a-f]{32}) scenario=(\S+) version=(\S+) state=(\S+) root=(.+)$/;
+const SCENARIO_CANONICAL_PATH_RE =
+  /use the canonical path: (.+)$/m;
+const VALID_SCENARIO_STATES = new Set([
+  "active",
+  "conflict",
+  "not-installed",
+  "recovery-required",
+  "empty",
+  "no recovery required",
+]);
+
+export function extractCanonicalTarget(text) {
+  const match = String(text ?? "").match(SCENARIO_CANONICAL_PATH_RE);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * 解析 --scenario-list（只认 --lang en）
+ */
+export function parseScenarioList(stdout) {
+  const result = {
+    library: null,
+    packages: [],
+    empty: false,
+    blockers: [],
+    semanticComplete: false,
+    raw: stdout,
+  };
+  let current = null;
+  for (const line of splitCliLines(stdout)) {
+    const libraryMatch = line.match(/^\[Scenario library\] (.+)$/);
+    if (libraryMatch) {
+      result.library = libraryMatch[1];
+      continue;
+    }
+    if (line === "[Scenario state] empty") {
+      result.empty = true;
+      continue;
+    }
+    const itemMatch = line.match(SCENARIO_LIST_ITEM_RE);
+    if (itemMatch) {
+      current = {
+        id: itemMatch[1],
+        version: itemMatch[2],
+        ready: itemMatch[3] === "ready",
+        state: itemMatch[3],
+        platforms: itemMatch[4] ? itemMatch[4].split(",").filter(Boolean) : [],
+        python: itemMatch[5],
+        requires: itemMatch[6],
+        verify: itemMatch[7],
+        blockers: [],
+        invalid: false,
+      };
+      result.packages.push(current);
+      continue;
+    }
+    const invalidMatch = line.match(SCENARIO_INVALID_ITEM_RE);
+    if (invalidMatch) {
+      current = {
+        id: invalidMatch[1],
+        version: "",
+        ready: false,
+        state: "invalid",
+        platforms: [],
+        python: "",
+        requires: "",
+        verify: "",
+        blockers: [invalidMatch[2]],
+        invalid: true,
+      };
+      result.packages.push(current);
+      result.blockers.push(invalidMatch[2]);
+      continue;
+    }
+    const blockedMatch = line.match(/^ {4}\[Blocked\] (.+)$/);
+    if (blockedMatch && current) {
+      current.blockers.push(blockedMatch[1]);
+    }
+  }
+  result.semanticComplete = Boolean(result.library)
+    && (result.empty || result.packages.length > 0);
+  return result;
+}
+
+/**
+ * 解析 --scenario-status
+ */
+export function parseScenarioStatus(stdout) {
+  const result = {
+    target: null,
+    state: null,
+    deployments: [],
+    recovery: null,
+    blockers: [],
+    semanticComplete: false,
+    raw: stdout,
+  };
+  let current = null;
+  for (const line of splitCliLines(stdout)) {
+    const targetMatch = line.match(/^\[Scenario target\] (.+)$/);
+    if (targetMatch) {
+      result.target = targetMatch[1];
+      continue;
+    }
+    const stateMatch = line.match(/^\[Scenario state\] (.+)$/);
+    if (stateMatch) {
+      result.state = stateMatch[1];
+      continue;
+    }
+    const deploymentMatch = line.match(SCENARIO_DEPLOYMENT_RE);
+    if (deploymentMatch) {
+      current = {
+        deploymentId: deploymentMatch[1],
+        scenarioId: deploymentMatch[2],
+        version: deploymentMatch[3],
+        state: deploymentMatch[4],
+        root: deploymentMatch[5],
+        detail: "",
+      };
+      result.deployments.push(current);
+      continue;
+    }
+    if (current && /^ {4}\S/.test(line)) {
+      current.detail = line.trim();
+      continue;
+    }
+    const recoveryMatch = line.match(
+      /^\[Recovery\] (\S+) (\S+) phase=(.+)$/,
+    );
+    if (recoveryMatch) {
+      result.recovery = {
+        operation: recoveryMatch[1],
+        transactionId: recoveryMatch[2],
+        phase: recoveryMatch[3],
+      };
+      continue;
+    }
+    if (line.startsWith("[Blocked]")) {
+      result.blockers.push(line.replace(/^\[Blocked\]\s*/, ""));
+    }
+    if (line.startsWith("[Error]")) {
+      result.blockers.push(line.replace(/^\[Error\]\s*/, ""));
+    }
+  }
+  result.semanticComplete = Boolean(result.target)
+    && VALID_SCENARIO_STATES.has(result.state);
+  return result;
+}
+
+/**
+ * 解析 --deploy-scenario 预览或完成输出
+ */
+export function parseScenarioDeployPreview(stdout) {
+  const result = {
+    scenarioId: null,
+    version: null,
+    target: null,
+    source: null,
+    files: null,
+    preview: null,
+    deploymentId: null,
+    blockers: [],
+    semanticComplete: false,
+    raw: stdout,
+  };
+  for (const line of splitCliLines(stdout)) {
+    const deployMatch = line.match(/^\[Scenario deploy\] (\S+) (\S+)$/);
+    if (deployMatch) {
+      result.scenarioId = deployMatch[1];
+      result.version = deployMatch[2];
+      continue;
+    }
+    const targetMatch = line.match(/^\[Target\] (.+)$/);
+    if (targetMatch) {
+      result.target = targetMatch[1];
+      continue;
+    }
+    const sourceMatch = line.match(/^\[Source\] (.+)$/);
+    if (sourceMatch) {
+      result.source = sourceMatch[1];
+      continue;
+    }
+    const filesMatch = line.match(/^\[Files\] (\d+)$/);
+    if (filesMatch) {
+      result.files = Number(filesMatch[1]);
+      continue;
+    }
+    if (line === "[Preview] no files were changed; add --yes to deploy") {
+      result.preview = line;
+      continue;
+    }
+    const doneMatch = line.match(/^\[Done\] deployed scenario as ([0-9a-f]{32})$/);
+    if (doneMatch) {
+      result.deploymentId = doneMatch[1];
+      continue;
+    }
+    if (line.startsWith("[Blocked]")) {
+      result.blockers.push(line.replace(/^\[Blocked\]\s*/, ""));
+    }
+    if (line.startsWith("[Error]")) {
+      result.blockers.push(line.replace(/^\[Error\]\s*/, ""));
+    }
+  }
+  result.semanticComplete = Boolean(result.scenarioId && result.target)
+    && (result.preview !== null || result.deploymentId !== null || result.blockers.length > 0);
+  return result;
+}
+
+/**
+ * 解析 --scenario-uninstall 预览或完成输出
+ */
+export function parseScenarioUninstallPreview(stdout) {
+  const result = {
+    deploymentId: null,
+    target: null,
+    preview: null,
+    state: null,
+    completion: null,
+    blockers: [],
+    semanticComplete: false,
+    raw: stdout,
+  };
+  for (const line of splitCliLines(stdout)) {
+    const uninstallMatch = line.match(/^\[Scenario uninstall\] ([0-9a-f]{32})$/);
+    if (uninstallMatch) {
+      result.deploymentId = uninstallMatch[1];
+      continue;
+    }
+    const targetMatch = line.match(/^\[Target\] (.+)$/);
+    if (targetMatch) {
+      result.target = targetMatch[1];
+      continue;
+    }
+    if (line.startsWith("[Preview]")) {
+      result.preview = line;
+      continue;
+    }
+    const stateMatch = line.match(/^\[Scenario state\] (.+)$/);
+    if (stateMatch) {
+      result.state = stateMatch[1];
+      continue;
+    }
+    const doneMatch = line.match(/^\[Done\] uninstalled scenario deployment ([0-9a-f]{32})$/);
+    if (doneMatch) {
+      result.completion = doneMatch[1];
+      continue;
+    }
+    if (line.startsWith("[Blocked]") || line.startsWith("[Error]")) {
+      result.blockers.push(line.replace(/^\[(?:Blocked|Error)\]\s*/, ""));
+    }
+  }
+  result.semanticComplete = Boolean(result.deploymentId)
+    && (
+      result.preview !== null
+      || result.completion !== null
+      || result.state === "not-installed"
+      || (typeof result.state === "string" && result.state.startsWith("deployment not installed"))
+    );
+  return result;
+}
+
+/**
+ * 解析 --scenario-recover 预览或完成输出
+ */
+export function parseScenarioRecoverPreview(stdout) {
+  const result = {
+    target: null,
+    state: null,
+    recovery: null,
+    preview: null,
+    required: false,
+    blockers: [],
+    semanticComplete: false,
+    raw: stdout,
+  };
+  for (const line of splitCliLines(stdout)) {
+    const targetMatch = line.match(/^\[Scenario recover\] (.+)$/);
+    if (targetMatch) {
+      result.target = targetMatch[1];
+      continue;
+    }
+    if (line === "[Scenario state] no recovery required") {
+      result.state = "no recovery required";
+      continue;
+    }
+    const recoveryMatch = line.match(
+      /^\[Recovery\] operation=(\S+) transaction=(\S+) phase=(.+)$/,
+    );
+    if (recoveryMatch) {
+      result.recovery = {
+        operation: recoveryMatch[1],
+        transactionId: recoveryMatch[2],
+        phase: recoveryMatch[3],
+      };
+      result.required = true;
+      continue;
+    }
+    if (line.startsWith("[Preview]") && line.includes("add --yes to recover")) {
+      result.preview = line;
+      result.required = true;
+      continue;
+    }
+    if (line.startsWith("[Blocked]") || line.startsWith("[Error]")) {
+      result.blockers.push(line.replace(/^\[(?:Blocked|Error)\]\s*/, ""));
+    }
+  }
+  result.semanticComplete = Boolean(result.target)
+    && (result.state === "no recovery required" || result.preview !== null || result.blockers.length > 0);
+  return result;
+}
+
 // ── 内部工具 ───────────────────────────────
 
 function normalizeKind(kind) {

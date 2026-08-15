@@ -7,6 +7,12 @@ import {
   parseDryRun,
   parseUninstallPreview,
   gatePreview,
+  parseScenarioList,
+  parseScenarioStatus,
+  parseScenarioDeployPreview,
+  parseScenarioUninstallPreview,
+  parseScenarioRecoverPreview,
+  extractCanonicalTarget,
 } from "./parser.js";
 
 // ── SPEC §5.1 真实 status 输出（active）──
@@ -659,5 +665,126 @@ describe("parseUninstallPreview", () => {
     );
     expect(parsed.semanticComplete).toBe(false);
     expect(gate).toMatchObject({ ok: false, reason: "unrecognized" });
+  });
+});
+
+const SCENARIO_LIST = `[Scenario library] /repo/scenarios
+- aiml_toxigen 1.0.0: ready; platforms=darwin,linux; python=>=3.9,<3.15; requires=none; verify=verify.py
+- chem_rdkit 1.0.0: blocked; platforms=darwin,linux; python=>=3.9,<3.15; requires=rdkit>=2022.9; verify=verify.py
+    [Blocked] dependency rdkit (>=2022.9) is missing; install python-module 'rdkit'
+- cyber_keystone 1.0.0: ready; platforms=darwin,linux; python=>=3.9,<3.15; requires=none; verify=verify.py
+- example_fixture 1.0.0: ready; platforms=darwin,linux,win32; python=>=3.9,<3.15; requires=none; verify=verify.py`;
+
+const SCENARIO_STATUS_ACTIVE = `[Scenario target] /private/tmp/project
+[Deployment] a6453d05552a48d5805a3c48bd19dc7c scenario=example_fixture version=1.0.0 state=active root=scenarios/a6453d05552a48d5805a3c48bd19dc7c
+    all owned files and identities match
+[Scenario state] active`;
+
+const SCENARIO_DEPLOY_PREVIEW = `[Scenario deploy] example_fixture 1.0.0
+[Target] /private/tmp/project
+[Source] /repo/scenarios/example_fixture
+[Files] 5
+[Preview] no files were changed; add --yes to deploy`;
+
+const SCENARIO_DEPLOY_BLOCKED = `[Scenario deploy] chem_rdkit 1.0.0
+[Target] /private/tmp/project
+[Source] /repo/scenarios/chem_rdkit
+[Files] 8
+[Blocked] dependency rdkit (>=2022.9) is missing
+[Error] scenario deployment preflight is blocked`;
+
+const SCENARIO_UNINSTALL_PREVIEW = `[Scenario uninstall] a6453d05552a48d5805a3c48bd19dc7c
+[Target] /private/tmp/project
+[Preview] remove scenarios/a6453d05552a48d5805a3c48bd19dc7c and its exact manifest entry
+[Preview] no files were changed; add --yes to uninstall`;
+
+const SCENARIO_RECOVER_NONE = `[Scenario recover] /private/tmp/project
+[Scenario state] no recovery required`;
+
+describe("parseScenarioList", () => {
+  it("解析 ready/blocked 包与 indented blocker", () => {
+    const parsed = parseScenarioList(SCENARIO_LIST);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.library).toBe("/repo/scenarios");
+    expect(parsed.packages.map((item) => item.id)).toEqual([
+      "aiml_toxigen",
+      "chem_rdkit",
+      "cyber_keystone",
+      "example_fixture",
+    ]);
+    expect(parsed.packages[1].ready).toBe(false);
+    expect(parsed.packages[1].blockers[0]).toMatch(/rdkit/);
+    expect(parsed.packages[3].platforms).toContain("win32");
+  });
+});
+
+describe("parseScenarioStatus", () => {
+  it("解析 active 部署", () => {
+    const parsed = parseScenarioStatus(SCENARIO_STATUS_ACTIVE);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.state).toBe("active");
+    expect(parsed.deployments).toHaveLength(1);
+    expect(parsed.deployments[0].deploymentId).toBe("a6453d05552a48d5805a3c48bd19dc7c");
+    expect(parsed.deployments[0].detail).toMatch(/identities match/);
+  });
+
+  it("解析 not-installed", () => {
+    const parsed = parseScenarioStatus(
+      "[Scenario target] /private/tmp/empty\n[Scenario state] not-installed\n",
+    );
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.state).toBe("not-installed");
+    expect(parsed.deployments).toHaveLength(0);
+  });
+});
+
+describe("parseScenarioDeployPreview", () => {
+  it("预览门禁放行", () => {
+    const parsed = parseScenarioDeployPreview(SCENARIO_DEPLOY_PREVIEW);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(gatePreview(
+      { stdout: SCENARIO_DEPLOY_PREVIEW, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    ).ok).toBe(true);
+  });
+
+  it("blocker 阻断", () => {
+    const parsed = parseScenarioDeployPreview(SCENARIO_DEPLOY_BLOCKED);
+    const gate = gatePreview(
+      { stdout: SCENARIO_DEPLOY_BLOCKED, stderr: "", exit_code: 1, timed_out: false },
+      parsed,
+    );
+    expect(parsed.blockers.length).toBeGreaterThan(0);
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toBe("exit");
+  });
+});
+
+describe("parseScenarioUninstallPreview / recover", () => {
+  it("卸载预览放行", () => {
+    const parsed = parseScenarioUninstallPreview(SCENARIO_UNINSTALL_PREVIEW);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(gatePreview(
+      { stdout: SCENARIO_UNINSTALL_PREVIEW, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    ).ok).toBe(true);
+  });
+
+  it("无需恢复也是完整预览", () => {
+    const parsed = parseScenarioRecoverPreview(SCENARIO_RECOVER_NONE);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.required).toBe(false);
+    expect(gatePreview(
+      { stdout: SCENARIO_RECOVER_NONE, stderr: "", exit_code: 0, timed_out: false },
+      parsed,
+    ).ok).toBe(true);
+  });
+});
+
+describe("extractCanonicalTarget", () => {
+  it("从间接路径错误中取出规范路径", () => {
+    expect(extractCanonicalTarget(
+      "[Error] --target-dir resolves through an indirect path; use the canonical path: /private/tmp/project",
+    )).toBe("/private/tmp/project");
   });
 });

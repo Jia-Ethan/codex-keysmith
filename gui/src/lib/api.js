@@ -3,7 +3,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getSettings, normalizeCliPath } from "./settings.js";
-import { parseStatus, parseDryRun, gatePreview } from "./parser.js";
+import {
+  parseStatus,
+  parseDryRun,
+  gatePreview,
+  parseScenarioList,
+  parseScenarioStatus,
+  parseScenarioDeployPreview,
+  parseScenarioUninstallPreview,
+  parseScenarioRecoverPreview,
+  extractCanonicalTarget,
+} from "./parser.js";
 import { beginOperation, endOperation } from "./store.js";
 
 function invokeTrackedOperation(command, payload) {
@@ -127,6 +137,118 @@ export function isTauriMissing(err) {
     !window.__TAURI_INTERNALS__ ||
     (err && typeof err.message === "string" && err.message.includes("__TAURI"))
   );
+}
+
+function scenarioArgs(targetDir, extra = []) {
+  const args = [...extra, "--target-dir", targetDir, "--lang", "en"];
+  return args;
+}
+
+async function runScenarioCommand(buildArgs, targetDir, timeoutMs = 30_000) {
+  let target = String(targetDir || "").trim();
+  if (!target) {
+    throw new Error("scenario commands require an explicit absolute --target-dir");
+  }
+  let output = await cliRun(buildArgs(target), timeoutMs);
+  const canonical = extractCanonicalTarget(`${output.stdout}\n${output.stderr}`);
+  if (canonical && canonical !== target) {
+    output = await cliRun(buildArgs(canonical), timeoutMs);
+    output.canonicalTarget = canonical;
+    return output;
+  }
+  output.canonicalTarget = target;
+  return output;
+}
+
+export async function fetchScenarioList() {
+  const output = await cliRun(["--scenario-list", "--lang", "en"], 60_000);
+  const parsed = parseScenarioList(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.gate = gatePreview(output, parsed);
+  if (output.timed_out || !parsed.semanticComplete) {
+    throw new CliError(output);
+  }
+  return parsed;
+}
+
+export async function fetchScenarioStatus(targetDir) {
+  const output = await runScenarioCommand(
+    (target) => scenarioArgs(target, ["--scenario-status"]),
+    targetDir,
+  );
+  const parsed = parseScenarioStatus(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.canonicalTarget = output.canonicalTarget;
+  parsed.gate = gatePreview(
+    {
+      ...output,
+      // recovery-required / conflict 会非零退出，但 stdout 仍是完整状态。
+      exit_code: parsed.semanticComplete ? 0 : output.exit_code,
+    },
+    parsed,
+  );
+  if (output.timed_out || !parsed.semanticComplete) {
+    throw new CliError(output);
+  }
+  return parsed;
+}
+
+export async function fetchScenarioDeployPreview(scenarioId, targetDir) {
+  const output = await runScenarioCommand(
+    (target) => scenarioArgs(target, ["--deploy-scenario", scenarioId]),
+    targetDir,
+  );
+  const parsed = parseScenarioDeployPreview(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.canonicalTarget = output.canonicalTarget;
+  parsed.gate = gatePreview(output, parsed);
+  return parsed;
+}
+
+export function executeScenarioDeploy(scenarioId, targetDir) {
+  return cliExecute(["--deploy-scenario", scenarioId, "--target-dir", targetDir], 120_000);
+}
+
+export async function fetchScenarioUninstallPreview(deploymentId, targetDir) {
+  const output = await runScenarioCommand(
+    (target) => scenarioArgs(target, ["--scenario-uninstall", deploymentId]),
+    targetDir,
+  );
+  const parsed = parseScenarioUninstallPreview(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.canonicalTarget = output.canonicalTarget;
+  parsed.gate = gatePreview(output, parsed);
+  return parsed;
+}
+
+export function executeScenarioUninstall(deploymentId, targetDir) {
+  return cliExecute(["--scenario-uninstall", deploymentId, "--target-dir", targetDir], 120_000);
+}
+
+export async function fetchScenarioRecoverPreview(targetDir) {
+  const output = await runScenarioCommand(
+    (target) => scenarioArgs(target, ["--scenario-recover"]),
+    targetDir,
+  );
+  const parsed = parseScenarioRecoverPreview(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.canonicalTarget = output.canonicalTarget;
+  parsed.gate = gatePreview(output, parsed);
+  return parsed;
+}
+
+export function executeScenarioRecover(targetDir) {
+  return cliExecute(["--scenario-recover", "--target-dir", targetDir], 120_000);
 }
 
 export class CliError extends Error {
