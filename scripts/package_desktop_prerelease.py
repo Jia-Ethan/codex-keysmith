@@ -23,13 +23,25 @@ else:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# The unsigned desktop beta line is immutable and intentionally remains on 0.2.0.
-VERSION = "0.2.0"
 PRODUCT = "codex-keysmith"
-TAG_RE = re.compile(rf"^desktop-v{re.escape(VERSION)}-beta\.[1-9][0-9]*$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 CHECKSUMS_NAME = "SHA256SUMS"
 
+
+class PrereleaseError(RuntimeError):
+    """Raised when an unsigned desktop prerelease invariant is violated."""
+
+
+def _read_version() -> str:
+    raw = (REPO_ROOT / "VERSION").read_text(encoding="ascii").strip()
+    if VERSION_RE.fullmatch(raw) is None:
+        raise PrereleaseError("VERSION must be a dotted x.y.z source version")
+    return raw
+
+
+VERSION = _read_version()
+TAG_RE = re.compile(rf"^desktop-v{re.escape(VERSION)}-beta\.[1-9][0-9]*$")
 MACOS_DMG_NAME = f"{PRODUCT}-{VERSION}-macos-arm64-unsigned.dmg"
 MACOS_CANDIDATE_ZIP_NAME = f"{PRODUCT}-{VERSION}-macos-arm64-unsigned-candidate.zip"
 WINDOWS_SETUP_NAME = f"{PRODUCT}-{VERSION}-windows-x64-unsigned-setup.exe"
@@ -37,18 +49,24 @@ WINDOWS_CANDIDATE_ZIP_NAME = f"{PRODUCT}-{VERSION}-windows-x64-unsigned-candidat
 CLI_NAME = f"codex-instruct-v{VERSION}.py"
 SOURCE_ZIP_NAME = f"{PRODUCT}-v{VERSION}.zip"
 SOURCE_TAR_NAME = f"{PRODUCT}-v{VERSION}.tar.gz"
+SCENARIO_BUNDLE_NAME = f"{PRODUCT}-scenarios-v{VERSION}.bundle"
 
 # Retain the legacy names for callers that only need the Windows asset constants.
 SETUP_NAME = WINDOWS_SETUP_NAME
 CANDIDATE_ZIP_NAME = WINDOWS_CANDIDATE_ZIP_NAME
 
-SOURCE_PAYLOAD_NAMES = (CLI_NAME, SOURCE_ZIP_NAME, SOURCE_TAR_NAME)
+# Source CLI/archives/bundle stay on the matching v<VERSION> source Release.
+SOURCE_RELEASE_PAYLOAD_NAMES = (
+    CLI_NAME,
+    SOURCE_ZIP_NAME,
+    SOURCE_TAR_NAME,
+    SCENARIO_BUNDLE_NAME,
+)
 PUBLIC_PAYLOAD_NAMES = (
     MACOS_DMG_NAME,
     MACOS_CANDIDATE_ZIP_NAME,
     WINDOWS_SETUP_NAME,
     WINDOWS_CANDIDATE_ZIP_NAME,
-    *SOURCE_PAYLOAD_NAMES,
 )
 PUBLIC_ASSET_NAMES = (*PUBLIC_PAYLOAD_NAMES, CHECKSUMS_NAME)
 
@@ -92,10 +110,6 @@ PLATFORM_CONFIGS = {
         },
     },
 }
-
-
-class PrereleaseError(RuntimeError):
-    """Raised when an unsigned desktop prerelease invariant is violated."""
 
 
 def _require_regular_file(path: Path) -> None:
@@ -184,31 +198,6 @@ def _validate_candidate(
     return manifest
 
 
-def _validate_source_assets(source_dir: Path) -> None:
-    source_dir = source_dir.absolute()
-    if not source_dir.is_dir() or source_dir.is_symlink():
-        raise PrereleaseError(f"source asset directory is missing or unsafe: {source_dir}")
-    entries = list(source_dir.iterdir())
-    expected_names = {*SOURCE_PAYLOAD_NAMES, CHECKSUMS_NAME}
-    actual_names = {entry.name for entry in entries}
-    if actual_names != expected_names:
-        raise PrereleaseError(
-            f"source asset set is not exact: expected {sorted(expected_names)}, "
-            f"got {sorted(actual_names)}"
-        )
-    for entry in entries:
-        _require_regular_file(entry)
-    expected_lines = [
-        f"{_sha256(source_dir / name)}  {name}" for name in sorted(SOURCE_PAYLOAD_NAMES)
-    ]
-    try:
-        checksum_lines = (source_dir / CHECKSUMS_NAME).read_text(encoding="ascii").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise PrereleaseError(f"cannot read source SHA256SUMS: {exc}") from exc
-    if checksum_lines != expected_lines:
-        raise PrereleaseError("source SHA256SUMS does not exactly cover deterministic source assets")
-
-
 def _write_deterministic_zip(candidate_dir: Path, destination: Path) -> None:
     with zipfile.ZipFile(
         destination,
@@ -275,7 +264,6 @@ def _verify_candidate_zip(
 def verify_public_assets(
     output_dir: Path,
     expected_commit: str,
-    source_dir: Path | None = None,
 ) -> None:
     if COMMIT_RE.fullmatch(expected_commit) is None:
         raise PrereleaseError("expected commit must be a full lowercase 40-character SHA")
@@ -288,6 +276,12 @@ def verify_public_assets(
         raise PrereleaseError(
             f"public asset set is not exact: expected {sorted(PUBLIC_ASSET_NAMES)}, "
             f"got {sorted(actual_names)}"
+        )
+    leaked = set(actual_names) & set(SOURCE_RELEASE_PAYLOAD_NAMES)
+    if leaked:
+        raise PrereleaseError(
+            "desktop prerelease must not republish source-release assets: "
+            + ", ".join(sorted(leaked))
         )
     for entry in entries:
         _require_regular_file(entry)
@@ -304,20 +298,11 @@ def verify_public_assets(
     windows_commit = _verify_candidate_zip(output_dir, "windows", expected_commit)
     if macos_commit != windows_commit:
         raise PrereleaseError("macOS and Windows candidate manifests do not bind the same commit")
-    if source_dir is not None:
-        source_dir = source_dir.absolute()
-        _validate_source_assets(source_dir)
-        for name in SOURCE_PAYLOAD_NAMES:
-            if _sha256(output_dir / name) != _sha256(source_dir / name):
-                raise PrereleaseError(
-                    f"public source asset does not match the commit-bound build output: {name}"
-                )
 
 
 def assemble_prerelease(
     macos_candidate_dir: Path,
     windows_candidate_dir: Path,
-    source_dir: Path,
     output_dir: Path,
     tag: str,
     expected_commit: str,
@@ -331,8 +316,6 @@ def assemble_prerelease(
         platform: _validate_candidate(candidate_dir, expected_commit, platform)
         for platform, candidate_dir in candidate_dirs.items()
     }
-    source_dir = source_dir.absolute()
-    _validate_source_assets(source_dir)
     output_dir = output_dir.absolute()
     if output_dir.exists():
         if output_dir.is_symlink() or not output_dir.is_dir() or any(output_dir.iterdir()):
@@ -350,10 +333,6 @@ def assemble_prerelease(
                 candidate_dir,
                 temporary / str(config["candidate_zip"]),
             )
-        for name in SOURCE_PAYLOAD_NAMES:
-            destination = temporary / name
-            shutil.copyfile(source_dir / name, destination)
-            os.chmod(destination, 0o755 if name == CLI_NAME else 0o644)
         checksum_lines = [
             f"{_sha256(temporary / name)}  {name}"
             for name in sorted(PUBLIC_PAYLOAD_NAMES)
@@ -362,14 +341,14 @@ def assemble_prerelease(
             "\n".join(checksum_lines) + "\n",
             encoding="ascii",
         )
-        verify_public_assets(temporary, expected_commit, source_dir)
+        verify_public_assets(temporary, expected_commit)
         if output_dir.exists():
             output_dir.rmdir()
         temporary.rename(output_dir)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    verify_public_assets(output_dir, expected_commit, source_dir)
+    verify_public_assets(output_dir, expected_commit)
     return output_dir
 
 
@@ -379,7 +358,6 @@ def build_parser() -> argparse.ArgumentParser:
     assemble = subparsers.add_parser("assemble", help="assemble fixed public prerelease assets")
     assemble.add_argument("--macos-candidate-dir", type=Path, required=True)
     assemble.add_argument("--windows-candidate-dir", type=Path, required=True)
-    assemble.add_argument("--source-dir", type=Path, required=True)
     assemble.add_argument("--output-dir", type=Path, required=True)
     assemble.add_argument("--release-tag", required=True)
     assemble.add_argument("--expected-commit", required=True)
@@ -388,7 +366,6 @@ def build_parser() -> argparse.ArgumentParser:
             assemble_prerelease(
                 args.macos_candidate_dir,
                 args.windows_candidate_dir,
-                args.source_dir,
                 args.output_dir,
                 args.release_tag,
                 args.expected_commit,
@@ -398,12 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify", help="verify the fixed public asset set")
     verify.add_argument("output_dir", type=Path)
     verify.add_argument("--expected-commit", required=True)
-    verify.add_argument("--source-dir", type=Path)
     verify.set_defaults(
         handler=lambda args: verify_public_assets(
             args.output_dir,
             args.expected_commit,
-            args.source_dir,
         )
     )
     return parser
