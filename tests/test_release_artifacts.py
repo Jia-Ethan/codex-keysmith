@@ -618,7 +618,7 @@ def test_scenario_bundle_builder_rejects_case_insensitive_member_collision(
         release_builder.write_scenario_bundle(repo, tmp_path / "scenarios.bundle", version=VERSION)
 
 
-def test_release_builder_output_is_not_reused_for_historical_desktop_beta(
+def test_release_builder_output_is_not_reused_as_desktop_prerelease(
     release_builder,
     tmp_path,
 ):
@@ -627,8 +627,8 @@ def test_release_builder_output_is_not_reused_for_historical_desktop_beta(
 
     release_builder.build_release(TAG, repo, output_dir)
 
-    with pytest.raises(desktop_prerelease.PrereleaseError, match="source asset set is not exact"):
-        desktop_prerelease._validate_source_assets(output_dir)
+    with pytest.raises(desktop_prerelease.PrereleaseError, match="public asset set is not exact"):
+        desktop_prerelease.verify_public_assets(output_dir, "a" * 40)
 
 
 def test_default_in_repository_output_can_be_rebuilt(release_builder, tmp_path):

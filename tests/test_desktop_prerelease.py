@@ -13,8 +13,9 @@ import pytest
 from scripts import package_desktop_prerelease as prerelease
 
 COMMIT = "a" * 40
-TAG = "desktop-v0.2.0-beta.6"
+TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+VERSION = prerelease.VERSION
 
 
 def _sha256(path: Path) -> str:
@@ -46,7 +47,7 @@ def _candidate(tmp_path: Path, platform: str) -> Path:
     candidate = tmp_path / platform
     candidate.mkdir(parents=True)
     if platform == "windows":
-        bundle = candidate / "codex-keysmith_0.2.0_x64-setup.exe"
+        bundle = candidate / f"codex-keysmith_{VERSION}_x64-setup.exe"
         app = candidate / "codex-keysmith-gui.exe"
         sidecar = candidate / "codex-keysmith-cli.exe"
         icon = candidate / "icon.ico"
@@ -63,7 +64,7 @@ def _candidate(tmp_path: Path, platform: str) -> Path:
         sidecar.write_bytes(_pe_binary() + b"sidecar")
         _write_ico(icon)
     else:
-        bundle = candidate / "codex-keysmith_0.2.0_aarch64.dmg"
+        bundle = candidate / f"codex-keysmith_{VERSION}_aarch64.dmg"
         app = candidate / "codex-keysmith-gui"
         sidecar = candidate / "codex-keysmith-cli"
         icon = candidate / "icon.icns"
@@ -94,8 +95,8 @@ def _candidate(tmp_path: Path, platform: str) -> Path:
     manifest = {
         "schema_version": 1,
         "product": "codex-keysmith",
-        "desktop_version": "0.2.0",
-        "cli_version": "0.2.0",
+        "desktop_version": VERSION,
+        "cli_version": VERSION,
         "source_commit": COMMIT,
         "target": target,
         "toolchain": {
@@ -104,7 +105,7 @@ def _candidate(tmp_path: Path, platform: str) -> Path:
             "pyinstaller": "6.16.0",
             "rust": "1.88.0",
         },
-        "sidecar_version_output": f"{sidecar.name} 0.2.0",
+        "sidecar_version_output": f"{sidecar.name} {VERSION}",
         "sidecar_provenance": {
             "source_sha256": sidecar_hash,
             "packaged_sha256": sidecar_hash,
@@ -132,39 +133,17 @@ def _candidate(tmp_path: Path, platform: str) -> Path:
     return candidate
 
 
-def _source_assets(tmp_path: Path) -> Path:
-    source = tmp_path / "source"
-    source.mkdir(parents=True)
-    (source / prerelease.CLI_NAME).write_text(
-        '#!/usr/bin/env python3\n__version__ = "0.2.0"\n',
-        encoding="utf-8",
-    )
-    (source / prerelease.SOURCE_ZIP_NAME).write_bytes(b"deterministic source zip")
-    (source / prerelease.SOURCE_TAR_NAME).write_bytes(b"deterministic source tar")
-    checksum_lines = [
-        f"{_sha256(source / name)}  {name}"
-        for name in sorted(prerelease.SOURCE_PAYLOAD_NAMES)
-    ]
-    (source / prerelease.CHECKSUMS_NAME).write_text(
-        "\n".join(checksum_lines) + "\n",
-        encoding="ascii",
-    )
-    return source
-
-
-def _assemble(tmp_path: Path, output_name: str = "out") -> tuple[Path, Path, Path, Path]:
+def _assemble(tmp_path: Path, output_name: str = "out") -> tuple[Path, Path, Path]:
     macos = _candidate(tmp_path / "candidates", "macos")
     windows = _candidate(tmp_path / "candidates", "windows")
-    source = _source_assets(tmp_path)
     output = prerelease.assemble_prerelease(
         macos,
         windows,
-        source,
         tmp_path / output_name,
         TAG,
         COMMIT,
     )
-    return output, macos, windows, source
+    return output, macos, windows
 
 
 def _mutate_manifest(candidate: Path, callback) -> None:
@@ -186,18 +165,18 @@ def _rewrite_public_checksums(output: Path) -> None:
 
 
 def test_assemble_creates_exact_public_assets_and_candidate_zips(tmp_path):
-    output, macos, windows, source = _assemble(tmp_path)
+    output, macos, windows = _assemble(tmp_path)
 
     assert {path.name for path in output.iterdir()} == set(prerelease.PUBLIC_ASSET_NAMES)
     assert (output / prerelease.MACOS_DMG_NAME).read_bytes() == (
-        macos / "codex-keysmith_0.2.0_aarch64.dmg"
+        macos / f"codex-keysmith_{VERSION}_aarch64.dmg"
     ).read_bytes()
     assert (output / prerelease.WINDOWS_SETUP_NAME).read_bytes() == (
-        windows / "codex-keysmith_0.2.0_x64-setup.exe"
+        windows / f"codex-keysmith_{VERSION}_x64-setup.exe"
     ).read_bytes()
-    for name in prerelease.SOURCE_PAYLOAD_NAMES:
-        assert (output / name).read_bytes() == (source / name).read_bytes()
-    prerelease.verify_public_assets(output, COMMIT, source)
+    for name in prerelease.SOURCE_RELEASE_PAYLOAD_NAMES:
+        assert not (output / name).exists()
+    prerelease.verify_public_assets(output, COMMIT)
     for candidate, zip_name in (
         (macos, prerelease.MACOS_CANDIDATE_ZIP_NAME),
         (windows, prerelease.WINDOWS_CANDIDATE_ZIP_NAME),
@@ -209,9 +188,9 @@ def test_assemble_creates_exact_public_assets_and_candidate_zips(tmp_path):
 
 
 def test_candidate_zip_is_reproducible(tmp_path):
-    first, macos, windows, source = _assemble(tmp_path, "first")
+    first, macos, windows = _assemble(tmp_path, "first")
     second = prerelease.assemble_prerelease(
-        macos, windows, source, tmp_path / "second", TAG, COMMIT
+        macos, windows, tmp_path / "second", TAG, COMMIT
     )
 
     for name in (
@@ -228,19 +207,17 @@ def test_candidate_zip_is_reproducible(tmp_path):
     ("tag", "commit", "message"),
     [
         ("v0.2.0", COMMIT, "release tag"),
-        ("desktop-v0.2.0-beta.0", COMMIT, "release tag"),
+        ("desktop-v0.2.0-beta.1", COMMIT, "release tag"),
+        (f"desktop-v{prerelease.VERSION}-beta.0", COMMIT, "release tag"),
         (TAG, "ABC", "expected commit"),
     ],
 )
 def test_assemble_rejects_invalid_identity(tmp_path, tag, commit, message):
     macos = _candidate(tmp_path, "macos")
     windows = _candidate(tmp_path, "windows")
-    source = _source_assets(tmp_path)
 
     with pytest.raises(prerelease.PrereleaseError, match=message):
-        prerelease.assemble_prerelease(
-            macos, windows, source, tmp_path / "out", tag, commit
-        )
+        prerelease.assemble_prerelease(macos, windows, tmp_path / "out", tag, commit)
 
 
 @pytest.mark.parametrize(
@@ -261,66 +238,53 @@ def test_assemble_rejects_invalid_identity(tmp_path, tag, commit, message):
 def test_assemble_rejects_manifest_policy_drift(tmp_path, mutation, message):
     macos = _candidate(tmp_path, "macos")
     windows = _candidate(tmp_path, "windows")
-    source = _source_assets(tmp_path)
     _mutate_manifest(windows, mutation)
 
     with pytest.raises(prerelease.PrereleaseError, match=message):
-        prerelease.assemble_prerelease(
-            macos, windows, source, tmp_path / "out", TAG, COMMIT
-        )
+        prerelease.assemble_prerelease(macos, windows, tmp_path / "out", TAG, COMMIT)
 
 
 def test_assemble_rejects_cross_platform_candidate_swap(tmp_path):
     macos = _candidate(tmp_path, "macos")
     windows = _candidate(tmp_path, "windows")
-    source = _source_assets(tmp_path)
 
     with pytest.raises(prerelease.PrereleaseError, match="macos target policy"):
-        prerelease.assemble_prerelease(
-            windows, macos, source, tmp_path / "out", TAG, COMMIT
-        )
+        prerelease.assemble_prerelease(windows, macos, tmp_path / "out", TAG, COMMIT)
 
 
 def test_assemble_rejects_tampering_extra_files_symlinks_and_overwrite(tmp_path):
     macos = _candidate(tmp_path / "tampered", "macos")
     tampered = _candidate(tmp_path / "tampered", "windows")
-    source = _source_assets(tmp_path / "tampered")
     (tampered / "codex-keysmith-cli.exe").write_bytes(b"tampered")
     with pytest.raises(prerelease.PrereleaseError, match="hash or size mismatch"):
         prerelease.assemble_prerelease(
-            macos, tampered, source, tmp_path / "tampered-out", TAG, COMMIT
+            macos, tampered, tmp_path / "tampered-out", TAG, COMMIT
         )
 
     macos = _candidate(tmp_path / "extra", "macos")
     extra = _candidate(tmp_path / "extra", "windows")
-    source = _source_assets(tmp_path / "extra")
     (extra / "unexpected.txt").write_text("unexpected", encoding="utf-8")
     with pytest.raises(prerelease.PrereleaseError, match="file set is not exact"):
-        prerelease.assemble_prerelease(
-            macos, extra, source, tmp_path / "extra-out", TAG, COMMIT
-        )
+        prerelease.assemble_prerelease(macos, extra, tmp_path / "extra-out", TAG, COMMIT)
 
     macos = _candidate(tmp_path / "linked", "macos")
     linked = _candidate(tmp_path / "linked", "windows")
-    source = _source_assets(tmp_path / "linked")
     icon = linked / "icon.ico"
     icon.unlink()
     icon.symlink_to(linked / "codex-keysmith-cli.exe")
     with pytest.raises(prerelease.PrereleaseError, match="not a symlink"):
         prerelease.assemble_prerelease(
-            macos, linked, source, tmp_path / "linked-out", TAG, COMMIT
+            macos, linked, tmp_path / "linked-out", TAG, COMMIT
         )
 
     macos = _candidate(tmp_path / "linked-directory", "macos")
     real_candidate = _candidate(tmp_path / "linked-directory", "windows")
-    source = _source_assets(tmp_path / "linked-directory")
     candidate_link = tmp_path / "candidate-link"
     candidate_link.symlink_to(real_candidate, target_is_directory=True)
     with pytest.raises(prerelease.PrereleaseError, match="missing or unsafe"):
         prerelease.assemble_prerelease(
             macos,
             candidate_link,
-            source,
             tmp_path / "linked-directory-out",
             TAG,
             COMMIT,
@@ -328,26 +292,16 @@ def test_assemble_rejects_tampering_extra_files_symlinks_and_overwrite(tmp_path)
 
     macos = _candidate(tmp_path / "overwrite", "macos")
     windows = _candidate(tmp_path / "overwrite", "windows")
-    source = _source_assets(tmp_path / "overwrite")
     output = tmp_path / "existing-output"
     output.mkdir()
     (output / "keep.txt").write_text("keep", encoding="utf-8")
     with pytest.raises(prerelease.PrereleaseError, match="absent or empty"):
-        prerelease.assemble_prerelease(macos, windows, source, output, TAG, COMMIT)
+        prerelease.assemble_prerelease(macos, windows, output, TAG, COMMIT)
     assert (output / "keep.txt").read_text(encoding="utf-8") == "keep"
-
-    macos = _candidate(tmp_path / "bad-source", "macos")
-    windows = _candidate(tmp_path / "bad-source", "windows")
-    source = _source_assets(tmp_path / "bad-source")
-    (source / prerelease.CLI_NAME).write_text("tampered", encoding="utf-8")
-    with pytest.raises(prerelease.PrereleaseError, match="source SHA256SUMS"):
-        prerelease.assemble_prerelease(
-            macos, windows, source, tmp_path / "bad-source-out", TAG, COMMIT
-        )
 
 
 def test_verify_public_assets_rejects_tampering_and_extra_assets(tmp_path):
-    output, _macos, _windows, _source = _assemble(tmp_path)
+    output, _macos, _windows = _assemble(tmp_path)
     with pytest.raises(prerelease.PrereleaseError, match="source commit"):
         prerelease.verify_public_assets(output, "b" * 40)
     (output / prerelease.WINDOWS_SETUP_NAME).write_bytes(b"tampered")
@@ -359,7 +313,7 @@ def test_verify_public_assets_rejects_tampering_and_extra_assets(tmp_path):
     with pytest.raises(prerelease.PrereleaseError, match="public windows bundle"):
         prerelease.verify_public_assets(output, COMMIT)
 
-    output, _macos, _windows, _source = _assemble(tmp_path / "zip-case")
+    output, _macos, _windows = _assemble(tmp_path / "zip-case")
     extracted = tmp_path / "tampered-zip"
     extracted.mkdir()
     with zipfile.ZipFile(output / prerelease.WINDOWS_CANDIDATE_ZIP_NAME) as archive:
@@ -375,19 +329,18 @@ def test_verify_public_assets_rejects_tampering_and_extra_assets(tmp_path):
     with pytest.raises(prerelease.PrereleaseError, match="hash or size mismatch"):
         prerelease.verify_public_assets(output, COMMIT)
 
-    output, _macos, _windows, source = _assemble(tmp_path / "source-case")
+    output, _macos, _windows = _assemble(tmp_path / "source-case")
     (output / prerelease.CLI_NAME).write_text("tampered", encoding="utf-8")
-    _rewrite_public_checksums(output)
-    with pytest.raises(prerelease.PrereleaseError, match="commit-bound build output"):
-        prerelease.verify_public_assets(output, COMMIT, source)
+    with pytest.raises(prerelease.PrereleaseError, match="asset set is not exact"):
+        prerelease.verify_public_assets(output, COMMIT)
 
-    output, _macos, _windows, _source = _assemble(tmp_path / "extra-case")
+    output, _macos, _windows = _assemble(tmp_path / "extra-case")
     (output / "unexpected.txt").write_text("unexpected", encoding="utf-8")
     with pytest.raises(prerelease.PrereleaseError, match="asset set is not exact"):
         prerelease.verify_public_assets(output, COMMIT)
 
 
-def test_prerelease_workflow_is_separate_unsigned_and_publisher_disabled():
+def test_prerelease_workflow_is_separate_unsigned_and_versioned():
     desktop = (REPO_ROOT / ".github/workflows/desktop-candidate.yml").read_text(
         encoding="utf-8"
     )
@@ -397,8 +350,11 @@ def test_prerelease_workflow_is_separate_unsigned_and_publisher_disabled():
     assert "pull_request_target:" not in desktop
     assert "workflow_run:" not in desktop
     assert desktop.count("contents: write") == 1
-    assert "if: >-\n      ${{ false }}" in desktop
-    assert "Historical v0.2.0 publisher; disabled" in desktop
+    assert (
+        "if: >-\n      ${{ github.event_name == 'workflow_dispatch' && inputs.publish_desktop_prerelease }}"
+        in desktop
+    )
+    assert "Publish the current unsigned desktop line as desktop-v<VERSION>-beta.N." in desktop
     assert "verify-manifest-data" in desktop
     assert '"prerelease": True' in desktop
     assert '"make_latest": "false"' in desktop
@@ -410,6 +366,8 @@ def test_prerelease_workflow_is_separate_unsigned_and_publisher_disabled():
     assert "Removed the uniquely owned empty Draft" in desktop
     assert "Recovered numeric-ID ownership after a lost create response." in desktop
     assert 'release_author="github-actions[bot]"' in desktop
+    assert 'len(state["assets"]) == 5' in desktop
+    assert "--source-dir" not in desktop
     final_state = desktop.index(
         'final_state="${RUNNER_TEMP}/desktop-prerelease-published.json"'
     )
@@ -437,7 +395,7 @@ def test_prerelease_creation_validator_binds_numeric_id_and_unsigned_metadata(
 
     repo = "Jia-Ethan/codex-keysmith"
     release_id = "400000001"
-    draft_name = "codex-keysmith 0.2.0 Desktop Beta [run 123.1]"
+    draft_name = f"codex-keysmith {VERSION} Desktop Beta [run 123.1]"
     notes = tmp_path / "notes.md"
     notes.write_bytes(b"unsigned beta notes\n")
     payload = {
@@ -504,7 +462,7 @@ def test_lost_create_response_recovery_requires_unique_run_owned_draft(
     output = tmp_path / "adopted.json"
     actor = "github-actions[bot]"
     started_at = "2026-08-10T01:00:00Z"
-    draft_name = "codex-keysmith 0.2.0 Desktop Beta [run 123.1]"
+    draft_name = f"codex-keysmith {VERSION} Desktop Beta [run 123.1]"
     release = {
         "id": 400000002,
         "tag_name": TAG,
@@ -555,7 +513,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.en.md",
-        REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.6.md",
+        REPO_ROOT / f"docs/releases/{TAG}.md",
         REPO_ROOT / "CODE_SIGNING_POLICY.md",
         REPO_ROOT / "PRIVACY.md",
     ]
@@ -566,6 +524,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
         prerelease.MACOS_DMG_NAME,
         prerelease.WINDOWS_SETUP_NAME,
         prerelease.CLI_NAME,
+        "v0.3.5",
         "SHA256SUMS",
         "unsigned",
         "SmartScreen",
@@ -588,7 +547,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     assert "native artifact validation still pending in CI" not in readmes
 
 
-def test_prerelease_release_notes_match_approved_compact_copy():
+def test_historical_desktop_beta6_notes_remain_unchanged():
     release_notes = (REPO_ROOT / "docs/releases/desktop-v0.2.0-beta.6.md").read_text(
         encoding="utf-8"
     )
@@ -603,6 +562,25 @@ def test_prerelease_release_notes_match_approved_compact_copy():
         - macOS Apple Silicon：`codex-keysmith-0.2.0-macos-arm64-unsigned.dmg`
         - Windows x64：`codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe`
         - 单文件 CLI：`codex-instruct-v0.2.0.py`
+        - 文件校验：`SHA256SUMS`
+        """
+    )
+    assert release_notes == expected
+
+
+def test_prerelease_release_notes_match_approved_compact_copy():
+    release_notes = (REPO_ROOT / f"docs/releases/{TAG}.md").read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        f"""\
+        # codex-keysmith v{VERSION} Desktop Beta
+
+        把源码 GUI 场景库页打进 unsigned 安装包：列表、显式目标目录、preview 门禁、status、按 deployment_id 卸载和恢复。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
+
+        ## 下载
+
+        - macOS Apple Silicon：`{prerelease.MACOS_DMG_NAME}`
+        - Windows x64：`{prerelease.WINDOWS_SETUP_NAME}`
+        - 单文件 CLI 与场景 bundle：见 [v{VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{VERSION})
         - 文件校验：`SHA256SUMS`
         """
     )

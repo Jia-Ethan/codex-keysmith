@@ -157,7 +157,7 @@ jobs:
 
   publish-desktop-prerelease:
     if: >-
-      ${{ false }}
+      ${{ github.event_name == 'workflow_dispatch' && inputs.publish_desktop_prerelease }}
     needs:
       - candidate
     runs-on: ubuntu-24.04
@@ -172,23 +172,19 @@ jobs:
           name: codex-keysmith-desktop-windows-x64-${{ github.sha }}
       - run: |
           echo verify-manifest-data
-          echo 'desktop-v0\\.2\\.0-beta\\.[1-9][0-9]*'
+          echo 'desktop-v${version_pattern}-beta\\.[1-9][0-9]*'
           echo 'if [ "$EXPECTED_COMMIT" != "$GITHUB_SHA" ]'
           echo 'git/ref/heads/main git/ref/tags/${RELEASE_TAG}'
           echo '.verification.verified .verification.reason'
           echo 'package_desktop_prerelease.py assemble'
           echo '--macos-candidate-dir "$RUNNER_TEMP/macos-candidate"'
           echo '--windows-candidate-dir "$RUNNER_TEMP/windows-candidate"'
-          echo '--source-dir "$source_first"'
           echo '--expected-commit "$expected_commit"'
-          echo 'scripts/build_release.py "$source_tag"'
-          echo codex-keysmith-0.2.0-macos-arm64-unsigned.dmg
-          echo codex-keysmith-0.2.0-macos-arm64-unsigned-candidate.zip
-          echo codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe
-          echo codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip
-          echo codex-instruct-v0.2.0.py
-          echo codex-keysmith-v0.2.0.zip
-          echo codex-keysmith-v0.2.0.tar.gz
+          echo 'merge-base --is-ancestor "${source_tag}^{commit}"'
+          echo 'codex-keysmith-${version}-macos-arm64-unsigned.dmg'
+          echo 'codex-keysmith-${version}-macos-arm64-unsigned-candidate.zip'
+          echo 'codex-keysmith-${version}-windows-x64-unsigned-setup.exe'
+          echo 'codex-keysmith-${version}-windows-x64-unsigned-candidate.zip'
           echo '"draft": True "prerelease": True "make_latest": "false"'
           echo 'gh api -X POST "repos/${GITHUB_REPOSITORY}/releases"'
           echo 'gh api -X PATCH "$release_api"'
@@ -196,7 +192,7 @@ jobs:
           echo 'Recovered numeric-ID ownership after a lost create response.'
           echo 'release_author="github-actions[bot]"'
           echo 'Release ${tag} already exists; refusing to overwrite it.'
-          echo 'len(state["assets"]) == 8'
+          echo 'len(state["assets"]) == 5'
           echo '.assets[] | [.name, .digest, .state, (.size | tostring)]'
           echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
           echo '"tag_name": tag "target_commitish": commit "body": Path(notes_path).read_text(encoding="utf-8") "make_latest": "false"'
@@ -398,7 +394,10 @@ def test_validate_config_requires_window_capability_for_main_window(tmp_path):
             "outside the publisher job",
         ),
         (
-            lambda text: text.replace("if: >-\n      ${{ false }}", "if: ${{ true }}"),
+            lambda text: text.replace(
+                "if: >-\n      ${{ github.event_name == 'workflow_dispatch' && inputs.publish_desktop_prerelease }}",
+                "if: ${{ true }}",
+            ),
             "publisher markers",
         ),
         (
