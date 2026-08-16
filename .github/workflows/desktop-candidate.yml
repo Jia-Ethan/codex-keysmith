@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       publish_desktop_prerelease:
-        description: Historical v0.2.0 publisher; disabled after the source version moved forward.
+        description: Publish the current unsigned desktop line as desktop-v<VERSION>-beta.N.
         required: false
         default: false
         type: boolean
@@ -37,7 +37,7 @@ on:
       - "docs/assets/readme/**"
       - "docs/hooks-transactions.md"
       - "docs/reference.md"
-      - "docs/releases/desktop-v0.2.0-beta.*.md"
+      - "docs/releases/desktop-v*.md"
       - "docs/releases/v0.2.0.md"
       - "scripts/build_release.py"
       - "scripts/package_desktop_prerelease.py"
@@ -893,7 +893,7 @@ jobs:
   publish-desktop-prerelease:
     name: Publish unsigned desktop prerelease
     if: >-
-      ${{ false }}
+      ${{ github.event_name == 'workflow_dispatch' && inputs.publish_desktop_prerelease }}
     needs:
       - candidate
     runs-on: ubuntu-24.04
@@ -946,12 +946,23 @@ jobs:
             echo "expected_commit must be the full current main commit SHA." >&2
             exit 1
           fi
-          if [[ ! "$RELEASE_TAG" =~ ^desktop-v0\.2\.0-beta\.[1-9][0-9]*$ ]]; then
-            echo "release_tag must match desktop-v0.2.0-beta.N." >&2
+          version="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must be a dotted x.y.z source version." >&2
             exit 1
           fi
-          if [ "$(tr -d '\r\n' < VERSION)" != "0.2.0" ]; then
-            echo "Unsigned desktop beta publication is fixed to source version 0.2.0." >&2
+          version_pattern="${version//./\\.}"
+          if [[ ! "$RELEASE_TAG" =~ ^desktop-v${version_pattern}-beta\.[1-9][0-9]*$ ]]; then
+            echo "release_tag must match desktop-v${version}-beta.N." >&2
+            exit 1
+          fi
+          source_tag="v${version}"
+          if [ "$(git cat-file -t "refs/tags/${source_tag}" 2>/dev/null || true)" != "tag" ]; then
+            echo "Desktop line requires annotated source tag ${source_tag}." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${source_tag}^{commit}" "$EXPECTED_COMMIT"; then
+            echo "Desktop commit must be a descendant of ${source_tag}." >&2
             exit 1
           fi
           remote_main="$(
@@ -1002,43 +1013,21 @@ jobs:
             "$RUNNER_TEMP/macos-candidate/build-manifest.json"
           python scripts/validate_desktop_candidate.py verify-manifest-data \
             "$RUNNER_TEMP/windows-candidate/build-manifest.json"
-          source_first="${RUNNER_TEMP}/desktop-source-first"
-          source_second="${RUNNER_TEMP}/desktop-source-second"
-          source_tag="v$(tr -d '\r\n' < VERSION)"
-          python scripts/build_release.py "$source_tag" \
-            --output-dir "$source_first" \
-            --source-commit "$EXPECTED_COMMIT"
-          python scripts/build_release.py "$source_tag" \
-            --output-dir "$source_second" \
-            --source-commit "$EXPECTED_COMMIT"
-          diff -u "$source_first/SHA256SUMS" "$source_second/SHA256SUMS"
-          while read -r checksum asset; do
-            test -n "$checksum"
-            cmp "$source_first/$asset" "$source_second/$asset"
-          done < "$source_first/SHA256SUMS"
-          (cd "$source_first" && sha256sum --check SHA256SUMS)
-          version_output="$(python "$source_first/codex-instruct-${source_tag}.py" --version)"
-          expected_version_output="codex-instruct-${source_tag}.py $(tr -d '\r\n' < VERSION)"
-          if [ "$version_output" != "$expected_version_output" ]; then
-            echo "Standalone script reported an unexpected version: ${version_output}" >&2
-            exit 1
-          fi
           python scripts/package_desktop_prerelease.py assemble \
             --macos-candidate-dir "$RUNNER_TEMP/macos-candidate" \
             --windows-candidate-dir "$RUNNER_TEMP/windows-candidate" \
-            --source-dir "$source_first" \
             --output-dir "$RUNNER_TEMP/desktop-prerelease" \
             --release-tag "$RELEASE_TAG" \
             --expected-commit "$EXPECTED_COMMIT"
           python scripts/package_desktop_prerelease.py verify \
             "$RUNNER_TEMP/desktop-prerelease" \
-            --expected-commit "$EXPECTED_COMMIT" \
-            --source-dir "$source_first"
+            --expected-commit "$EXPECTED_COMMIT"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           {
             printf 'tag=%s\n' "$RELEASE_TAG"
             printf 'commit=%s\n' "$EXPECTED_COMMIT"
             printf 'tag_object=%s\n' "$tag_object"
+            printf 'version=%s\n' "$version"
             printf 'notes_path=%s\n' "$notes"
             printf 'notes_blob=%s\n' "$notes_blob"
           } >> "$GITHUB_OUTPUT"
@@ -1219,10 +1208,10 @@ jobs:
             exit 1
           fi
           latest_before="$(get_latest_release_tag)"
-          draft_name="codex-keysmith 0.2.0 Desktop Beta [run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}]"
+          version="$(tr -d '\r\n' < VERSION)"
+          draft_name="codex-keysmith ${version} Desktop Beta [run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}]"
           python scripts/package_desktop_prerelease.py verify "$release_dir" \
-            --expected-commit "$expected_commit" \
-            --source-dir "$RUNNER_TEMP/desktop-source-first"
+            --expected-commit "$expected_commit"
           verify_remote_main
           verify_remote_tag
           request="${RUNNER_TEMP}/desktop-prerelease-create.json"
@@ -1301,16 +1290,16 @@ jobs:
               assert candidate["assets"] == []
           PY
           normalize_request="${RUNNER_TEMP}/desktop-prerelease-normalize.json"
-          python - "$normalize_request" "$notes_blob" "$tag" "$expected_commit" <<'PY'
+          python - "$normalize_request" "$notes_blob" "$tag" "$expected_commit" "$version" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          request_path, notes_path, tag, commit = sys.argv[1:]
+          request_path, notes_path, tag, commit, version = sys.argv[1:]
           request = {
               "tag_name": tag,
               "target_commitish": commit,
-              "name": "codex-keysmith 0.2.0 Desktop Beta",
+              "name": "codex-keysmith {} Desktop Beta".format(version),
               "body": Path(notes_path).read_text(encoding="utf-8"),
               "draft": True,
               "prerelease": True,
@@ -1323,17 +1312,17 @@ jobs:
           PY
           normalized_state="${RUNNER_TEMP}/desktop-prerelease-normalized.json"
           gh api -X PATCH "$release_api" --input "$normalize_request" > "$normalized_state"
-          python - "$normalized_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
+          python - "$normalized_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          state_path, notes_path, tag, commit, release_id = sys.argv[1:]
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
           state = json.loads(Path(state_path).read_text(encoding="utf-8"))
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
           assert state["draft"] is True
           assert state["prerelease"] is True
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
@@ -1341,13 +1330,10 @@ jobs:
           PY
           upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets"
           assets=(
-            "$release_dir/codex-keysmith-0.2.0-macos-arm64-unsigned.dmg"
-            "$release_dir/codex-keysmith-0.2.0-macos-arm64-unsigned-candidate.zip"
-            "$release_dir/codex-keysmith-0.2.0-windows-x64-unsigned-setup.exe"
-            "$release_dir/codex-keysmith-0.2.0-windows-x64-unsigned-candidate.zip"
-            "$release_dir/codex-instruct-v0.2.0.py"
-            "$release_dir/codex-keysmith-v0.2.0.zip"
-            "$release_dir/codex-keysmith-v0.2.0.tar.gz"
+            "$release_dir/codex-keysmith-${version}-macos-arm64-unsigned.dmg"
+            "$release_dir/codex-keysmith-${version}-macos-arm64-unsigned-candidate.zip"
+            "$release_dir/codex-keysmith-${version}-windows-x64-unsigned-setup.exe"
+            "$release_dir/codex-keysmith-${version}-windows-x64-unsigned-candidate.zip"
             "$release_dir/SHA256SUMS"
           )
           for asset_path in "${assets[@]}"; do
@@ -1374,21 +1360,21 @@ jobs:
           done | sort > "$expected"
           uploaded_state="${RUNNER_TEMP}/desktop-prerelease-uploaded.json"
           gh api "$release_api" > "$uploaded_state"
-          python - "$uploaded_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
+          python - "$uploaded_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          state_path, notes_path, tag, commit, release_id = sys.argv[1:]
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
           state = json.loads(Path(state_path).read_text(encoding="utf-8"))
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
           assert state["draft"] is True
           assert state["prerelease"] is True
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 8
+          assert len(state["assets"]) == 5
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$uploaded_state" | sort > "$actual"
@@ -1398,23 +1384,22 @@ jobs:
           git cat-file blob "${expected_commit}:${notes_path}" > "$tagged_notes"
           cmp "$notes_blob" "$tagged_notes"
           python scripts/package_desktop_prerelease.py verify "$release_dir" \
-            --expected-commit "$expected_commit" \
-            --source-dir "$RUNNER_TEMP/desktop-source-first"
+            --expected-commit "$expected_commit"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           verify_remote_main
           verify_remote_tag
 
           publish_request="${RUNNER_TEMP}/desktop-prerelease-publish.json"
-          python - "$publish_request" "$notes_blob" "$tag" "$expected_commit" <<'PY'
+          python - "$publish_request" "$notes_blob" "$tag" "$expected_commit" "$version" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          request_path, notes_path, tag, commit = sys.argv[1:]
+          request_path, notes_path, tag, commit, version = sys.argv[1:]
           request = {
               "tag_name": tag,
               "target_commitish": commit,
-              "name": "codex-keysmith 0.2.0 Desktop Beta",
+              "name": "codex-keysmith {} Desktop Beta".format(version),
               "body": Path(notes_path).read_text(encoding="utf-8"),
               "draft": False,
               "prerelease": True,
@@ -1459,22 +1444,22 @@ jobs:
           done
           final_state="${RUNNER_TEMP}/desktop-prerelease-published.json"
           printf '%s' "$published_state" > "$final_state"
-          python - "$final_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" <<'PY'
+          python - "$final_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          state_path, notes_path, tag, commit, release_id = sys.argv[1:]
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
           state = json.loads(Path(state_path).read_text(encoding="utf-8"))
           assert str(state["id"]) == release_id
           assert state["tag_name"] == tag
           assert state["target_commitish"] == commit
-          assert state["name"] == "codex-keysmith 0.2.0 Desktop Beta"
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
           assert state["draft"] is False
           assert state["prerelease"] is True
           assert state["published_at"]
           assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
-          assert len(state["assets"]) == 8
+          assert len(state["assets"]) == 5
           PY
           jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
             "$final_state" | sort > "$actual"
