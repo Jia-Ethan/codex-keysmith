@@ -1,6 +1,6 @@
 # codex-keysmith v0.3.5 Desktop Beta
 
-把源码 GUI 场景库页打进 unsigned 安装包：列表、显式目标目录、preview 门禁、status、按 deployment_id 卸载和恢复。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
+GUI 安装包更新场景库页：列表、显式目标目录、preview 门禁、status、按 deployment_id 卸载和恢复。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
 
 ## 下载
 
