@@ -6,9 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [desktop-v0.3.5-beta.1] - 2026-08-16
+
 ### Desktop
 
-- Prepared `desktop-v0.3.5-beta.1` as the next unsigned Desktop Beta on source version `0.3.5`. Public assets are the Apple Silicon DMG, Windows x64 NSIS installer, two candidate ZIPs, and `SHA256SUMS`. The GUI Scenarios view ships in those installers. The standalone CLI, source archives, and sealed scenario bundle remain on the `v0.3.5` source Release. The historical `desktop-v0.2.0-beta.*` line is unchanged.
+- Published `desktop-v0.3.5-beta.1` as an unsigned GitHub Pre-release on source version `0.3.5`. Public assets are the Apple Silicon DMG, Windows x64 NSIS installer, two candidate ZIPs, and `SHA256SUMS`. The GUI Scenarios view ships in those installers. The standalone CLI, source archives, and sealed scenario bundle remain on the `v0.3.5` source Release. The historical `desktop-v0.2.0-beta.*` line is unchanged.
 
 ## [0.3.5] - 2026-08-15
 
@@ -228,6 +230,7 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
 [Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.5...HEAD
+[desktop-v0.3.5-beta.1]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.5-beta.1
 [0.3.5]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.3
