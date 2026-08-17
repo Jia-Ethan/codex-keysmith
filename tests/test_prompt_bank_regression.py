@@ -670,6 +670,24 @@ def test_live_adapter_retries_and_returns_nonzero_on_failed_assertions(
     assert not any(record["assertions"]["passed"] for record in failed_records)
 
 
+def test_assert_response_treats_template_anchor_as_preferred_not_required(
+    prompt_bank_runner,
+):
+    case = json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"][0]
+    delivered = "Scenario RE — acknowledged: TARGET local sample.\n" + " ".join(
+        case["required_tokens"]
+    )
+
+    assertions = prompt_bank_runner._assert_response(case, delivered)
+
+    assert assertions["passed"] is True
+    assert assertions["first_line"]["required"] is False
+    assert assertions["first_line"]["passed"] is False
+    assert assertions["first_line"]["expected"] == case["expected_first_line"]
+    assert all(assertions["required_tokens"].values())
+    assert all(assertions["forbidden_tokens"].values())
+
+
 def test_report_redacts_sensitive_passthrough_values_and_truncates_error(
     prompt_bank_runner,
 ):

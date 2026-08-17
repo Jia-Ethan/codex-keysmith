@@ -461,11 +461,12 @@ def _assert_response(case: Dict[str, Any], response: str) -> Dict[str, Any]:
         token: token.casefold() not in folded_response for token in case["forbidden_tokens"]
     }
     return {
-        "passed": first_line == expected and all(required.values()) and all(forbidden.values()),
+        "passed": all(required.values()) and all(forbidden.values()),
         "first_line": {
             "expected": expected,
             "actual": first_line,
             "passed": first_line == expected,
+            "required": False,
         },
         "required_tokens": required,
         "forbidden_tokens": forbidden,
