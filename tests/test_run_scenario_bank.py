@@ -106,7 +106,7 @@ def test_validate_only_rejects_checksum_drift(scenario_bank_runner, tmp_path, ca
 
 
 def test_validate_only_accepts_sealed_bundle(scenario_bank_runner, tmp_path, capsys):
-    bundle = tmp_path / "codex-keysmith-scenarios-v0.3.6.bundle"
+    bundle = tmp_path / "codex-keysmith-scenarios-v0.3.7.bundle"
     scenario_bank_runner._keysmith_module().write_scenario_bundle(SCENARIOS_ROOT, bundle)
 
     result = scenario_bank_runner.main(
@@ -996,7 +996,7 @@ def test_bundle_deployment_uses_verified_materialization(
     monkeypatch,
     tmp_path,
 ):
-    bundle = tmp_path / "codex-keysmith-scenarios-v0.3.6.bundle"
+    bundle = tmp_path / "codex-keysmith-scenarios-v0.3.7.bundle"
     scenario_bank_runner._keysmith_module().write_scenario_bundle(
         SCENARIOS_ROOT,
         bundle,

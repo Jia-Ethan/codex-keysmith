@@ -6,11 +6,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-17
+
 ### Added
 
 - Instruction-channel `--preset unrestricted|contract` keeps the default `unrestricted` bundled prompt byte-identical and adds a thin `examples/gpt-contract.md` contract. `--file` and `--preset` remain mutually exclusive. `--status` reports a read-only `preset` field from the managed Markdown SHA-256.
 - Environment-channel `--scaffold` materializes fixture packs into `~/.codex-fixture-workspace/<pack>` with its own `.registry.json`. It refuses `--codex-dir` and never writes `~/.codex`. The first bundled pack is the red `pytest_complete` smoke fixture.
 - Public Release now also includes the `aiml_llamaguard`, `compchem_cantera`, and `cyber_pwntools` evaluation fixtures. Required tests are schema-only; optional tool layers skip when the runtime is missing.
+
+### Fixed
+
+- Kept the scaffold registry's POSIX non-world-writable assertion on macOS and Linux without applying POSIX mode-bit semantics to Windows ACLs.
 
 ## [0.3.6] - 2026-08-17
 
@@ -239,7 +245,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.4
