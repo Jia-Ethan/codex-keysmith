@@ -112,6 +112,7 @@ python3 codex-instruct.py --scaffold pytest_complete --yes
 ### 进阶文档
 
 - 场景部署 / 评估（M1 / M2 / M3）：[`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
+- 环境通道 / fixture packs：[`docs/fixture-channel.md`](docs/fixture-channel.md)
 - CCSwitch：[`docs/ccswitch.md`](docs/ccswitch.md)
 - 事务、journal、恢复：[`docs/hooks-transactions.md`](docs/hooks-transactions.md)
 - Desktop / 智能体安装：[`gui/README.md`](gui/README.md) · [`docs/agent-install.md`](docs/agent-install.md)
