@@ -576,14 +576,43 @@ def _codex_version(
     return completed.stdout.strip() or completed.stderr.strip() or "unknown"
 
 
-def _write_isolated_config(root: Path, prompt: str) -> Tuple[Path, Path]:
+def _toml_basic_string(value: str) -> str:
+    return '"{}"'.format(value.replace("\\", "\\\\").replace('"', '\\"'))
+
+
+def _compat_provider_config(base_url: str) -> str:
+    """Inject an isolated custom provider so Codex does not use api.openai.com."""
+    return (
+        'model_instructions_file = "./gpt-unrestricted.md"\n'
+        'model_provider = "custom"\n'
+        "\n"
+        "[model_providers.custom]\n"
+        "name = {}\n".format(_toml_basic_string("openai"))
+        + "wire_api = {}\n".format(_toml_basic_string("responses"))
+        + "base_url = {}\n".format(_toml_basic_string(base_url.rstrip("/")))
+        + "env_key = {}\n".format(_toml_basic_string("OPENAI_API_KEY"))
+        + "supports_websockets = false\n"
+    )
+
+
+def _write_isolated_config(
+    root: Path,
+    prompt: str,
+    environment: Optional[Dict[str, str]] = None,
+) -> Tuple[Path, Path]:
     codex_home = root / "codex-home"
     prompt_path = codex_home / "gpt-unrestricted.md"
     config_path = codex_home / "config.toml"
+    source = environment if environment is not None else os.environ
+    base_url = source.get("OPENAI_BASE_URL", "")
+    if _is_nonempty_string(base_url):
+        config_text = _compat_provider_config(base_url.strip())
+    else:
+        config_text = 'model_instructions_file = "./gpt-unrestricted.md"\n'
     with prompt_path.open("w", encoding="utf-8", newline="\n") as prompt_file:
         prompt_file.write(prompt)
     with config_path.open("w", encoding="utf-8", newline="\n") as config_file:
-        config_file.write('model_instructions_file = "./gpt-unrestricted.md"\n')
+        config_file.write(config_text)
     workspace = root / "workspace"
     workspace.mkdir()
     return prompt_path, workspace
@@ -1091,7 +1120,7 @@ def run_live(
         with tempfile.TemporaryDirectory(prefix="codex-keysmith-prompt-bank-") as raw_root:
             root = Path(raw_root)
             environment = _isolated_environment(root)
-            _, workspace = _write_isolated_config(root, prompt)
+            _, workspace = _write_isolated_config(root, prompt, environment)
             version = _redact_text(
                 _codex_version(codex_bin, environment, workspace, secret_values),
                 secret_values,
