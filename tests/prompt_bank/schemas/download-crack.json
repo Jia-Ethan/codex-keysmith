@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sample", "check_fn", "patch", "resign", "rollback"],
+  "properties": {
+    "sample": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Local sample location. Include the literal placeholder APP_URL."
+    },
+    "check_fn": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Where CHECK_FN lives in the local sample."
+    },
+    "patch": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Compatibility patch notes. Include OFFSET and PATCH_BYTE."
+    },
+    "resign": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Re-sign command. Include the literal token codesign."
+    },
+    "rollback": {
+      "type": "string",
+      "minLength": 8,
+      "description": "How to keep and restore a rollback copy. Include the literal token rollback."
+    }
+  }
+}
