@@ -77,6 +77,14 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 场景部署另写 `<target>/.codex-keysmith/`，不改上述指令层文件。完整边界见 [`docs/reference.md`](docs/reference.md)。
 
+### 工具保证什么
+
+Keysmith 保证的是**部署面**：把 Markdown 写入配置目录，设置 `model_instructions_file`，让之后的**新会话**把它当作 custom `base_instructions` 加载。`--status` 为 `active` / `healthy` / `ready` 只说明这一层成功。
+
+Keysmith **不保证模型会按内置提示词回答**。Codex Desktop 版本、官方或自定义 provider、模型自身的安全策略，都可能覆盖或忽略已经加载的指令。新会话的 `session_meta` 显示 `base_instructions.provenance.type = custom`、正文长度和关键字都对得上，但回答仍拒绝或改写，属于 runtime / 模型 / provider 行为，不是部署失败，也不该靠重装 Keysmith 解决。
+
+配置格式曾在 Codex CLI `0.144.1` 上核对。Desktop `0.148` 与自定义 OpenAI-compatible provider（含 `gpt-5.6-*`）不是效果验收通道。维护者可用源码里的 Prompt Bank 对指定 `--model` 做 live 抽样；结果不进 CI，也不构成公开分数。排障见 [`docs/reference.md#部署面与模型行为`](docs/reference.md#部署面与模型行为)。
+
 ### 如何撤销
 
 以下以 Release 单文件为例；源码 checkout 请把文件名换成 `codex-instruct.py`。
@@ -99,6 +107,7 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang z
 
 ### 进阶文档
 
+- 部署面与模型行为：[`docs/reference.md#部署面与模型行为`](docs/reference.md#部署面与模型行为)
 - 场景部署 / 评估（M1 / M2 / M3）：[`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
 - CCSwitch：[`docs/ccswitch.md`](docs/ccswitch.md)
 - 事务、journal、恢复：[`docs/hooks-transactions.md`](docs/hooks-transactions.md)

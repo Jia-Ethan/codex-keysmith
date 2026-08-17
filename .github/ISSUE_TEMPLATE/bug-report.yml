@@ -46,6 +46,35 @@ body:
       placeholder: codex-cli 0.144.1
 
   - type: dropdown
+    id: surface
+    attributes:
+      label: Codex 使用面 / Codex surface
+      description: CLI and Desktop can load the same file and still behave differently. Pick the surface you actually tested.
+      options:
+        - CLI
+        - Desktop
+        - both / 两者
+    validations:
+      required: false
+
+  - type: input
+    id: model-provider
+    attributes:
+      label: 模型与 provider（可选）/ Model and provider (optional)
+      description: Example `gpt-5.6-sol` on a custom OpenAI-compatible provider. Do not paste endpoints, tokens, or account names.
+      placeholder: gpt-5.6-sol / custom OpenAI-compatible
+
+  - type: textarea
+    id: session-meta
+    attributes:
+      label: 新会话 session_meta（可选）/ New-session session_meta (optional)
+      description: If `--status` is healthy but replies ignore the prompt, paste only `originator`, `base_instructions.provenance.type`, and custom-instruction length. Do not paste the full prompt, complete session_meta, or credentials.
+      placeholder: |
+        originator: Codex Desktop
+        base_instructions.provenance.type: custom
+        custom base_instructions length: 6303
+
+  - type: dropdown
     id: operation
     attributes:
       label: 操作模式 / Operation

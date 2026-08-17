@@ -271,8 +271,23 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 - `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
 - macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`。Windows 逐 journal phase 的硬中断证据仍属 P1，因此该实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
 - journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；
-- `model_instructions_file` 对单份 live config 仍是全局项；CCSwitch 的 Provider 有效 config 可切换其存在状态，但通用配置合并可能重新注入它，Keysmith 不管理 CCSwitch 数据库、回填结果或代理接管热切换；hooks 只能整份隔离且不随 config 快照切换；
-- 内置提示词不保证任何模型或版本采用完全相同的行为。
+- `model_instructions_file` 对单份 live config 仍是全局项；CCSwitch 的 Provider 有效 config 可切换其存在状态，但通用配置合并可能重新注入它，Keysmith 不管理 CCSwitch 数据库、回填结果或代理接管热切换；hooks 只能整份隔离且不随 config 快照切换。
+
+### 部署面与模型行为
+
+Keysmith 的产品契约停在部署面：预览、写入、校验、撤销 `model_instructions_file` 及其 Markdown。它不拥有 Codex runtime，也不保证任何模型按内置提示词回答。
+
+| 证据 | 含义 | 不是什么 |
+| --- | --- | --- |
+| `--status` 为 `active` / `healthy` / `ready`，无事务残留 | 配置层已指向受管 Markdown | 不证明模型会服从 |
+| 新会话 `session_meta`：`base_instructions.provenance.type = custom`，长度和关键字匹配部署文件 | 该会话已加载 custom base instructions | 不证明 Desktop / provider / 模型会按正文执行 |
+| 回答仍拒绝、改写、给替代建议，或强调「不露骨」 | runtime / 模型 / provider 覆盖或忽略已加载指令 | 不是 Keysmith 写入失败，重装无效 |
+
+与 [#12](https://github.com/Jia-Ethan/codex-keysmith/issues/12)、[#13](https://github.com/Jia-Ethan/codex-keysmith/issues/13) 不同，[#42](https://github.com/Jia-Ethan/codex-keysmith/issues/42) 已用两个全新 Desktop 会话的 `session_meta` 证明提示词全文进入了 custom `base_instructions`。这类报告应按「效果通道」处理，不要当成 deploy/status bug。
+
+已核对过配置格式的 Codex CLI：`0.144.1`。Desktop `0.148`、自定义 OpenAI-compatible provider（含 `gpt-5.6-*`）以及官方模型的安全策略都不是效果验收通道。源码 Prompt Bank 可对指定 `--model` 做最多 12×2 次 live 抽样；结果不进 CI，也不构成公开分数。M3 场景评测是另一套任务，不能拿来证明内置提示词的成人 / crack 契约。
+
+公开 Issue 只报告 `originator`、`base_instructions.provenance.type` 和自定义指令长度；不要粘贴提示词全文、完整 `session_meta` 或凭证。
 
 完整状态机见 [`hooks-transactions.md`](hooks-transactions.md)。
 
@@ -509,6 +524,22 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 - Windows P0 backend calls `FlushFileBuffers` on managed handles; the per-journal-phase hard-interruption matrix remains P1, so it is not a formal support claim.
 - Journal, intent, companion, manifest, and cleanup-claim evidence is not cryptographic authentication against coordinated same-user tampering.
 - `model_instructions_file` remains global within one live config. CCSwitch can switch its presence through effective provider configs, but Common Config merging can reintroduce it; Keysmith does not manage the CCSwitch database, backfill outcome, or proxy-takeover hot switching. Hook isolation is whole-file and does not follow those configs.
+
+### Deployment versus model behavior
+
+The product contract stops at the deployment surface: preview, write, verify, and undo `model_instructions_file` plus its Markdown. Keysmith does not own the Codex runtime and does not guarantee that any model will follow the bundled prompt.
+
+| Evidence | What it means | What it is not |
+| --- | --- | --- |
+| `--status` is `active` / `healthy` / `ready` with no residue | The config layer points at the managed Markdown | Not proof the model will obey |
+| New-session `session_meta` has `base_instructions.provenance.type = custom` with matching length and keywords | That session loaded custom base instructions | Not proof Desktop / provider / model will execute the text |
+| The reply still refuses, rewrites, suggests an alternative, or insists on “non-explicit” content | The runtime, model, or provider overrode or ignored loaded instructions | Not a Keysmith write failure; reinstalling will not help |
+
+Unlike [#12](https://github.com/Jia-Ethan/codex-keysmith/issues/12) and [#13](https://github.com/Jia-Ethan/codex-keysmith/issues/13), [#42](https://github.com/Jia-Ethan/codex-keysmith/issues/42) already showed the full prompt in custom `base_instructions` on two fresh Desktop sessions. Treat that class of report as an effectiveness-channel issue, not a deploy/status bug.
+
+Config format was checked against Codex CLI `0.144.1`. Desktop `0.148`, custom OpenAI-compatible providers (including `gpt-5.6-*`), and official model safety policy are not effectiveness-acceptance channels. The source Prompt Bank can live-sample a chosen `--model` at most 12×2 times; those results are not a CI gate and are not public scores. M3 scenario evaluation is a different task and does not prove the bundled adult / crack contract.
+
+In public issues, report only `originator`, `base_instructions.provenance.type`, and custom-instruction length. Do not paste the full prompt, complete `session_meta`, or credentials.
 
 Full state model: [`hooks-transactions.md`](hooks-transactions.md).
 

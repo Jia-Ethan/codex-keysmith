@@ -211,6 +211,8 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert "Source version v0.3.6" in readme
     assert "v0.3.6 local candidate" not in readme
     assert "This candidate has no tag" not in readme
+    assert "不保证模型会按内置提示词回答" in readme
+    assert "does not guarantee that the model will follow" in english_readme
     for quick_start in (readme, english_readme):
         assert "codex-instruct-vX.Y.Z.py" in quick_start
         assert (

@@ -14,6 +14,7 @@
 - 操作系统、Python 版本和 Codex CLI 版本；
 - 最小复现步骤、预期结果和实际结果；
 - 脱敏后的 `--status` / `--dry-run` 输出，以及是否涉及 deploy、recover、restore-hooks 或 uninstall；如果存在 durable journal，只报告 transaction ID 和节点类型，不粘贴完整内容。
+- 如果 `--status` 正常但模型回答不像提示词：写明 CLI 还是 Desktop、模型名 / provider，以及新会话 `session_meta` 的 `originator`、`base_instructions.provenance.type` 和自定义指令长度；不要粘贴提示词全文。这类报告按效果通道处理，不是默认的 deploy/status bug。
 
 公开内容必须删除 token、cookie、用户名、私人路径、完整配置和 Prompt Bank 响应。安全漏洞请按 [安全政策](SECURITY.md) 私密报告。
 
@@ -74,7 +75,8 @@ Before opening a bug report, search existing issues and use the bug form. Includ
 - `python3 codex-instruct.py --version`, the Release tag, and commit SHA;
 - operating system, Python version, and Codex CLI version;
 - minimal reproduction steps, expected behavior, and actual behavior;
-- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, or uninstall is involved. If a durable journal exists, report only its transaction ID and node types, not complete content.
+- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, or uninstall is involved. If a durable journal exists, report only its transaction ID and node types, not complete content;
+- if `--status` is healthy but the model does not follow the prompt: say CLI versus Desktop, the model / provider, and the new session's `originator`, `base_instructions.provenance.type`, and custom-instruction length. Do not paste the full prompt. Treat that class as an effectiveness-channel report, not a default deploy/status bug.
 
 Remove tokens, cookies, usernames, private paths, complete configuration, and prompt-bank responses from public content. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 

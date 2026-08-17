@@ -77,6 +77,14 @@ Source path: `git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd co
 
 Scenario deploy writes `<target>/.codex-keysmith/` and does not touch the instruction-layer files above. Full contract: [`docs/reference.md`](docs/reference.md).
 
+### What this tool guarantees
+
+Keysmith guarantees the **deployment surface**: it writes the Markdown into the config directory, sets `model_instructions_file`, and lets later **new sessions** load that file as custom `base_instructions`. `--status` reporting `active` / `healthy` / `ready` only means that layer succeeded.
+
+It **does not guarantee that the model will follow** the bundled prompt. Codex Desktop builds, official or custom providers, and the model's own safety policy can override or ignore instructions that are already loaded. If a new session's `session_meta` shows `base_instructions.provenance.type = custom` with a matching length and keywords, but the reply still refuses or rewrites the request, that is runtime / model / provider behavior, not a failed deploy, and reinstalling Keysmith will not fix it.
+
+Config format was checked against Codex CLI `0.144.1`. Desktop `0.148` and custom OpenAI-compatible providers (including `gpt-5.6-*`) are not effectiveness-acceptance channels. Maintainers can live-sample a chosen `--model` with the source Prompt Bank; those results are not a CI gate and are not public scores. Troubleshooting: [`docs/reference.md#deployment-versus-model-behavior`](docs/reference.md#deployment-versus-model-behavior).
+
 ### How to undo
 
 The commands below use the Release single file. For a source checkout, replace the filename with `codex-instruct.py`.
@@ -99,6 +107,7 @@ Each uninstall peels one layer. For an interrupted transaction, run `--status`, 
 
 ### Advanced docs
 
+- Deployment versus model behavior: [`docs/reference.md#deployment-versus-model-behavior`](docs/reference.md#deployment-versus-model-behavior)
 - Scenario deploy / eval (M1 / M2 / M3): [`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
 - CCSwitch: [`docs/ccswitch.md`](docs/ccswitch.md)
 - Transactions, journals, recovery: [`docs/hooks-transactions.md`](docs/hooks-transactions.md)
