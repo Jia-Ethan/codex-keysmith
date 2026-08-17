@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Docs
+
+- Split the deployment contract from model obedience after issue #42: Keysmith guarantees that new sessions load custom `base_instructions`; it does not guarantee the model will follow them. README, reference, the bug template, and CONTRIBUTING now separate `--status` / `session_meta` success from runtime refusals, and mark Desktop `0.148` plus custom providers as unverified effectiveness channels.
+
 ## [0.3.6] - 2026-08-17
 
 ### Docs
