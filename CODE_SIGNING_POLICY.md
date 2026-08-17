@@ -2,7 +2,7 @@
 
 ## Current desktop beta
 
-`desktop-v0.3.5-beta.1` publishes an Apple Silicon macOS DMG and Windows x64 NSIS installer as one unsigned Desktop Beta on source version `0.3.5`. The public asset set is those two installers, two candidate ZIPs, and `SHA256SUMS`. The standalone CLI, source archives, and sealed scenario bundle remain on the `v0.3.5` source Release. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
+`desktop-v0.3.5-beta.1` publishes an Apple Silicon macOS DMG and Windows x64 NSIS installer as one unsigned Desktop Beta on source version `0.3.5`. The public asset set is those two installers, two candidate ZIPs, and `SHA256SUMS`. It remains the current Desktop line while the standalone CLI, source archives, and sealed scenario bundle advance independently on the latest stable source Release. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
 
 `desktop-v0.2.0-beta.6` remains the last unified 0.2.0 unsigned Desktop Beta. `desktop-v0.2.0-beta.5`, `desktop-v0.2.0-beta.4`, and `desktop-v0.2.0-beta.3` remain earlier unified prereleases. `desktop-v0.2.0-beta.2` remains the earlier Windows-only prerelease. None is overwritten by a later beta.
 
@@ -22,4 +22,4 @@ The desktop candidate workflow is permanently unsigned and does not read Apple o
 
 An application to the SignPath Foundation program is pending. No current asset is signed by SignPath Foundation, and the project will not describe any build as SignPath-signed until approval and successful signature verification are complete.
 
-After approval, the formal `v0.2.0` release will be rebuilt from a controlled source commit through a separate signing workflow. Signing credentials must be restricted to `main`, protected by manual approval, unavailable to pull requests, and followed by Authenticode and timestamp verification. Signed files will have new SHA-256 values.
+After approval, a signed Desktop release will be rebuilt from a controlled source commit through a separate signing workflow and published under a new versioned release rather than replacing an existing unsigned beta. Signing credentials must be restricted to `main`, protected by manual approval, unavailable to pull requests, and followed by Authenticode and timestamp verification. Signed files will have new SHA-256 values.
