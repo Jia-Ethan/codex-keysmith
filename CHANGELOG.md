@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Docs
+
+- Rewrote the newcomer `README.md` / `README.en.md`: series chooser, conservative CLI vs unsigned Desktop Beta, one WARNING, and links for M1/M2/M3, CCSwitch, journals, and recovery. Added [`docs/ccswitch.md`](docs/ccswitch.md).
+
 ### Desktop
 
 - Prepared `desktop-v0.3.5-beta.1` as the next unsigned Desktop Beta on source version `0.3.5`. Public assets are the Apple Silicon DMG, Windows x64 NSIS installer, two candidate ZIPs, and `SHA256SUMS`. The GUI Scenarios view ships in those installers. The standalone CLI, source archives, and sealed scenario bundle remain on the `v0.3.5` source Release. The historical `desktop-v0.2.0-beta.*` line is unchanged.
