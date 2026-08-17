@@ -16,6 +16,8 @@ COMMIT = "a" * 40
 TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
+PUBLISHED_DESKTOP_VERSION = "0.3.5"
+PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -513,18 +515,18 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
     paths = [
         REPO_ROOT / "README.md",
         REPO_ROOT / "README.en.md",
-        REPO_ROOT / f"docs/releases/{TAG}.md",
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md",
         REPO_ROOT / "CODE_SIGNING_POLICY.md",
         REPO_ROOT / "PRIVACY.md",
     ]
     combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
     for marker in (
-        TAG,
-        prerelease.MACOS_DMG_NAME,
-        prerelease.WINDOWS_SETUP_NAME,
-        prerelease.CLI_NAME,
-        "v0.3.5",
+        PUBLISHED_DESKTOP_TAG,
+        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
+        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
+        f"codex-instruct-v{VERSION}.py",
+        f"v{PUBLISHED_DESKTOP_VERSION}",
         "SHA256SUMS",
         "unsigned",
         "SmartScreen",
@@ -569,18 +571,20 @@ def test_historical_desktop_beta6_notes_remain_unchanged():
 
 
 def test_prerelease_release_notes_match_approved_compact_copy():
-    release_notes = (REPO_ROOT / f"docs/releases/{TAG}.md").read_text(encoding="utf-8")
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
     expected = textwrap.dedent(
         f"""\
-        # codex-keysmith v{VERSION} Desktop Beta
+        # codex-keysmith v{PUBLISHED_DESKTOP_VERSION} Desktop Beta
 
         GUI 安装包更新场景库页。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
 
         ## 下载
 
-        - macOS Apple Silicon：`{prerelease.MACOS_DMG_NAME}`
-        - Windows x64：`{prerelease.WINDOWS_SETUP_NAME}`
-        - 单文件 CLI 与场景 bundle：见 [v{VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{VERSION})
+        - macOS Apple Silicon：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg`
+        - Windows x64：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe`
+        - 单文件 CLI 与场景 bundle：见 [v{PUBLISHED_DESKTOP_VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{PUBLISHED_DESKTOP_VERSION})
         - 文件校验：`SHA256SUMS`
         """
     )
