@@ -97,9 +97,22 @@ Each uninstall peels one layer. For an interrupted transaction, run `--status`, 
 - Recommended Python 3.10–3.14. No `pip install`, no auto-update.
 - Versions, asset names, and signing live on [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) and [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md), not in this page.
 
+### Two channels
+
+The instruction channel deploys Markdown into `~/.codex` (default `--preset unrestricted`). The environment channel `--scaffold` writes an incomplete fixture workspace to `~/.codex-fixture-workspace/<pack>` and **does not modify** `~/.codex`. The channels can be stacked; neither writes the other's directory. The default install steps are unchanged; scaffold is optional.
+
+```bash
+python3 codex-instruct.py --scaffold-list
+python3 codex-instruct.py --scaffold pytest_complete --dry-run
+python3 codex-instruct.py --scaffold pytest_complete --yes
+```
+
+A standalone script without `fixture_packs/` beside it will tell you to download the Release bundle or pass `--pack-dir`.
+
 ### Advanced docs
 
 - Scenario deploy / eval (M1 / M2 / M3): [`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
+- Environment channel / fixture packs: [`docs/fixture-channel.md`](docs/fixture-channel.md)
 - CCSwitch: [`docs/ccswitch.md`](docs/ccswitch.md)
 - Transactions, journals, recovery: [`docs/hooks-transactions.md`](docs/hooks-transactions.md)
 - Desktop / agent install: [`gui/README.md`](gui/README.md) · [`docs/agent-install.md`](docs/agent-install.md)
