@@ -112,6 +112,7 @@ A standalone script without `fixture_packs/` beside it will tell you to download
 ### Advanced docs
 
 - Scenario deploy / eval (M1 / M2 / M3): [`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
+- Environment channel / fixture packs: [`docs/fixture-channel.md`](docs/fixture-channel.md)
 - CCSwitch: [`docs/ccswitch.md`](docs/ccswitch.md)
 - Transactions, journals, recovery: [`docs/hooks-transactions.md`](docs/hooks-transactions.md)
 - Desktop / agent install: [`gui/README.md`](gui/README.md) · [`docs/agent-install.md`](docs/agent-install.md)
