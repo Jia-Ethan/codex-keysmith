@@ -35,6 +35,7 @@ ARCHIVE_FILES = (
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
     "examples/gpt-unrestricted.md",
+    "examples/gpt-contract.md",
     "scripts/run_scenario_bank.py",
 )
 

@@ -37,6 +37,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/v0.3-scenario-deployment-design.md",
     "docs/releases/v0.3.6.md",
     "examples/gpt-unrestricted.md",
+    "examples/gpt-contract.md",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",

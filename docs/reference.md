@@ -28,6 +28,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     hooks.json.disabled: regular file (<codex-dir>/hooks.json.disabled)
     部署清单: regular file (<codex-dir>/.codex-keysmith-manifest.json)
     model_instructions_file: ./gpt-unrestricted.md
+    preset: unrestricted
     配置激活状态: active（当前配置已加载受管提示词）
     事务残留: none
     旧版迁移: 无需处理
@@ -37,7 +38,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     可部署性: ready
 ```
 
-`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，但 deploy/uninstall 明确 blocked，必须先由 CCSwitch 或其他配置管理器切回引用受管 MD 的 active 配置。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
+`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要时用 manifest 中的受管 MD 路径作为当前提示词节点。只读字段 `preset` 根据 manifest 记录的 MD SHA-256 判定为 `unrestricted`、`contract`、`custom` 或 `unknown`（无 manifest）。必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，但 deploy/uninstall 明确 blocked，必须先由 CCSwitch 或其他配置管理器切回引用受管 MD 的 active 配置。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
 
 ### 会修改哪些文件
 
@@ -235,8 +236,9 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 
 | 参数 | 说明 |
 | --- | --- |
-| `--file`, `-f` | 外部 Markdown；省略时使用内置提示词 |
-| `--name`, `-n` | 输出文件名，不含 `.md`；默认 `gpt-unrestricted` |
+| `--file`, `-f` | 外部 Markdown；省略时使用内置提示词。与 `--preset` 互斥 |
+| `--name`, `-n` | 输出文件名，不含 `.md`；默认随 `--preset`：`unrestricted`→`gpt-unrestricted`，`contract`→`gpt-contract` |
+| `--preset` | 内置稿：`unrestricted`（默认）或 `contract`。现有部署不会被这次选择替换；不可与 `--file` 同时使用 |
 | `--dry-run` | 预览部署，不写文件 |
 | `--yes` | 确认常规部署、清单式卸载或中断恢复 |
 | `--codex-dir` | 显式选择单个 `.codex`；省略后使用自动发现 |
@@ -343,6 +345,7 @@ codex-keysmith/
 │   ├── legacy/
 │   └── releases/
 ├── examples/gpt-unrestricted.md
+├── examples/gpt-contract.md
 ├── gui/
 │   ├── src/
 │   ├── src-tauri/
@@ -378,7 +381,7 @@ codex-keysmith/
 python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 ```
 
-`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence; missing, abnormal, or drifted managed Markdown or required hook backups produce `conflict`, make uninstall readiness and deployability `blocked`, and exit 1. If the manifest and managed Markdown remain intact while the current config has no top-level `model_instructions_file`, status reports `inactive-by-config`: it exits 0 and keeps structural health `healthy`, while deploy/uninstall remain blocked until CCSwitch or another config manager restores an active profile that references the managed Markdown. A present field that targets another path remains a `conflict` and exits 1. Status also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
+`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence, using the managed Markdown path from the manifest when present. The read-only `preset` field is `unrestricted`, `contract`, `custom`, or `unknown` (no manifest), based on the managed Markdown SHA-256. Missing, abnormal, or drifted managed Markdown or required hook backups produce `conflict`, make uninstall readiness and deployability `blocked`, and exit 1. If the manifest and managed Markdown remain intact while the current config has no top-level `model_instructions_file`, status reports `inactive-by-config`: it exits 0 and keeps structural health `healthy`, while deploy/uninstall remain blocked until CCSwitch or another config manager restores an active profile that references the managed Markdown. A present field that targets another path remains a `conflict` and exits 1. Status also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
 
 ### Files changed by a confirmed deployment
 
@@ -476,8 +479,9 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 
 | Option | Description |
 | --- | --- |
-| `--file`, `-f` | External Markdown; omit it for the bundled prompt |
-| `--name`, `-n` | Destination name without `.md`; default `gpt-unrestricted` |
+| `--file`, `-f` | External Markdown; omit it for the bundled prompt. Conflicts with `--preset` |
+| `--name`, `-n` | Destination name without `.md`; default follows `--preset`: `unrestricted`→`gpt-unrestricted`, `contract`→`gpt-contract` |
+| `--preset` | Bundled prompt: `unrestricted` (default) or `contract`. Existing deployments are not replaced by this option. Conflicts with `--file` |
 | `--dry-run` | Preview deployment without writes |
 | `--yes` | Confirm deployment, manifest-based uninstall, or interrupted-transaction recovery |
 | `--codex-dir` | Explicitly select one `.codex`; omission uses discovery |
@@ -561,6 +565,7 @@ codex-keysmith/
 ├── .github/                  # issue/PR templates and Tests/Release/Desktop workflows
 ├── docs/                     # reference, transaction design, install guide, release notes
 ├── examples/gpt-unrestricted.md
+├── examples/gpt-contract.md
 ├── gui/                      # React/Tauri desktop client, tests, and native bundle config
 ├── scripts/
 ├── tests/

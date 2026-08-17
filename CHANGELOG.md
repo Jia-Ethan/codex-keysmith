@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Instruction-channel `--preset unrestricted|contract` keeps the default `unrestricted` bundled prompt byte-identical and adds a thin `examples/gpt-contract.md` contract. `--file` and `--preset` remain mutually exclusive. `--status` reports a read-only `preset` field from the managed Markdown SHA-256.
+
 ## [0.3.6] - 2026-08-17
 
 ### Docs
