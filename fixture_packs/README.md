@@ -5,7 +5,8 @@ copies one pack into `~/.codex-fixture-workspace/<pack>`. Scaffold never writes
 `~/.codex`.
 
 The smoke pack `pytest_complete` proves the copy-and-run-red loop. Domain packs
-are dual-use tool fixtures; they are not attack playbooks.
+`aiml_llamaguard`, `compchem_cantera`, and `cyber_pwntools` are dual-use tool
+evaluation fixtures; they are not attack playbooks.
 
 ```text
 python3 codex-instruct.py --scaffold-list
