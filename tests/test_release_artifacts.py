@@ -35,8 +35,10 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
+    "docs/fixture-channel.md",
     "docs/releases/v0.3.6.md",
     "examples/gpt-unrestricted.md",
+    "examples/gpt-contract.md",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",
@@ -44,6 +46,35 @@ REQUIRED_ARCHIVE_FILES = {
     "gui/src-tauri/icons/Square44x44Logo.png",
     "gui/src-tauri/icons/icon.ico",
     "gui/src-tauri/tauri.windows.conf.json",
+}
+REQUIRED_FIXTURE_FILES = {
+    "fixture_packs/README.md",
+    "fixture_packs/pytest_complete/pack.yaml",
+    "fixture_packs/pytest_complete/AGENTS.md",
+    "fixture_packs/pytest_complete/README.md",
+    "fixture_packs/pytest_complete/data/row.json",
+    "fixture_packs/pytest_complete/tests/test_complete.py",
+    "fixture_packs/aiml_llamaguard/pack.yaml",
+    "fixture_packs/aiml_llamaguard/AGENTS.md",
+    "fixture_packs/aiml_llamaguard/README.md",
+    "fixture_packs/aiml_llamaguard/data/cases.json",
+    "fixture_packs/aiml_llamaguard/src/validator.py",
+    "fixture_packs/aiml_llamaguard/src/task.py",
+    "fixture_packs/aiml_llamaguard/tests/test_complete.py",
+    "fixture_packs/compchem_cantera/pack.yaml",
+    "fixture_packs/compchem_cantera/AGENTS.md",
+    "fixture_packs/compchem_cantera/README.md",
+    "fixture_packs/compchem_cantera/data/mechanism.yaml",
+    "fixture_packs/compchem_cantera/src/validator.py",
+    "fixture_packs/compchem_cantera/src/task.py",
+    "fixture_packs/compchem_cantera/tests/test_complete.py",
+    "fixture_packs/cyber_pwntools/pack.yaml",
+    "fixture_packs/cyber_pwntools/AGENTS.md",
+    "fixture_packs/cyber_pwntools/README.md",
+    "fixture_packs/cyber_pwntools/data/target.json",
+    "fixture_packs/cyber_pwntools/src/exploit_fixture.py",
+    "fixture_packs/cyber_pwntools/src/task.py",
+    "fixture_packs/cyber_pwntools/tests/test_complete.py",
 }
 REQUIRED_SCENARIO_FILES = {
     "scenarios/example_fixture/scenario.json",
@@ -163,7 +194,7 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
             path.chmod(0o755)
         source_bytes[relative_path] = data
 
-    for relative_path in REQUIRED_SCENARIO_FILES:
+    for relative_path in REQUIRED_SCENARIO_FILES | REQUIRED_FIXTURE_FILES:
         data = (REPO_ROOT / relative_path).read_bytes()
         path = repo / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -406,7 +437,7 @@ def test_release_build_is_reproducible_and_contains_required_files(release_build
     release_builder.build_release(TAG, repo, second_output)
 
     archive_files = tuple(sorted(source_bytes))
-    assert REQUIRED_ARCHIVE_FILES <= set(archive_files)
+    assert REQUIRED_ARCHIVE_FILES | REQUIRED_FIXTURE_FILES <= set(archive_files)
     assert _asset_hashes(first_output) == _asset_hashes(second_output)
     prefix = "codex-keysmith-{}/".format(TAG)
     zip_path = first_output / "codex-keysmith-{}.zip".format(TAG)

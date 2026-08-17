@@ -1,0 +1,13 @@
+units:
+  length: cm
+  time: s
+  quantity: mol
+  activation-energy: cal/mol
+phases:
+  - name: gas
+    thermo: ideal-gas
+    elements: [???]
+    species: [???]
+    kinetics: gas
+species: ???
+reactions: ???
