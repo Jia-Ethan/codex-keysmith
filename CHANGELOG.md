@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Instruction-channel `--preset unrestricted|contract` keeps the default `unrestricted` bundled prompt byte-identical and adds a thin `examples/gpt-contract.md` contract. `--file` and `--preset` remain mutually exclusive. `--status` reports a read-only `preset` field from the managed Markdown SHA-256.
+- Environment-channel `--scaffold` materializes fixture packs into `~/.codex-fixture-workspace/<pack>` with its own `.registry.json`. It refuses `--codex-dir` and never writes `~/.codex`. The first bundled pack is the red `pytest_complete` smoke fixture.
+- Public Release now also includes the `aiml_llamaguard`, `compchem_cantera`, and `cyber_pwntools` evaluation fixtures. Required tests are schema-only; optional tool layers skip when the runtime is missing.
+
 ## [0.3.6] - 2026-08-17
 
 ### Docs
