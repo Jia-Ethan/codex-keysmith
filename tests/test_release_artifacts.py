@@ -46,6 +46,14 @@ REQUIRED_ARCHIVE_FILES = {
     "gui/src-tauri/icons/icon.ico",
     "gui/src-tauri/tauri.windows.conf.json",
 }
+REQUIRED_FIXTURE_FILES = {
+    "fixture_packs/README.md",
+    "fixture_packs/pytest_complete/pack.yaml",
+    "fixture_packs/pytest_complete/AGENTS.md",
+    "fixture_packs/pytest_complete/README.md",
+    "fixture_packs/pytest_complete/data/row.json",
+    "fixture_packs/pytest_complete/tests/test_complete.py",
+}
 REQUIRED_SCENARIO_FILES = {
     "scenarios/example_fixture/scenario.json",
     "scenarios/example_fixture/task.md",
@@ -164,7 +172,7 @@ def _make_release_repo(tmp_path, release_builder, create_tag=True):
             path.chmod(0o755)
         source_bytes[relative_path] = data
 
-    for relative_path in REQUIRED_SCENARIO_FILES:
+    for relative_path in REQUIRED_SCENARIO_FILES | REQUIRED_FIXTURE_FILES:
         data = (REPO_ROOT / relative_path).read_bytes()
         path = repo / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -407,7 +415,7 @@ def test_release_build_is_reproducible_and_contains_required_files(release_build
     release_builder.build_release(TAG, repo, second_output)
 
     archive_files = tuple(sorted(source_bytes))
-    assert REQUIRED_ARCHIVE_FILES <= set(archive_files)
+    assert REQUIRED_ARCHIVE_FILES | REQUIRED_FIXTURE_FILES <= set(archive_files)
     assert _asset_hashes(first_output) == _asset_hashes(second_output)
     prefix = "codex-keysmith-{}/".format(TAG)
     zip_path = first_output / "codex-keysmith-{}.zip".format(TAG)
