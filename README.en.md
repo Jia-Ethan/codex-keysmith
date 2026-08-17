@@ -79,10 +79,12 @@ Scenario deploy writes `<target>/.codex-keysmith/` and does not touch the instru
 
 ### How to undo
 
+The commands below use the Release single file. For a source checkout, replace the filename with `codex-instruct.py`.
+
 ```bash
-python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang en
-python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang en
-python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang en
 ```
 
 Each uninstall peels one layer. For an interrupted transaction, run `--status`, preview with `--recover`, then add `--yes`. Do not delete journals, backups, or the manifest by hand.

@@ -79,10 +79,12 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 ### 如何撤销
 
+以下以 Release 单文件为例；源码 checkout 请把文件名换成 `codex-instruct.py`。
+
 ```bash
-python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
-python3 codex-instruct.py --codex-dir ~/.codex --uninstall --lang zh-CN
-python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
 ```
 
 卸载每次只撤销最新一层。中断事务先 `--status`，再 `--recover` 预览，确认后加 `--yes`。不要手工删除 journal、备份或 manifest。
