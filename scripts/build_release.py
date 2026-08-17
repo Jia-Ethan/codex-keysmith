@@ -30,6 +30,7 @@ ARCHIVE_FILES = (
     "codex-instruct.py",
     "docs/agent-install.md",
     "docs/assets/readme/codex-keysmith-preview.png",
+    "docs/ccswitch.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
