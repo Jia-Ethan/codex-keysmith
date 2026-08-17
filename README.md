@@ -21,6 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
+  <img alt="Source version v0.3.5" src="https://img.shields.io/badge/source-v0.3.5-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -30,7 +31,7 @@
 Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指令。`codex-keysmith` 把一份 Markdown 部署到 Codex 配置目录（通常是 `~/.codex`），让之后的新会话加载它。
 
 > [!WARNING]
-> 这会改变**该 Codex 配置下的全局行为**，不是项目级开关：写入 `config.toml` 的 `model_instructions_file`，并默认把整份 `hooks.json` 隔离为 `hooks.json.disabled`。默认只预览，显式 `--yes` 才写入。先阅读 [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) 和 [`SECURITY.md`](SECURITY.md)。
+> 这会改变**该 Codex 配置下的全局行为**，不是项目级开关：写入 `config.toml` 的 `model_instructions_file`，并默认把整份 `hooks.json` 隔离为 `hooks.json.disabled`。部署、卸载和中断恢复先预览，确认后加 `--yes`；`--restore-hooks` 会立即执行且不接受 `--yes`。先阅读 [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) 和 [`SECURITY.md`](SECURITY.md)。
 
 ### 选择哪个 Keysmith
 
@@ -50,15 +51,20 @@ Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指
 ### 快速开始
 
 ```bash
-# 下载并校验最新稳定单文件 CLI，或 clone 后使用仓库内脚本
-python3 codex-instruct.py --version
-python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
-python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang zh-CN
+# 把 vX.Y.Z 换成 Releases 页的最新稳定 tag
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
+
+python3 codex-instruct-vX.Y.Z.py --version
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang zh-CN
 # 确认目标目录、提示词来源和写入计划后：
-python3 codex-instruct.py --codex-dir ~/.codex --yes --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
-部署后关闭旧任务、开一个新 Codex 会话。省略 `--codex-dir` 会处理全部自动发现的配置目录。Windows 命令把 `python3` 换成 `python`。
+源码路径：`git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`，再把上述脚本名换成 `codex-instruct.py`。部署后关闭旧任务、开一个新 Codex 会话。省略 `--codex-dir` 会处理全部自动发现的配置目录。Windows 命令把 `python3` 换成 `python`。
 
 ### 会修改什么
 

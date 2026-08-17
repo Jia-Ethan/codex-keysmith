@@ -21,6 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
+  <img alt="Source version v0.3.5" src="https://img.shields.io/badge/source-v0.3.5-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -30,7 +31,7 @@
 The Keysmith series **deploys, verifies, and revokes** custom instructions for local AI tools. `codex-keysmith` writes a Markdown file into a Codex config directory (usually `~/.codex`) so later new sessions load it.
 
 > [!WARNING]
-> This changes **global behavior for that Codex configuration**, not a per-project switch: it writes `model_instructions_file` in `config.toml` and, by default, isolates the entire `hooks.json` as `hooks.json.disabled`. Commands preview unless you pass `--yes`. Read [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) and [`SECURITY.md`](SECURITY.md) first.
+> This changes **global behavior for that Codex configuration**, not a per-project switch: it writes `model_instructions_file` in `config.toml` and, by default, isolates the entire `hooks.json` as `hooks.json.disabled`. Deploy, uninstall, and interrupted-transaction recovery preview before `--yes`; `--restore-hooks` runs immediately and rejects `--yes`. Read [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) and [`SECURITY.md`](SECURITY.md) first.
 
 ### Which Keysmith to use
 
@@ -50,15 +51,20 @@ The Keysmith series **deploys, verifies, and revokes** custom instructions for l
 ### Quick start
 
 ```bash
-# Download and verify the latest stable single-file CLI, or use the in-repo script
-python3 codex-instruct.py --version
-python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
-python3 codex-instruct.py --codex-dir ~/.codex --dry-run --lang en
+# Replace vX.Y.Z with the latest stable tag on the Releases page
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
+
+python3 codex-instruct-vX.Y.Z.py --version
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang en
 # After reviewing the target, prompt source, and write plan:
-python3 codex-instruct.py --codex-dir ~/.codex --yes --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang en
 ```
 
-Close old tasks and start a new Codex session. Omitting `--codex-dir` processes every auto-discovered config directory. On Windows, use `python` instead of `python3`.
+Source path: `git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`; then replace the script name above with `codex-instruct.py`. Close old tasks and start a new Codex session. Omitting `--codex-dir` processes every auto-discovered config directory. On Windows, use `python` instead of `python3`.
 
 ### What it changes
 
