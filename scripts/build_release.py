@@ -34,6 +34,7 @@ ARCHIVE_FILES = (
     "docs/hooks-transactions.md",
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
+    "docs/fixture-channel.md",
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
     "scripts/run_scenario_bank.py",
@@ -102,6 +103,42 @@ def _validate_scenario_archive_path(relative_path: str) -> None:
             raise ReleaseError(
                 "scenario archive contains a cross-platform unsafe path: {}".format(relative_path)
             )
+
+
+def _fixture_pack_archive_files(repo_root: Path) -> Tuple[str, ...]:
+    pack_root = repo_root / "fixture_packs"
+    try:
+        root_stat = os.lstat(str(pack_root))
+    except FileNotFoundError:
+        return ()
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise ReleaseError("fixture archive root is not a directory: {}".format(pack_root))
+    files = []
+    seen_casefold = set()
+    for path in sorted(pack_root.rglob("*")):
+        file_stat = os.lstat(str(path))
+        if stat.S_ISDIR(file_stat.st_mode):
+            continue
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ReleaseError("fixture archive member is not a regular file: {}".format(path))
+        relative_parts = path.relative_to(pack_root).parts
+        if "__pycache__" in relative_parts or path.name.endswith((".pyc", ".pyo")):
+            continue
+        relative_path = path.relative_to(repo_root).as_posix()
+        if "\\" in relative_path or any(
+            ord(character) < 32 or ord(character) == 127 for character in relative_path
+        ):
+            raise ReleaseError(
+                "fixture archive contains a cross-platform unsafe path: {}".format(relative_path)
+            )
+        folded = relative_path.casefold()
+        if folded in seen_casefold:
+            raise ReleaseError(
+                "fixture archive members collide case-insensitively: {}".format(relative_path)
+            )
+        seen_casefold.add(folded)
+        files.append(relative_path)
+    return tuple(files)
 
 
 def _scenario_archive_files(repo_root: Path) -> Tuple[str, ...]:
@@ -449,6 +486,7 @@ def _archive_files(tag: str, repo_root: Optional[Path] = None) -> Tuple[str, ...
     files = ARCHIVE_FILES + ("docs/releases/{}.md".format(tag),)
     if repo_root is not None:
         files += _scenario_archive_files(repo_root)
+        files += _fixture_pack_archive_files(repo_root)
     return files
 
 
@@ -536,7 +574,11 @@ def _validate_version(tag: str, sources: Dict[str, bytes]) -> str:
 
 
 def _read_and_validate_sources(repo_root: Path, tag: str) -> Tuple[str, Dict[str, bytes]]:
-    archive_files = ARCHIVE_FILES + _scenario_archive_files(repo_root)
+    archive_files = (
+        ARCHIVE_FILES
+        + _scenario_archive_files(repo_root)
+        + _fixture_pack_archive_files(repo_root)
+    )
     sources = {
         relative_path: _regular_file_bytes(repo_root / relative_path)
         for relative_path in archive_files

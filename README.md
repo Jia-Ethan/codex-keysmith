@@ -97,9 +97,22 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang z
 - 推荐 Python 3.10–3.14。没有 `pip install`，没有自动更新。
 - 版本、资产名和签名状态以 [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) 与 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) 为准，不要以本页为版本源。
 
+### 两条通道
+
+指令通道把 Markdown 部署到 `~/.codex`（默认 `--preset unrestricted`）。环境通道 `--scaffold` 把残缺 fixture 工作区写到 `~/.codex-fixture-workspace/<pack>`，**不修改** `~/.codex`。两通道可叠用，互不写对方目录。默认安装步骤不变；scaffold 不是必做步骤。
+
+```bash
+python3 codex-instruct.py --scaffold-list
+python3 codex-instruct.py --scaffold pytest_complete --dry-run
+python3 codex-instruct.py --scaffold pytest_complete --yes
+```
+
+独立单文件脚本旁边没有 `fixture_packs/` 时，`--scaffold` 会提示下载 Release bundle 或指定 `--pack-dir`。
+
 ### 进阶文档
 
 - 场景部署 / 评估（M1 / M2 / M3）：[`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
+- 环境通道 / fixture packs：[`docs/fixture-channel.md`](docs/fixture-channel.md)
 - CCSwitch：[`docs/ccswitch.md`](docs/ccswitch.md)
 - 事务、journal、恢复：[`docs/hooks-transactions.md`](docs/hooks-transactions.md)
 - Desktop / 智能体安装：[`gui/README.md`](gui/README.md) · [`docs/agent-install.md`](docs/agent-install.md)
