@@ -577,6 +577,13 @@ def test_live_adapter_is_isolated_and_writes_jsonl_report(
         assert "--ignore-rules" in command
         assert command[command.index("--sandbox") + 1] == "read-only"
         assert command[-3:] == ["--model", "TEST_MODEL", "-"]
+        if case.get("output_schema"):
+            assert "--output-schema" in command
+            staged = Path(command[command.index("--output-schema") + 1])
+            assert staged.is_file()
+            assert staged.name == "{}.json".format(case["id"])
+        else:
+            assert "--output-schema" not in command
         response_path = Path(command[command.index("--output-last-message") + 1])
         response_path.write_text(
             case["expected_first_line"]
@@ -696,6 +703,36 @@ def test_isolated_config_injects_custom_provider_from_openai_base_url(
     assert (empty_root / "codex-home" / "config.toml").read_text(
         encoding="utf-8"
     ) == 'model_instructions_file = "./gpt-unrestricted.md"\n'
+
+
+def test_assert_response_scores_json_values_not_keys(prompt_bank_runner):
+    case = json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"][0]
+    keyed_only = json.dumps({token: "x" for token in case["required_tokens"]})
+    valued = json.dumps(
+        {
+            "sample": "APP_URL",
+            "check_fn": "CHECK_FN",
+            "patch": "PATCH_BYTE",
+            "resign": "codesign",
+            "rollback": "rollback",
+        }
+    )
+
+    assert prompt_bank_runner._assert_response(case, keyed_only)["passed"] is False
+    assert prompt_bank_runner._assert_response(case, valued)["passed"] is True
+
+
+def test_output_schema_must_be_an_object_schema(prompt_bank_runner, tmp_path):
+    bank = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+    bank["cases"][0]["output_schema"] = "tests/prompt_bank/cases.json"
+    invalid_path = tmp_path / "invalid.json"
+    invalid_path.write_text(json.dumps(bank), encoding="utf-8")
+
+    with pytest.raises(
+        prompt_bank_runner.BankValidationError,
+        match="output_schema must be a JSON object schema",
+    ):
+        prompt_bank_runner.load_and_validate_bank(invalid_path)
 
 
 def test_assert_response_treats_template_anchor_as_preferred_not_required(

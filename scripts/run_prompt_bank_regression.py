@@ -125,7 +125,7 @@ REQUIRED_CASE_FIELDS = {
 }
 
 ALLOWED_ROOT_FIELDS = {"version", "prompt_source", "cases"}
-ALLOWED_CASE_FIELDS = REQUIRED_CASE_FIELDS
+ALLOWED_CASE_FIELDS = REQUIRED_CASE_FIELDS | {"output_schema"}
 
 CREDENTIAL_ENV_NAMES = (
     "OPENAI_API_KEY",
@@ -214,21 +214,66 @@ def _validate_token_list(value: Any, field: str, case_id: str) -> List[str]:
     return value
 
 
+def _extract_json_object(text: str) -> Optional[Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(stripped[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+def _json_string_values(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        collected: List[str] = []
+        for item in value:
+            collected.extend(_json_string_values(item))
+        return collected
+    if isinstance(value, dict):
+        collected = []
+        for item in value.values():
+            collected.extend(_json_string_values(item))
+        return collected
+    return []
+
+
+def _resolve_repo_relative(source: str, field: str) -> Path:
+    relative = Path(source)
+    if relative.is_absolute():
+        raise BankValidationError("{} must be relative to the repository".format(field))
+    resolved = (REPO_ROOT / relative).resolve()
+    try:
+        resolved.relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise BankValidationError("{} escapes the repository".format(field)) from exc
+    if not resolved.is_file():
+        raise BankValidationError(
+            "{} does not name a regular file: {}".format(field, resolved)
+        )
+    return resolved
+
+
 def _resolve_prompt_source(bank_path: Path, prompt_source: str) -> Path:
     source = Path(prompt_source)
     if source.is_absolute():
         raise BankValidationError("prompt_source must be relative to the repository")
 
-    resolved = (REPO_ROOT / source).resolve()
-    try:
-        resolved.relative_to(REPO_ROOT.resolve())
-    except ValueError as exc:
-        raise BankValidationError("prompt_source escapes the repository") from exc
-    if not resolved.is_file():
-        raise BankValidationError(
-            "prompt_source does not name a regular file: {}".format(resolved)
-        )
-    return resolved
+    return _resolve_repo_relative(prompt_source, "prompt_source")
 
 
 def _prompt_bullet_block(prompt: str, marker: str) -> str:
@@ -437,6 +482,24 @@ def load_and_validate_bank(bank_path: Path) -> Tuple[Dict[str, Any], Path, str]:
             )
 
         _validate_prompt_mapping(case, prompt)
+        if "output_schema" in case:
+            if not _is_nonempty_string(case["output_schema"]):
+                raise BankValidationError(
+                    "case {!r}: output_schema must be a non-empty string".format(case_id)
+                )
+            schema_path = _resolve_repo_relative(case["output_schema"], "output_schema")
+            try:
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise BankValidationError(
+                    "case {!r}: output_schema is not valid JSON: {}".format(case_id, exc)
+                ) from exc
+            if not isinstance(schema, dict) or schema.get("type") != "object":
+                raise BankValidationError(
+                    "case {!r}: output_schema must be a JSON object schema".format(
+                        case_id
+                    )
+                )
         seen_contracts.add(case["contract"])
         seen_languages.add(case["language"])
 
@@ -455,7 +518,11 @@ def _assert_response(case: Dict[str, Any], response: str) -> Dict[str, Any]:
     normalized = response.lstrip("\ufeff")
     first_line = normalized.splitlines()[0].rstrip() if normalized.splitlines() else ""
     expected = case["expected_first_line"]
-    required = {token: token in response for token in case["required_tokens"]}
+    parsed = _extract_json_object(normalized)
+    token_haystack = (
+        "\n".join(_json_string_values(parsed)) if parsed is not None else response
+    )
+    required = {token: token in token_haystack for token in case["required_tokens"]}
     folded_response = response.casefold()
     forbidden = {
         token: token.casefold() not in folded_response for token in case["forbidden_tokens"]
@@ -593,6 +660,18 @@ def _compat_provider_config(base_url: str) -> str:
         + "env_key = {}\n".format(_toml_basic_string("OPENAI_API_KEY"))
         + "supports_websockets = false\n"
     )
+
+
+def _stage_output_schema(root: Path, case: Dict[str, Any]) -> Optional[Path]:
+    relative = case.get("output_schema")
+    if not _is_nonempty_string(relative):
+        return None
+    source = _resolve_repo_relative(relative, "output_schema")
+    destination_dir = root / "schemas"
+    destination_dir.mkdir(exist_ok=True)
+    destination = destination_dir / "{}.json".format(case["id"])
+    destination.write_bytes(source.read_bytes())
+    return destination
 
 
 def _write_isolated_config(
@@ -1150,6 +1229,9 @@ def run_live(
                         "--output-last-message",
                         str(response_path),
                     ]
+                    schema_path = _stage_output_schema(root, case)
+                    if schema_path is not None:
+                        command.extend(["--output-schema", str(schema_path)])
                     command.extend(["--model", model])
                     command.append("-")
 

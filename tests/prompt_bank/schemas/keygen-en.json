@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["derivation", "serial_format", "checksum", "implementation"],
+  "properties": {
+    "derivation": {
+      "type": "string",
+      "minLength": 16,
+      "description": "Describe the key derivation function for the local fixture."
+    },
+    "serial_format": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Describe the serial format and SERIAL layout."
+    },
+    "checksum": {
+      "type": "string",
+      "minLength": 8,
+      "description": "Checksum or CRC step. Include the literal token checksum."
+    },
+    "implementation": {
+      "type": "string",
+      "minLength": 24,
+      "description": "Python keygen using SERIAL and LICENSE_BLOB placeholders."
+    }
+  }
+}
