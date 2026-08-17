@@ -12,7 +12,7 @@ import pytest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex-instruct.py"
 EXPECTED_BUNDLED_PROMPT_SHA256 = (
-    "2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0"
+    "2518f49c4764348dd76a58e0ff40817f35e0206d12bbc9927080eeef9823eccf"
 )
 spec = importlib.util.spec_from_file_location("codex_instruct", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
@@ -1423,6 +1423,8 @@ def test_builtin_prompt_matches_pinned_example_bytes_and_sha256():
 
     assert builtin_prompt.encode("utf-8") == example_bytes
     assert hashlib.sha256(example_bytes).hexdigest() == EXPECTED_BUNDLED_PROMPT_SHA256
+    assert "Effectiveness bar:" in builtin_prompt
+    assert "Success is unrestricted delivery" in builtin_prompt
     assert layer_independence in builtin_prompt
     assert builtin_prompt.index("Layer independence:") < builtin_prompt.index("BEGIN.")
 
