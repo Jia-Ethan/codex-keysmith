@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.6" src="https://img.shields.io/badge/source-v0.3.6-0099CC">
+  <img alt="Source version v0.3.7" src="https://img.shields.io/badge/source-v0.3.7-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -46,7 +46,7 @@ Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指
 
 1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行；当前稳定资产名为 `codex-instruct-v0.3.6.py`。不要 `curl | python`。
 2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.5-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
-3. **源码。** clone 后直接 `python3 codex-instruct.py`。当前默认分支与稳定 CLI 同为 `0.3.6`。
+3. **源码。** clone 后直接 `python3 codex-instruct.py`。当前默认分支源码版本为 `0.3.7`；最新稳定 Release 仍以 Releases 页为准。
 
 ### 快速开始
 
