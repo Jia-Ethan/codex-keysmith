@@ -567,7 +567,9 @@ def test_live_adapter_is_isolated_and_writes_jsonl_report(
         assert codex_home != Path.home() / ".codex"
         assert isolated_home != Path.home()
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
-            'model_instructions_file = "./gpt-unrestricted.md"\n'
+            prompt_bank_runner._compat_provider_config(
+                "https://private-api.example/v1"
+            )
         )
         assert (codex_home / "gpt-unrestricted.md").is_file()
         assert "--ephemeral" in command
@@ -668,6 +670,32 @@ def test_live_adapter_retries_and_returns_nonzero_on_failed_assertions(
     ]
     assert len(failed_records) == 2
     assert not any(record["assertions"]["passed"] for record in failed_records)
+
+
+def test_isolated_config_injects_custom_provider_from_openai_base_url(
+    prompt_bank_runner, tmp_path
+):
+    root = tmp_path / "root"
+    (root / "codex-home").mkdir(parents=True)
+    prompt_path, workspace = prompt_bank_runner._write_isolated_config(
+        root,
+        "PROMPT\n",
+        {"OPENAI_BASE_URL": "https://lgw.example/v1/"},
+    )
+    config = (root / "codex-home" / "config.toml").read_text(encoding="utf-8")
+    assert prompt_path.read_text(encoding="utf-8") == "PROMPT\n"
+    assert workspace == root / "workspace"
+    assert 'model_provider = "custom"' in config
+    assert 'wire_api = "responses"' in config
+    assert 'base_url = "https://lgw.example/v1"' in config
+    assert "supports_websockets = false" in config
+
+    empty_root = tmp_path / "empty"
+    (empty_root / "codex-home").mkdir(parents=True)
+    prompt_bank_runner._write_isolated_config(empty_root, "PROMPT\n", {})
+    assert (empty_root / "codex-home" / "config.toml").read_text(
+        encoding="utf-8"
+    ) == 'model_instructions_file = "./gpt-unrestricted.md"\n'
 
 
 def test_assert_response_treats_template_anchor_as_preferred_not_required(
