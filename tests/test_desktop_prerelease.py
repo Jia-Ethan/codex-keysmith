@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
 PUBLISHED_DESKTOP_VERSION = "0.3.5"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
+PUBLISHED_SOURCE_VERSION = "0.3.6"
 
 
 def _sha256(path: Path) -> str:
@@ -525,7 +526,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
         PUBLISHED_DESKTOP_TAG,
         f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
         f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
-        f"codex-instruct-v{VERSION}.py",
+        f"codex-instruct-v{PUBLISHED_SOURCE_VERSION}.py",
         f"v{PUBLISHED_DESKTOP_VERSION}",
         "SHA256SUMS",
         "unsigned",
