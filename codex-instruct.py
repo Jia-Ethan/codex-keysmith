@@ -15207,6 +15207,647 @@ def deploy(args) -> None:
         _deploy_locked(args, [str(item.path) for item in locks.directories])
 
 
+# ─── Channel B: fixture workspace scaffold ──────────────────────────────────
+FIXTURE_WORKSPACE_NAME = ".codex-fixture-workspace"
+FIXTURE_REGISTRY_NAME = ".registry.json"
+FIXTURE_META_NAME = ".keysmith-fixture.json"
+FIXTURE_PACKS_DIRNAME = "fixture_packs"
+FIXTURE_REGISTRY_SCHEMA_VERSION = 1
+FIXTURE_START_PROMPT_ZH = "把测试跑绿"
+FIXTURE_START_PROMPT_EN = "Make the tests pass."
+FIXTURE_FORBIDDEN_TERMS = (
+    "越狱",
+    "jailbreak",
+    "harmful",
+    "unsafe request",
+    "ignore safety",
+    "bypass policy",
+)
+FIXTURE_PACK_ID_RE = SAFE_NAME_RE
+
+
+def default_fixture_workspace() -> Path:
+    return Path.home() / FIXTURE_WORKSPACE_NAME
+
+
+def default_fixture_pack_dir() -> Path:
+    return Path(__file__).resolve().parent / FIXTURE_PACKS_DIRNAME
+
+
+def _yaml_parse_scalar(raw: str) -> Any:
+    value = raw.strip()
+    if value == "" or value in {"null", "Null", "NULL", "~"}:
+        return None
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if (value.startswith('"') and value.endswith('"') and len(value) >= 2) or (
+        value.startswith("'") and value.endswith("'") and len(value) >= 2
+    ):
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [_yaml_parse_scalar(part) for part in inner.split(",")]
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    return value
+
+
+def _parse_simple_yaml(text: str) -> Any:
+    entries: List[Tuple[int, str, str]] = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        stripped = raw.lstrip(" ")
+        if stripped.startswith("- "):
+            entries.append((indent, "-", stripped[2:].rstrip()))
+            continue
+        if ":" not in stripped:
+            raise ValueError(f"invalid YAML at line {lineno}")
+        key, rest = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"invalid YAML key at line {lineno}")
+        entries.append((indent, key, rest.strip()))
+    value, index = _yaml_parse_block(entries, 0, 0)
+    if index != len(entries):
+        raise ValueError("invalid YAML structure")
+    if not isinstance(value, dict):
+        raise ValueError("pack.yaml root must be a mapping")
+    return value
+
+
+def _yaml_parse_block(
+    entries: List[Tuple[int, str, str]],
+    index: int,
+    indent: int,
+) -> Tuple[Any, int]:
+    if index >= len(entries) or entries[index][0] < indent:
+        return {}, index
+    if entries[index][0] != indent:
+        raise ValueError("invalid YAML indentation")
+    if entries[index][1] == "-":
+        return _yaml_parse_list(entries, index, indent)
+    return _yaml_parse_map(entries, index, indent)
+
+
+def _yaml_parse_map(
+    entries: List[Tuple[int, str, str]],
+    index: int,
+    indent: int,
+) -> Tuple[Dict[str, Any], int]:
+    result: Dict[str, Any] = {}
+    while index < len(entries) and entries[index][0] == indent:
+        _indent, key, remainder = entries[index]
+        if key == "-":
+            raise ValueError("mixed YAML sequence and mapping")
+        if key in result:
+            raise ValueError(f"duplicate YAML key: {key}")
+        index += 1
+        if remainder != "":
+            result[key] = _yaml_parse_scalar(remainder)
+            continue
+        if index < len(entries) and entries[index][0] > indent:
+            child, index = _yaml_parse_block(entries, index, entries[index][0])
+            result[key] = child
+        else:
+            result[key] = None
+    return result, index
+
+
+def _yaml_parse_list(
+    entries: List[Tuple[int, str, str]],
+    index: int,
+    indent: int,
+) -> Tuple[List[Any], int]:
+    result: List[Any] = []
+    while index < len(entries) and entries[index][0] == indent:
+        if entries[index][1] != "-":
+            raise ValueError("mixed YAML sequence and mapping")
+        remainder = entries[index][2]
+        index += 1
+        if remainder != "":
+            result.append(_yaml_parse_scalar(remainder))
+            continue
+        if index < len(entries) and entries[index][0] > indent:
+            child, index = _yaml_parse_block(entries, index, entries[index][0])
+            result.append(child)
+        else:
+            result.append(None)
+    return result, index
+
+
+def _fixture_require_pack_id(value: str) -> str:
+    if not isinstance(value, str) or not FIXTURE_PACK_ID_RE.fullmatch(value):
+        raise ValueError(
+            _localized(
+                f"pack id 无效: {value}",
+                f"invalid pack id: {value}",
+            )
+        )
+    return value
+
+
+def _fixture_contains_forbidden(text: str) -> Optional[str]:
+    lowered = text.lower()
+    for term in FIXTURE_FORBIDDEN_TERMS:
+        if term.lower() in lowered:
+            return term
+    return None
+
+
+def _fixture_text_files(root: Path) -> List[Path]:
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames if name != "__pycache__" and not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if name.endswith((".pyc", ".pyo")):
+                continue
+            node = _classify_node(path)
+            if not node.regular:
+                raise ValueError(f"pack member is not a regular file: {path}")
+            files.append(path)
+    return files
+
+
+def fixture_source_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in _fixture_text_files(root):
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        content, _fingerprint = _read_regular_bytes_with_fingerprint(path, "fixture pack")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_fixture_pack(root: Path, pack_id: str) -> Dict[str, Any]:
+    pack_id = _fixture_require_pack_id(pack_id)
+    pack_root = root / pack_id
+    node = _classify_node(pack_root)
+    if node.kind != "directory":
+        raise FileNotFoundError(
+            _localized(
+                f"未找到 fixture pack: {pack_id}",
+                f"fixture pack was not found: {pack_id}",
+            )
+        )
+    metadata_path = pack_root / "pack.yaml"
+    content, _fingerprint = _read_regular_text_with_fingerprint(metadata_path, "pack.yaml")
+    metadata = _parse_simple_yaml(content)
+    if metadata.get("id") != pack_id:
+        raise ValueError(f"pack.yaml id does not match directory: {pack_id}")
+    version = metadata.get("version")
+    if not isinstance(version, int) or version < 1:
+        raise ValueError(f"pack.yaml version is invalid: {pack_id}")
+    family = metadata.get("family")
+    title = metadata.get("title")
+    if not isinstance(family, str) or not family:
+        raise ValueError(f"pack.yaml family is required: {pack_id}")
+    if not isinstance(title, str) or not title:
+        raise ValueError(f"pack.yaml title is required: {pack_id}")
+    prompts = metadata.get("start_prompt")
+    if not isinstance(prompts, dict):
+        raise ValueError(f"pack.yaml start_prompt is required: {pack_id}")
+    start_zh = prompts.get("zh-CN")
+    start_en = prompts.get("en")
+    if start_zh != FIXTURE_START_PROMPT_ZH or start_en != FIXTURE_START_PROMPT_EN:
+        raise ValueError(f"pack.yaml start_prompt must use the fixed phrases: {pack_id}")
+    for relative in ("AGENTS.md", "README.md"):
+        text, _fp = _read_regular_text_with_fingerprint(pack_root / relative, relative)
+        forbidden = _fixture_contains_forbidden(text)
+        if forbidden is not None:
+            raise ValueError(f"{relative} contains a forbidden term: {forbidden}")
+    return {
+        "id": pack_id,
+        "version": version,
+        "family": family,
+        "title": title,
+        "root": pack_root,
+        "source_sha256": fixture_source_sha256(pack_root),
+        "start_prompt": FIXTURE_START_PROMPT_ZH,
+        "start_prompt_en": FIXTURE_START_PROMPT_EN,
+        "metadata": metadata,
+    }
+
+
+def discover_fixture_packs(root: Path) -> List[Dict[str, Any]]:
+    node = _classify_node(root)
+    if node.kind != "directory":
+        raise FileNotFoundError(
+            _localized(
+                "未找到 fixture_packs/。请下载 Release bundle 或指定 --pack-dir。",
+                "fixture_packs/ was not found. Download the Release bundle or pass --pack-dir.",
+            )
+        )
+    packs = []
+    with os.scandir(str(root)) as entries:
+        names = sorted(entry.name for entry in entries)
+    for name in names:
+        if name.startswith(".") or not FIXTURE_PACK_ID_RE.fullmatch(name):
+            continue
+        candidate = root / name
+        if _classify_node(candidate).kind != "directory":
+            continue
+        if not _classify_node(candidate / "pack.yaml").regular:
+            continue
+        packs.append(load_fixture_pack(root, name))
+    return packs
+
+
+def _resolve_fixture_pack_dir(value: Optional[str]) -> Path:
+    if value:
+        raw = Path(value).expanduser()
+        if not raw.is_absolute():
+            raw = Path.cwd() / raw
+        return raw.resolve()
+    return default_fixture_pack_dir()
+
+
+def _resolve_fixture_workspace(value: Optional[str]) -> Path:
+    raw = Path(value).expanduser() if value else default_fixture_workspace()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    resolved = raw.resolve()
+    forbidden = _fixture_workspace_forbidden_reason(resolved)
+    if forbidden:
+        raise ValueError(forbidden)
+    return resolved
+
+
+def _fixture_workspace_forbidden_reason(root: Path) -> Optional[str]:
+    if ".codex" in root.parts:
+        return _localized(
+            "workspace-root 不能是 ~/.codex，也不能位于 .codex 目录内",
+            "workspace-root cannot be ~/.codex or inside a .codex directory",
+        )
+    home_codex = Path.home() / ".codex"
+    try:
+        if root == home_codex.resolve():
+            return _localized(
+                "workspace-root 不能是 ~/.codex，也不能位于 .codex 目录内",
+                "workspace-root cannot be ~/.codex or inside a .codex directory",
+            )
+    except OSError:
+        pass
+    return None
+
+
+def _fixture_destination(root: Path, pack_id: str) -> Path:
+    destination = (root / pack_id).resolve()
+    if destination.parent != root.resolve():
+        raise ValueError(
+            _localized(
+                f"pack 目标路径越出 workspace-root: {destination}",
+                f"pack destination escapes workspace-root: {destination}",
+            )
+        )
+    return destination
+
+
+def _load_fixture_registry(root: Path) -> Dict[str, Any]:
+    path = root / FIXTURE_REGISTRY_NAME
+    node = _classify_node(path)
+    if not node.exists:
+        return {"schema_version": FIXTURE_REGISTRY_SCHEMA_VERSION, "packs": {}}
+    if not node.regular:
+        raise ValueError(f"fixture registry is not a regular file: {path}")
+    content, _fingerprint = _read_regular_text_with_fingerprint(path, "fixture registry")
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"fixture registry is not valid JSON: {path}") from exc
+    if (
+        not isinstance(data, dict)
+        or data.get("schema_version") != FIXTURE_REGISTRY_SCHEMA_VERSION
+        or not isinstance(data.get("packs"), dict)
+    ):
+        raise ValueError(f"fixture registry is damaged: {path}")
+    return data
+
+
+def _fixture_atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".partial")
+    if _path_entry_exists(temporary):
+        raise ValueError(f"leftover fixture write exists: {temporary}")
+    payload = content.encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(str(temporary), flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    os.replace(str(temporary), str(path))
+
+
+def _write_fixture_registry(root: Path, data: Dict[str, Any]) -> None:
+    payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    _fixture_atomic_write(root / FIXTURE_REGISTRY_NAME, payload)
+
+
+def _copy_fixture_tree(source: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=False)
+    for path in _fixture_text_files(source):
+        relative = path.relative_to(source)
+        target = destination.joinpath(*relative.parts)
+        if target.name == FIXTURE_META_NAME:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content, _fingerprint = _read_regular_bytes_with_fingerprint(path, "fixture pack")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(str(target), flags, 0o644)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def _remove_tree(path: Path) -> None:
+    if not _path_entry_exists(path):
+        return
+    shutil.rmtree(path)
+
+
+def _print_scaffold_success(destination: Path, start_prompt: str) -> None:
+    _print(
+        _localized(
+            f"[scaffold] 已写入 {destination}",
+            f"[scaffold] wrote {destination}",
+        )
+    )
+    _print(
+        _localized(
+            "[scaffold] 未修改 ~/.codex",
+            "[scaffold] did not modify ~/.codex",
+        )
+    )
+    _print(_localized("下一步:", "Next:"))
+    _print(f"  cd {destination}")
+    _print("  pytest -q          # 预期失败：字段仍是 ???")
+    _print("  codex              # 新开会话")
+    _print(
+        _localized(
+            f"建议第一句: {start_prompt}",
+            f"Suggested first sentence: {start_prompt}",
+        )
+    )
+
+
+def show_fixture_pack_list(pack_dir_value: Optional[str]) -> None:
+    pack_dir = _resolve_fixture_pack_dir(pack_dir_value)
+    packs = discover_fixture_packs(pack_dir)
+    _print(
+        _localized(
+            f"[scaffold] pack-dir: {pack_dir}",
+            f"[scaffold] pack-dir: {pack_dir}",
+        )
+    )
+    if not packs:
+        _print(_localized("[scaffold] 没有可列出的包", "[scaffold] no packs found"))
+        return
+    for pack in packs:
+        _print(
+            f"  {pack['id']}  v{pack['version']}  {pack['family']}  {pack['title']}"
+        )
+
+
+def scaffold_fixture_pack(
+    pack_id: str,
+    *,
+    pack_dir_value: Optional[str],
+    workspace_root_value: Optional[str],
+    yes: bool,
+    force: bool,
+) -> None:
+    pack_dir = _resolve_fixture_pack_dir(pack_dir_value)
+    if _classify_node(pack_dir).kind != "directory":
+        raise FileNotFoundError(
+            _localized(
+                "未找到 fixture_packs/。请下载 Release bundle 或指定 --pack-dir。",
+                "fixture_packs/ was not found. Download the Release bundle or pass --pack-dir.",
+            )
+        )
+    pack = load_fixture_pack(pack_dir, pack_id)
+    workspace = _resolve_fixture_workspace(workspace_root_value)
+    destination = _fixture_destination(workspace, pack["id"])
+    registry = (
+        _load_fixture_registry(workspace)
+        if _classify_node(workspace).kind == "directory"
+        else {"schema_version": FIXTURE_REGISTRY_SCHEMA_VERSION, "packs": {}}
+    )
+    existing = registry.get("packs", {}).get(pack["id"])
+    dest_node = _classify_node(destination)
+    if dest_node.exists:
+        if (
+            dest_node.kind == "directory"
+            and isinstance(existing, dict)
+            and existing.get("source_sha256") == pack["source_sha256"]
+        ):
+            _print(
+                _localized(
+                    f"[scaffold] unchanged: {destination}",
+                    f"[scaffold] unchanged: {destination}",
+                )
+            )
+            _print(
+                _localized(
+                    "[scaffold] 未修改 ~/.codex",
+                    "[scaffold] did not modify ~/.codex",
+                )
+            )
+            return
+        if not force:
+            raise ValueError(
+                _localized(
+                    f"目标已存在且与 registry 不一致，拒绝覆盖: {destination}",
+                    f"destination exists and does not match the registry: {destination}",
+                )
+            )
+    _print(
+        _localized(
+            f"[scaffold] pack: {pack['id']} v{pack['version']}",
+            f"[scaffold] pack: {pack['id']} v{pack['version']}",
+        )
+    )
+    _print(f"[scaffold] source: {pack['root']}")
+    _print(f"[scaffold] dest: {destination}")
+    _print(
+        _localized(
+            "[scaffold] 未修改 ~/.codex",
+            "[scaffold] did not modify ~/.codex",
+        )
+    )
+    if not yes:
+        _print(
+            _localized(
+                "[scaffold] 预览模式，不写入。确认后添加 --yes。",
+                "[scaffold] preview only; add --yes to write.",
+            )
+        )
+        return
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    if dest_node.exists:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = destination.with_name(f"{destination.name}.bak_{timestamp}")
+        if _path_entry_exists(backup):
+            backup = destination.with_name(
+                f"{destination.name}.bak_{timestamp}_{uuid.uuid4().hex[:8]}"
+            )
+        os.rename(str(destination), str(backup))
+        _print(f"[scaffold] backup: {backup}")
+    partial = destination.with_name(f"{destination.name}.partial")
+    if _path_entry_exists(partial):
+        _remove_tree(partial)
+    created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    record = {
+        "pack_id": pack["id"],
+        "pack_version": pack["version"],
+        "source_sha256": pack["source_sha256"],
+        "created_at": created_at,
+        "keysmith_version": VERSION,
+        "start_prompt": pack["start_prompt"],
+        "relative_path": pack["id"],
+    }
+    try:
+        _copy_fixture_tree(pack["root"], partial)
+        meta = {
+            "pack_id": pack["id"],
+            "pack_version": pack["version"],
+            "source_sha256": pack["source_sha256"],
+            "created_at": created_at,
+            "keysmith_version": VERSION,
+            "start_prompt": pack["start_prompt"],
+        }
+        _fixture_atomic_write(
+            partial / FIXTURE_META_NAME,
+            json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+        os.rename(str(partial), str(destination))
+    except BaseException:
+        _remove_tree(partial)
+        raise
+    registry.setdefault("packs", {})[pack["id"]] = record
+    registry["schema_version"] = FIXTURE_REGISTRY_SCHEMA_VERSION
+    _write_fixture_registry(workspace, registry)
+    start_prompt = (
+        pack["start_prompt_en"]
+        if _OUTPUT_LANGUAGE == "en"
+        else pack["start_prompt"]
+    )
+    _print_scaffold_success(destination, start_prompt)
+
+
+def uninstall_fixture_pack(
+    pack_id: str,
+    *,
+    workspace_root_value: Optional[str],
+    yes: bool,
+    force: bool,
+) -> None:
+    pack_id = _fixture_require_pack_id(pack_id)
+    workspace = _resolve_fixture_workspace(workspace_root_value)
+    destination = _fixture_destination(workspace, pack_id)
+    registry = _load_fixture_registry(workspace)
+    existing = registry.get("packs", {}).get(pack_id)
+    dest_node = _classify_node(destination)
+    if existing is None and not dest_node.exists:
+        _print(
+            _localized(
+                f"[scaffold] 未物化: {pack_id}",
+                f"[scaffold] not materialized: {pack_id}",
+            )
+        )
+        _print(
+            _localized(
+                "[scaffold] 未修改 ~/.codex",
+                "[scaffold] did not modify ~/.codex",
+            )
+        )
+        return
+    if existing is None and dest_node.exists and not force:
+        raise ValueError(
+            _localized(
+                f"目标存在但不在 registry 中，拒绝删除: {destination}",
+                f"destination exists without a registry entry: {destination}",
+            )
+        )
+    _print(f"[scaffold-uninstall] dest: {destination}")
+    _print(
+        _localized(
+            "[scaffold] 未修改 ~/.codex",
+            "[scaffold] did not modify ~/.codex",
+        )
+    )
+    if not yes:
+        _print(
+            _localized(
+                "[scaffold] 预览模式，不删除。确认后添加 --yes。",
+                "[scaffold] preview only; add --yes to delete.",
+            )
+        )
+        return
+    if dest_node.exists:
+        _remove_tree(destination)
+    registry.get("packs", {}).pop(pack_id, None)
+    _write_fixture_registry(workspace, registry)
+    _print(
+        _localized(
+            f"[scaffold] 已删除 {destination}",
+            f"[scaffold] removed {destination}",
+        )
+    )
+
+
+def run_fixture_channel(args: argparse.Namespace) -> None:
+    try:
+        if args.scaffold_list:
+            show_fixture_pack_list(args.pack_dir)
+            return
+        yes = bool(args.yes) and not bool(args.dry_run)
+        if args.scaffold_uninstall:
+            uninstall_fixture_pack(
+                args.scaffold_uninstall,
+                workspace_root_value=args.workspace_root,
+                yes=yes,
+                force=bool(args.force),
+            )
+            return
+        scaffold_fixture_pack(
+            args.scaffold,
+            pack_dir_value=args.pack_dir,
+            workspace_root_value=args.workspace_root,
+            yes=yes,
+            force=bool(args.force),
+        )
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        _print(f"[错误] {exc}")
+        sys.exit(1)
+
+
 def main() -> None:
     _configure_output_streams()
     _set_output_language(_language_from_argv(sys.argv[1:]))
@@ -15233,6 +15874,8 @@ def main() -> None:
   %(prog)s --name my-rules --dry-run         自定义文件名 my-rules.md
   %(prog)s --file ./my_prompt.md --dry-run   使用外部 MD 文件
   %(prog)s --preset contract --dry-run       预览薄合同稿 gpt-contract.md
+  %(prog)s --scaffold-list                   列出 fixture 包
+  %(prog)s --scaffold pytest_complete        预览物化冒烟包
         """,
         """
 Examples:
@@ -15256,6 +15899,8 @@ Examples:
   %(prog)s --name my-rules --dry-run         Use custom name my-rules.md
   %(prog)s --file ./my_prompt.md --dry-run   Use an external Markdown file
   %(prog)s --preset contract --dry-run       Preview the thin contract as gpt-contract.md
+  %(prog)s --scaffold-list                   List fixture packs
+  %(prog)s --scaffold pytest_complete        Preview the smoke fixture workspace
         """,
     )
     parser = argparse.ArgumentParser(
@@ -15406,6 +16051,49 @@ Examples:
             "Explicitly keep hooks.json active; requires --codex-dir",
         ),
     )
+    parser.add_argument(
+        "--scaffold",
+        metavar="PACK",
+        help=_localized(
+            "预览或物化指定 fixture 包到独立工作区",
+            "Preview or materialize one fixture pack into the isolated workspace",
+        ),
+    )
+    parser.add_argument(
+        "--scaffold-list",
+        action="store_true",
+        help=_localized("列出内置或 --pack-dir 中的 fixture 包", "List bundled or --pack-dir fixture packs"),
+    )
+    parser.add_argument(
+        "--scaffold-uninstall",
+        metavar="PACK",
+        help=_localized(
+            "预览或删除已物化的 fixture 包目录",
+            "Preview or remove one materialized fixture pack directory",
+        ),
+    )
+    parser.add_argument(
+        "--workspace-root",
+        help=_localized(
+            "fixture 工作区根目录，默认 ~/.codex-fixture-workspace",
+            "Fixture workspace root (default: ~/.codex-fixture-workspace)",
+        ),
+    )
+    parser.add_argument(
+        "--pack-dir",
+        help=_localized(
+            "fixture 包目录，默认脚本旁的 fixture_packs/",
+            "Fixture pack directory (default: fixture_packs/ next to the script)",
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=_localized(
+            "允许覆盖 registry 指纹不匹配的已存在 fixture 目录",
+            "Allow replacing a materialized pack whose registry fingerprint does not match",
+        ),
+    )
     args = parser.parse_args()
 
     _set_output_language(args.lang)
@@ -15418,6 +16106,47 @@ Examples:
             )
         )
     args.preset = explicit_preset or PRESET_UNRESTRICTED
+
+    scaffold_selectors = [
+        bool(args.scaffold),
+        bool(args.scaffold_list),
+        bool(args.scaffold_uninstall),
+    ]
+    if sum(scaffold_selectors) > 1:
+        parser.error(
+            "--scaffold, --scaffold-list, and --scaffold-uninstall are mutually exclusive"
+        )
+    scaffold_operation = any(scaffold_selectors)
+    if scaffold_operation:
+        if args.codex_dir:
+            parser.error("--scaffold rejects --codex-dir")
+        if (
+            hasattr(args, "file")
+            or hasattr(args, "name")
+            or explicit_preset is not None
+            or args.skip_hooks_isolation
+            or args.restore_hooks
+            or args.status
+            or args.uninstall
+            or args.recover
+            or args.deploy_scenario
+            or args.scenario_list
+            or args.scenario_status
+            or args.scenario_uninstall
+            or args.scenario_recover
+            or args.target_dir
+            or args.scenario_root
+        ):
+            parser.error(
+                "scaffold commands conflict with instruction and scenario options"
+            )
+        if args.scaffold_list and (args.yes or args.force or args.workspace_root):
+            parser.error("--scaffold-list accepts only --pack-dir and --lang")
+        run_fixture_channel(args)
+        return
+
+    if args.workspace_root or args.pack_dir or args.force:
+        parser.error("--workspace-root, --pack-dir, and --force require a scaffold command")
 
     scenario_operation = bool(
         args.scenario_list

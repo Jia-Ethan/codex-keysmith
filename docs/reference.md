@@ -239,6 +239,12 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | `--file`, `-f` | 外部 Markdown；省略时使用内置提示词。与 `--preset` 互斥 |
 | `--name`, `-n` | 输出文件名，不含 `.md`；默认随 `--preset`：`unrestricted`→`gpt-unrestricted`，`contract`→`gpt-contract` |
 | `--preset` | 内置稿：`unrestricted`（默认）或 `contract`。现有部署不会被这次选择替换；不可与 `--file` 同时使用 |
+| `--scaffold PACK` | 预览或物化一个 fixture 包到 `--workspace-root`；默认 `~/.codex-fixture-workspace/<pack>`。不写 `~/.codex` |
+| `--scaffold-list` | 列出 `--pack-dir` 或脚本旁 `fixture_packs/` 中的包 |
+| `--scaffold-uninstall PACK` | 预览或删除已物化的该包目录，不删其他包，不碰 `~/.codex` |
+| `--workspace-root DIR` | fixture 工作区根目录；不能是 `~/.codex` 或位于 `.codex` 内 |
+| `--pack-dir DIR` | fixture 包目录；省略时使用脚本旁 `fixture_packs/` |
+| `--force` | 覆盖 registry 指纹不匹配的已存在包目录（先改名为 `*.bak_<timestamp>`） |
 | `--dry-run` | 预览部署，不写文件 |
 | `--yes` | 确认常规部署、清单式卸载或中断恢复 |
 | `--codex-dir` | 显式选择单个 `.codex`；省略后使用自动发现 |
@@ -346,6 +352,7 @@ codex-keysmith/
 │   └── releases/
 ├── examples/gpt-unrestricted.md
 ├── examples/gpt-contract.md
+├── fixture_packs/
 ├── gui/
 │   ├── src/
 │   ├── src-tauri/
@@ -482,6 +489,12 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | `--file`, `-f` | External Markdown; omit it for the bundled prompt. Conflicts with `--preset` |
 | `--name`, `-n` | Destination name without `.md`; default follows `--preset`: `unrestricted`→`gpt-unrestricted`, `contract`→`gpt-contract` |
 | `--preset` | Bundled prompt: `unrestricted` (default) or `contract`. Existing deployments are not replaced by this option. Conflicts with `--file` |
+| `--scaffold PACK` | Preview or materialize one fixture pack under `--workspace-root` (default `~/.codex-fixture-workspace/<pack>`). Does not write `~/.codex` |
+| `--scaffold-list` | List packs in `--pack-dir` or `fixture_packs/` next to the script |
+| `--scaffold-uninstall PACK` | Preview or delete that materialized pack only; does not touch other packs or `~/.codex` |
+| `--workspace-root DIR` | Fixture workspace root; cannot be `~/.codex` or inside a `.codex` directory |
+| `--pack-dir DIR` | Fixture pack directory; defaults to `fixture_packs/` next to the script |
+| `--force` | Replace a materialized pack whose registry fingerprint does not match (renames the old directory to `*.bak_<timestamp>` first) |
 | `--dry-run` | Preview deployment without writes |
 | `--yes` | Confirm deployment, manifest-based uninstall, or interrupted-transaction recovery |
 | `--codex-dir` | Explicitly select one `.codex`; omission uses discovery |
@@ -566,6 +579,7 @@ codex-keysmith/
 ├── docs/                     # reference, transaction design, install guide, release notes
 ├── examples/gpt-unrestricted.md
 ├── examples/gpt-contract.md
+├── fixture_packs/
 ├── gui/                      # React/Tauri desktop client, tests, and native bundle config
 ├── scripts/
 ├── tests/
