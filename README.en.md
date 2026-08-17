@@ -44,7 +44,7 @@ The Keysmith series **deploys, verifies, and revokes** custom instructions for l
 
 ### Install options
 
-1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run. Do not `curl | python`.
+1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run; the current stable asset is `codex-instruct-v0.3.5.py`. Do not `curl | python`.
 2. **Easier: unsigned Desktop Beta.** See the [Desktop prerelease](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.5-beta.1): macOS Apple Silicon DMG and Windows x64 NSIS, with an embedded CLI sidecar. No signing, no auto-update, no Linux GUI. Install notes: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
 3. **Source.** Clone and run `python3 codex-instruct.py`. Default branch currently matches stable CLI `0.3.5`.
 
@@ -93,6 +93,7 @@ Each uninstall peels one layer. For an interrupted transaction, run `--status`, 
 
 - CLI: macOS / Linux are the primary targets; Windows fresh deploy is `EXPLICIT_BETA`. Do not use published `v0.1.0`.
 - Desktop Beta: macOS Apple Silicon and Windows x64 only; unsigned / not notarized; Gatekeeper or SmartScreen may warn.
+- Normal CLI and Desktop operations do not proactively collect or upload user data. Current assets have no physical-device acceptance and are not SignPath-signed.
 - Recommended Python 3.10–3.14. No `pip install`, no auto-update.
 - Versions, asset names, and signing live on [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) and [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md), not in this page.
 
