@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：源码 v0.3.5 已具备指令层 GUI（M1–M5）与场景库页；公开安装包是 `desktop-v0.3.5-beta.1` unsigned Beta。正式签名、公证与实体设备验收仍待完成
+> 状态：源码 v0.3.6 已具备指令层 GUI（M1–M5）与场景库页；公开安装包仍是 `desktop-v0.3.5-beta.1` unsigned Beta。正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
