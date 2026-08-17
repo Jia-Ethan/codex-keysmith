@@ -44,7 +44,7 @@ Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指
 
 ### 安装方式
 
-1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行。不要 `curl | python`。
+1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行；当前稳定资产名为 `codex-instruct-v0.3.5.py`。不要 `curl | python`。
 2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.5-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
 3. **源码。** clone 后直接 `python3 codex-instruct.py`。当前默认分支与稳定 CLI 同为 `0.3.5`。
 
@@ -93,6 +93,7 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang z
 
 - CLI：macOS / Linux 为主要支持；Windows 新鲜部署为 `EXPLICIT_BETA`。不要使用已发布的 `v0.1.0`。
 - Desktop Beta：仅 macOS Apple Silicon 与 Windows x64，未签名、未经公证，可能触发 Gatekeeper / SmartScreen。
+- CLI 与 Desktop 正常操作不主动收集或上传用户数据；当前资产尚未完成实体设备验收，也未获 SignPath 签名。
 - 推荐 Python 3.10–3.14。没有 `pip install`，没有自动更新。
 - 版本、资产名和签名状态以 [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) 与 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) 为准，不要以本页为版本源。
 
