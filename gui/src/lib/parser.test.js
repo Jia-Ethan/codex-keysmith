@@ -90,7 +90,7 @@ const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
     Legacy migration: none
     Hooks restore: available (restore will overwrite neither file)
     Structural health: healthy
-    Uninstall readiness: ready
+    Uninstall readiness: ready (current config.toml will be left unchanged)
     Deployability: blocked (switch back to an active profile first)`;
 
 // ── SPEC §5.2 真实 dry-run 输出 ──

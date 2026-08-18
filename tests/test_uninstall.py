@@ -430,7 +430,7 @@ def test_ccswitch_rewrite_preserves_unrelated_config_and_restores_old_reference(
     assert not (codex_dir / "gpt-unrestricted.md").exists()
 
 
-def test_ccswitch_missing_reference_is_reported_as_inactive_but_remains_write_blocked(
+def test_ccswitch_missing_reference_is_inactive_deploy_blocked_and_uninstall_leaves_config(
     tmp_path,
 ):
     codex_dir = _make_codex_dir(tmp_path)
@@ -451,19 +451,29 @@ def test_ccswitch_missing_reference_is_reported_as_inactive_but_remains_write_bl
     )
     status = _run("--codex-dir", codex_dir, "--status")
     deploy = _run("--codex-dir", codex_dir, "--yes")
-    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+    preview = _run("--codex-dir", codex_dir, "--uninstall")
 
     assert direct_plan.activation_state == "inactive"
     assert direct_plan.inactive_config_blocker is not None
     assert status.returncode == 0, status.stdout + status.stderr
     assert "配置激活状态: inactive-by-config" in status.stdout
     assert "结构健康: healthy" in status.stdout
-    assert "卸载就绪度: blocked（先切回 active 配置）" in status.stdout
+    assert "卸载就绪度: ready（将保留当前 config.toml）" in status.stdout
     assert "可部署性: blocked（先切回 active 配置）" in status.stdout
     assert "hooks 隔离不随 config.toml 配置切换" in status.stdout
     assert deploy.returncode == 1
-    assert uninstall.returncode == 1
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert "保留当前 config.toml" in preview.stdout
     assert _snapshot_files(codex_dir) == before
+
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+
+    assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
+    assert config.read_text(encoding="utf-8") == inactive_config
+    assert not (codex_dir / "gpt-unrestricted.md").exists()
+    assert not (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+    assert list(codex_dir.glob(f"{codex_instruct.MANIFEST_FILENAME}.uninstalled_*"))
+    assert (codex_dir / "hooks.json").read_text(encoding="utf-8") == "active hook\n"
 
 
 def test_ccswitch_inactive_profile_can_switch_back_to_managed_active_profile(tmp_path):
@@ -509,14 +519,23 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
 
     assert status.returncode == 0, status.stdout + status.stderr
     assert "Config activation: inactive-by-config" in status.stdout
-    assert "Uninstall readiness: blocked (switch back to an active profile first)" in status.stdout
+    assert "Uninstall readiness: ready (current config.toml will be left unchanged)" in status.stdout
     assert "Deployability: blocked (switch back to an active profile first)" in status.stdout
     assert "Hook isolation does not follow config.toml profile switches" in status.stdout
     assert preview.returncode == 1
     assert deploy.returncode == 1
     assert "existing deployment manifest ownership conflict" in preview.stdout
     assert "existing deployment manifest ownership conflict" in deploy.stdout
-    for result in (status, preview, deploy):
+    uninstall_preview = _run(
+        "--codex-dir",
+        codex_dir,
+        "--uninstall",
+        "--lang",
+        "en",
+    )
+    assert uninstall_preview.returncode == 0, uninstall_preview.stdout + uninstall_preview.stderr
+    assert "Leave the current config.toml unchanged" in uninstall_preview.stdout
+    for result in (status, preview, deploy, uninstall_preview):
         assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
 
 
@@ -752,7 +771,9 @@ def test_ccswitch_rewrite_of_unchanged_owned_reference_is_not_touched(tmp_path):
     assert not (codex_dir / "gpt-unrestricted.md").exists()
 
 
-def test_exact_manifest_config_with_missing_owned_reference_still_blocks(tmp_path):
+def test_exact_manifest_config_with_missing_owned_reference_leaves_live_config(
+    tmp_path,
+):
     codex_dir = _make_codex_dir(tmp_path)
     _deploy(codex_dir)
     config = codex_dir / "config.toml"
@@ -766,10 +787,10 @@ def test_exact_manifest_config_with_missing_owned_reference_still_blocks(tmp_pat
 
     result = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
 
-    assert result.returncode == 1
-    assert "model_instructions_file" in result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
     assert config.read_text(encoding="utf-8") == missing_reference
-    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert not (codex_dir / "gpt-unrestricted.md").exists()
+    assert not manifest_path.exists()
 
 
 def test_english_uninstall_target_field_error_has_no_chinese(tmp_path):
