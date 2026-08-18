@@ -476,6 +476,42 @@ def test_ccswitch_missing_reference_is_inactive_deploy_blocked_and_uninstall_lea
     assert (codex_dir / "hooks.json").read_text(encoding="utf-8") == "active hook\n"
 
 
+def test_inactive_uninstall_failure_does_not_replace_untouched_config(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = (
+        'model = "ccswitch-off"\r\n'
+        'approval_policy = "on-request"\r\n'
+    ).encode("utf-8")
+    config.write_bytes(inactive_config)
+    config_hardlink = codex_dir / "config-hardlink.toml"
+    os.link(config, config_hardlink)
+    original_inode = config.stat().st_ino
+
+    def fail_manifest_archive(*_args, **_kwargs):
+        raise codex_instruct.HooksConflict("forced late uninstall failure")
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_move_manifest_to_archive",
+        fail_manifest_archive,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.uninstall([str(codex_dir)], True)
+
+    assert error.value.code == 1
+    assert config.read_bytes() == inactive_config
+    assert config.stat().st_ino == original_inode
+    assert os.path.samefile(config, config_hardlink)
+    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).exists()
+
+
 def test_ccswitch_inactive_profile_can_switch_back_to_managed_active_profile(tmp_path):
     codex_dir = _make_codex_dir(tmp_path)
     _deploy(codex_dir)
