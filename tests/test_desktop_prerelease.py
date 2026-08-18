@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
 PUBLISHED_DESKTOP_VERSION = "0.3.5"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
-PUBLISHED_SOURCE_VERSION = "0.3.6"
+PUBLISHED_SOURCE_VERSION = "0.3.7"
 
 
 def _sha256(path: Path) -> str:

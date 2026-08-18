@@ -343,3 +343,11 @@ def test_workspace_is_not_world_writable_registry(tmp_path):
     if os.name != "nt":
         # Windows st_mode is synthetic and does not describe the file's ACL.
         assert stat.S_IMODE(registry.stat().st_mode) & stat.S_IWOTH == 0
+
+
+def test_default_pack_dir_prefers_meipass_when_frozen(tmp_path, monkeypatch):
+    embedded = tmp_path / "meipass" / "fixture_packs"
+    embedded.mkdir(parents=True)
+    monkeypatch.setattr(codex_instruct.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(codex_instruct.sys, "_MEIPASS", str(tmp_path / "meipass"), raising=False)
+    assert codex_instruct.default_fixture_pack_dir() == embedded.resolve()
