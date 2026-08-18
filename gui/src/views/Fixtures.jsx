@@ -32,6 +32,47 @@ function previewReasonKey(reason) {
   return "deploy.previewFailed";
 }
 
+function normalizeWorkspaceRoot(value) {
+  return String(value || "").trim();
+}
+
+export function createFixturePreviewSnapshot({ parsed, kind, packId, workspaceRoot, force }) {
+  return {
+    ...parsed,
+    kind,
+    packId,
+    workspaceRoot: normalizeWorkspaceRoot(workspaceRoot),
+    force: kind === "write" && Boolean(force),
+  };
+}
+
+export function isFixturePreviewCurrent(preview, { packId, workspaceRoot, force }) {
+  if (!preview?.gate?.ok || preview.packId !== packId) return false;
+  if (preview.kind === "uninstall" && preview.notMaterialized) return false;
+  if (preview.kind === "write" && preview.unchanged) return false;
+  if (preview.workspaceRoot !== normalizeWorkspaceRoot(workspaceRoot)) return false;
+  return preview.kind !== "write" || preview.force === Boolean(force);
+}
+
+export function fixtureLibraryIsEmpty(library) {
+  return Boolean(library?.empty && library.packages?.length === 0);
+}
+
+export function classifyFixtureExecution(kind, output, parsed) {
+  if (output.timed_out) return "timeout";
+  if (output.exit_code !== 0 || !parsed.semanticComplete || !parsed.didNotModifyCodex) {
+    return "failure";
+  }
+  if (kind === "uninstall") {
+    if (parsed.removed) return "success";
+    if (parsed.notMaterialized) return "noop";
+    return "failure";
+  }
+  if (parsed.wrote) return "success";
+  if (parsed.unchanged) return "noop";
+  return "failure";
+}
+
 export function Fixtures() {
   const { t } = useTranslation();
   const { cliInfo, operationInProgress } = useAppState();
@@ -96,7 +137,13 @@ export function Fixtures() {
           workspaceRoot: workspaceRoot.trim() || undefined,
           force,
         });
-      const snapshot = { ...parsed, kind, packId: selectedId, workspaceRoot: workspaceRoot.trim() };
+      const snapshot = createFixturePreviewSnapshot({
+        parsed,
+        kind,
+        packId: selectedId,
+        workspaceRoot,
+        force,
+      });
       setPreview(snapshot);
       if (!snapshot.gate?.ok) toast.error(t(previewReasonKey(snapshot.gate?.reason)));
     } catch (err) {
@@ -114,10 +161,11 @@ export function Fixtures() {
     }
   };
 
-  const previewCurrent = preview
-    && preview.gate?.ok
-    && preview.packId === selectedId
-    && preview.workspaceRoot === workspaceRoot.trim();
+  const previewCurrent = isFixturePreviewCurrent(preview, {
+    packId: selectedId,
+    workspaceRoot,
+    force,
+  });
 
   const runWrite = async () => {
     if (!previewCurrent) {
@@ -137,13 +185,14 @@ export function Fixtures() {
         })
         : await executeScaffold(preview.packId, {
           workspaceRoot: preview.workspaceRoot || undefined,
-          force,
+          force: preview.force,
         });
       const parsed = parseScaffoldPreview(output.stdout);
-      if (output.timed_out) {
+      const outcome = classifyFixtureExecution(preview.kind, output, parsed);
+      if (outcome === "timeout") {
         setWriteResult({ ok: false, text: t("fixtures.timedOut") });
         toast.error(t("fixtures.writeFailed"));
-      } else if (output.exit_code === 0 && parsed.didNotModifyCodex) {
+      } else if (outcome === "success") {
         setWriteResult({
           ok: true,
           text: output.stdout,
@@ -153,6 +202,11 @@ export function Fixtures() {
         toast.success(preview.kind === "uninstall"
           ? t("fixtures.uninstallSuccess")
           : t("fixtures.writeSuccess"));
+      } else if (outcome === "noop") {
+        setWriteResult({ ok: true, noOp: true, text: output.stdout });
+        toast.info(t(preview.kind === "uninstall"
+          ? "fixtures.notMaterialized"
+          : "fixtures.alreadyCurrent"));
       } else {
         setWriteResult({ ok: false, text: output.stderr || output.stdout });
         toast.error(t("fixtures.writeFailed"));
@@ -202,6 +256,10 @@ export function Fixtures() {
               </div>
               {library?.error ? (
                 <p className="mt-3 text-sm text-danger">{library.error}</p>
+              ) : fixtureLibraryIsEmpty(library) ? (
+                <p className="mt-3 text-sm text-muted-foreground" role="status">
+                  {t("fixtures.empty")}
+                </p>
               ) : (
                 <ul className="mt-3 space-y-2">
                   {(library?.packages || []).map((item) => {
@@ -262,7 +320,12 @@ export function Fixtures() {
                 <input
                   type="checkbox"
                   checked={force}
-                  onChange={(e) => setForce(e.target.checked)}
+                  onChange={(e) => {
+                    setForce(e.target.checked);
+                    setPreview(null);
+                    setPending(null);
+                    setWriteResult(null);
+                  }}
                 />
                 {t("fixtures.force")}
               </label>
@@ -311,16 +374,24 @@ export function Fixtures() {
                       {preview.previewOnly && (
                         <p className="mt-1 text-xs text-muted-foreground">{t("fixtures.previewOnly")}</p>
                       )}
-                      <Button
-                        className="mt-3"
-                        size="sm"
-                        onClick={() => setPending(preview)}
-                        disabled={operationInProgress}
-                      >
-                        {preview.kind === "uninstall"
-                          ? t("fixtures.confirmUninstall")
-                          : t("fixtures.confirmWrite")}
-                      </Button>
+                      {preview.notMaterialized || preview.unchanged ? (
+                        <p className="mt-2 text-xs text-muted-foreground" role="status">
+                          {t(preview.notMaterialized
+                            ? "fixtures.notMaterialized"
+                            : "fixtures.alreadyCurrent")}
+                        </p>
+                      ) : (
+                        <Button
+                          className="mt-3"
+                          size="sm"
+                          onClick={() => setPending(preview)}
+                          disabled={!previewCurrent || operationInProgress}
+                        >
+                          {preview.kind === "uninstall"
+                            ? t("fixtures.confirmUninstall")
+                            : t("fixtures.confirmWrite")}
+                        </Button>
+                      )}
                     </>
                   )}
                 </div>
@@ -329,7 +400,11 @@ export function Fixtures() {
               {writeResult && (
                 <div className="mt-4 rounded-[12px] border border-border p-3 text-sm">
                   <div className={writeResult.ok ? "text-ok font-medium" : "text-danger font-medium"}>
-                    {writeResult.ok ? t("fixtures.writeDone") : t("fixtures.writeFailed")}
+                    {writeResult.noOp
+                      ? t("fixtures.noChange")
+                      : writeResult.ok
+                        ? t("fixtures.writeDone")
+                        : t("fixtures.writeFailed")}
                   </div>
                   {writeResult.dest && (
                     <p className="mt-1 font-mono text-xs">{writeResult.dest}</p>

@@ -870,7 +870,7 @@ export function parseScaffoldPreview(stdout) {
       result.source = sourceMatch[1];
       continue;
     }
-    const destMatch = line.match(/^\[scaffold\] dest: (.+)$/);
+    const destMatch = line.match(/^\[(?:scaffold|scaffold-uninstall)\] dest: (.+)$/);
     if (destMatch) {
       result.dest = destMatch[1];
       continue;

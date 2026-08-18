@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-`desktop-v0.3.5-beta.1` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS，并包含 GUI 场景库页。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均为 `Beta / unsigned / native-CI-validated`，尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+当前公开的 `desktop-v0.3.5-beta.1` 统一提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS，并包含 GUI 场景库页。源码候选 `desktop-v0.3.7-beta.1` 继续保持这两个平台与未签名边界，冻结 sidecar 会内嵌四个 `fixture_packs/`，不依赖源码树列出或写入夹具。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均尚未进行正式签名、公证或实体设备验收。普通用户按平台下载已发布的 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
@@ -68,8 +68,9 @@ cargo check --manifest-path src-tauri/Cargo.toml --locked
 ## 功能
 
 - **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情；完整的非零状态报告继续显示目录卡片，并保留退出码、stderr 与完整 CLI 输出。
-- **部署向导**：选择内容、dry-run 预览、确认执行；非零退出、超时、空输出和阻塞项全部阻断。
+- **部署向导**：内置稿可选 unrestricted / contract preset，本地文件模式不传 `--preset`；dry-run 预览后再确认执行，非零退出、超时、空输出和阻塞项全部阻断。
 - **场景库**：列出 sidecar/源码场景包，选择显式目标目录后预览部署、查看 status、按 `deployment_id` 卸载、恢复中断事务。预览绑定当时的规范目标与场景/部署标识，选择变化后立即失效；写操作无论成功、失败或超时都会保留 stdout/stderr 并刷新目标状态。GUI 不写 `<target>/.codex-keysmith/`。
+- **夹具工作区**：从 sidecar/源码列出并预览四个 fixture pack，在独立工作区写入或删除；预览绑定 pack、目录和覆盖选项，结果明确显示未修改 `~/.codex`。GUI 只调用 CLI scaffold 命令。
 - **管理**：卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。
 - **窗口生命周期**：单实例运行；所有 Keysmith CLI/status/manifest 后端调用使用生命周期租约，写操作额外使用全局互斥锁，关闭时先建立退出屏障，禁止新调用进入，并在最后一个租约完成后销毁窗口。
 - **设置**：可选 CLI 路径覆盖、默认 `.codex` 目录、中英双语和主题。

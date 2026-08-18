@@ -829,6 +829,15 @@ const SCAFFOLD_WROTE = `[scaffold] pack: pytest_complete v1
 Suggested first sentence: Make the tests pass.
 `;
 
+const SCAFFOLD_UNINSTALL_PREVIEW = `[scaffold-uninstall] dest: /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+[scaffold] preview only; add --yes to delete.
+`;
+
+const SCAFFOLD_NOT_MATERIALIZED = `[scaffold] not materialized: pytest_complete
+[scaffold] did not modify ~/.codex
+`;
+
 describe("parseScaffoldList", () => {
   it("parses pack-dir and pack rows", () => {
     const parsed = parseScaffoldList(SCAFFOLD_LIST);
@@ -856,6 +865,21 @@ describe("parseScaffoldPreview", () => {
     expect(parsed.wrote).toBe(true);
     expect(parsed.startPrompt).toBe("Make the tests pass.");
     expect(parsed.didNotModifyCodex).toBe(true);
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses the uninstall destination shown by the CLI", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_UNINSTALL_PREVIEW);
+    expect(parsed.previewOnly).toBe(true);
+    expect(parsed.dest).toBe("/tmp/ws/pytest_complete");
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses a no-op uninstall without inventing a destination", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_NOT_MATERIALIZED);
+    expect(parsed.notMaterialized).toBe(true);
+    expect(parsed.packId).toBe("pytest_complete");
+    expect(parsed.dest).toBeNull();
     expect(parsed.semanticComplete).toBe(true);
   });
 });

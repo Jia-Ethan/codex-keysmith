@@ -31,6 +31,19 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
+export function buildDeployArgs({ source, preset, filePath, name, codexDir, skipHooks }) {
+  const args = [];
+  if (source === "file") {
+    if (filePath) args.push("--file", filePath);
+  } else {
+    args.push("--preset", preset);
+  }
+  if (name.trim()) args.push("--name", name.trim());
+  if (codexDir.trim()) args.push("--codex-dir", codexDir.trim());
+  if (skipHooks) args.push("--skip-hooks-isolation");
+  return args;
+}
+
 export function Deploy() {
   const { t } = useTranslation();
   const { cliInfo, operationInProgress } = useAppState();
@@ -50,18 +63,14 @@ export function Deploy() {
   const cliChecking = !cliInfo.checked;
   const cliUnavailable = cliInfo.checked && !cliInfo.path;
 
-  const buildArgs = () => {
-    const args = [];
-    if (source === "file" && filePath) {
-      args.push("--file", filePath);
-    } else {
-      args.push("--preset", preset);
-    }
-    if (name.trim()) args.push("--name", name.trim());
-    if (codexDir.trim()) args.push("--codex-dir", codexDir.trim());
-    if (skipHooks) args.push("--skip-hooks-isolation");
-    return args;
-  };
+  const buildArgs = () => buildDeployArgs({
+    source,
+    preset,
+    filePath,
+    name,
+    codexDir,
+    skipHooks,
+  });
 
   const canNext = (source === "bundled" || !!filePath) && (!skipHooks || !!codexDir.trim());
 
