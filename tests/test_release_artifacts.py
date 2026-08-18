@@ -238,7 +238,7 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-08-17".format(VERSION) in changelog
+    assert "## [{}] - 2026-08-18".format(VERSION) in changelog
     assert "Source version v0.3.7" in readme
     assert "v0.3.7 local candidate" not in readme
     assert "This candidate has no tag" not in readme
