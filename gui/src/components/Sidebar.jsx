@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard,
   Rocket,
+  FlaskConical,
   Boxes,
   Wrench,
   Settings,
@@ -24,6 +25,7 @@ import {
 const NAV = [
   { key: "dashboard", icon: LayoutDashboard },
   { key: "deploy", icon: Rocket },
+  { key: "fixtures", icon: FlaskConical },
   { key: "scenarios", icon: Boxes },
   { key: "manage", icon: Wrench },
   { key: "settings", icon: Settings },

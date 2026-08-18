@@ -12,6 +12,8 @@ import {
   parseScenarioDeployPreview,
   parseScenarioUninstallPreview,
   parseScenarioRecoverPreview,
+  parseScaffoldList,
+  parseScaffoldPreview,
   extractCanonicalTarget,
 } from "./parser.js";
 import { beginOperation, endOperation } from "./store.js";
@@ -249,6 +251,79 @@ export async function fetchScenarioRecoverPreview(targetDir) {
 
 export function executeScenarioRecover(targetDir) {
   return cliExecute(["--scenario-recover", "--target-dir", targetDir], 120_000);
+}
+
+function scaffoldBaseArgs({ packDir, workspaceRoot } = {}) {
+  const args = [];
+  if (packDir) args.push("--pack-dir", packDir);
+  if (workspaceRoot) args.push("--workspace-root", workspaceRoot);
+  return args;
+}
+
+export async function fetchScaffoldList(packDir) {
+  const args = ["--scaffold-list", ...scaffoldBaseArgs({ packDir }), "--lang", "en"];
+  const output = await cliRun(args, 60_000);
+  const parsed = parseScaffoldList(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.gate = gatePreview(output, parsed);
+  if (output.timed_out || !parsed.semanticComplete) {
+    throw new CliError(output);
+  }
+  return parsed;
+}
+
+export async function fetchScaffoldPreview(packId, { packDir, workspaceRoot, force = false } = {}) {
+  const args = [
+    "--scaffold",
+    packId,
+    ...scaffoldBaseArgs({ packDir, workspaceRoot }),
+    ...(force ? ["--force"] : []),
+    "--lang",
+    "en",
+  ];
+  const output = await cliRun(args);
+  const parsed = parseScaffoldPreview(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.gate = gatePreview(output, parsed);
+  return parsed;
+}
+
+export function executeScaffold(packId, { packDir, workspaceRoot, force = false } = {}) {
+  return cliExecute([
+    "--scaffold",
+    packId,
+    ...scaffoldBaseArgs({ packDir, workspaceRoot }),
+    ...(force ? ["--force"] : []),
+  ], 120_000);
+}
+
+export async function fetchScaffoldUninstallPreview(packId, { packDir, workspaceRoot } = {}) {
+  const args = [
+    "--scaffold-uninstall",
+    packId,
+    ...scaffoldBaseArgs({ packDir, workspaceRoot }),
+    "--lang",
+    "en",
+  ];
+  const output = await cliRun(args);
+  const parsed = parseScaffoldPreview(output.stdout);
+  parsed.exitCode = output.exit_code;
+  parsed.stderr = output.stderr;
+  parsed.timedOut = output.timed_out;
+  parsed.gate = gatePreview(output, parsed);
+  return parsed;
+}
+
+export function executeScaffoldUninstall(packId, { packDir, workspaceRoot } = {}) {
+  return cliExecute([
+    "--scaffold-uninstall",
+    packId,
+    ...scaffoldBaseArgs({ packDir, workspaceRoot }),
+  ], 120_000);
 }
 
 export class CliError extends Error {

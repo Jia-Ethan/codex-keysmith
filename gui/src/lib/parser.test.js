@@ -3,6 +3,8 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  parseScaffoldList,
+  parseScaffoldPreview,
   parseStatus,
   parseDryRun,
   parseUninstallPreview,
@@ -805,5 +807,79 @@ describe("extractCanonicalTarget", () => {
     ],
   ])("兼容普通与 Windows absolute canonical 文案", (output, expected) => {
     expect(extractCanonicalTarget(output)).toBe(expected);
+  });
+});
+
+const SCAFFOLD_LIST = `[scaffold] pack-dir: /repo/fixture_packs
+  pytest_complete  v1  smoke  Completeness smoke fixture
+  aiml_llamaguard  v1  aiml  LlamaGuard evaluation fixture
+`;
+
+const SCAFFOLD_PREVIEW = `[scaffold] pack: pytest_complete v1
+[scaffold] source: /repo/fixture_packs/pytest_complete
+[scaffold] dest: /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+[scaffold] preview only; add --yes to write.
+`;
+
+const SCAFFOLD_WROTE = `[scaffold] pack: pytest_complete v1
+[scaffold] dest: /tmp/ws/pytest_complete
+[scaffold] wrote /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+Suggested first sentence: Make the tests pass.
+`;
+
+const SCAFFOLD_UNINSTALL_PREVIEW = `[scaffold-uninstall] dest: /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+[scaffold] preview only; add --yes to delete.
+`;
+
+const SCAFFOLD_NOT_MATERIALIZED = `[scaffold] not materialized: pytest_complete
+[scaffold] did not modify ~/.codex
+`;
+
+describe("parseScaffoldList", () => {
+  it("parses pack-dir and pack rows", () => {
+    const parsed = parseScaffoldList(SCAFFOLD_LIST);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.packDir).toBe("/repo/fixture_packs");
+    expect(parsed.packages.map((item) => item.id)).toEqual([
+      "pytest_complete",
+      "aiml_llamaguard",
+    ]);
+    expect(parsed.packages[0].family).toBe("smoke");
+  });
+});
+
+describe("parseScaffoldPreview", () => {
+  it("parses preview-only write plan", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_PREVIEW);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.previewOnly).toBe(true);
+    expect(parsed.didNotModifyCodex).toBe(true);
+    expect(parsed.dest).toBe("/tmp/ws/pytest_complete");
+  });
+
+  it("parses write result and start prompt", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_WROTE);
+    expect(parsed.wrote).toBe(true);
+    expect(parsed.startPrompt).toBe("Make the tests pass.");
+    expect(parsed.didNotModifyCodex).toBe(true);
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses the uninstall destination shown by the CLI", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_UNINSTALL_PREVIEW);
+    expect(parsed.previewOnly).toBe(true);
+    expect(parsed.dest).toBe("/tmp/ws/pytest_complete");
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses a no-op uninstall without inventing a destination", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_NOT_MATERIALIZED);
+    expect(parsed.notMaterialized).toBe(true);
+    expect(parsed.packId).toBe("pytest_complete");
+    expect(parsed.dest).toBeNull();
+    expect(parsed.semanticComplete).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import {
   detectCli,
   fetchScenarioDeployPreview,
   fetchScenarioList,
+  fetchScaffoldList,
   fetchStatus,
   readManifest,
   resolveCli,
@@ -203,6 +204,25 @@ describe("resolveCli", () => {
     });
     expect(getVersion).not.toHaveBeenCalled();
     expect(getRuntime).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchScaffoldList", () => {
+  it("lists fixture packs without --codex-dir", async () => {
+    invoke.mockResolvedValue({
+      stdout: "[scaffold] pack-dir: /repo/fixture_packs\n  pytest_complete  v1  smoke  Completeness smoke fixture\n",
+      stderr: "",
+      exit_code: 0,
+      timed_out: false,
+    });
+
+    const parsed = await fetchScaffoldList();
+    expect(parsed.packages[0].id).toBe("pytest_complete");
+    expect(invoke).toHaveBeenCalledWith("cli_run", {
+      cliPath: null,
+      args: ["--scaffold-list", "--lang", "en"],
+      timeoutMs: 60_000,
+    });
   });
 });
 
