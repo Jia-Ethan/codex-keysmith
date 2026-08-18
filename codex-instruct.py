@@ -15231,6 +15231,15 @@ def default_fixture_workspace() -> Path:
 
 
 def default_fixture_pack_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            embedded = Path(meipass) / FIXTURE_PACKS_DIRNAME
+            if _classify_node(embedded).kind == "directory":
+                return embedded
+        beside = Path(sys.executable).resolve().parent / FIXTURE_PACKS_DIRNAME
+        if _classify_node(beside).kind == "directory":
+            return beside
     return Path(__file__).resolve().parent / FIXTURE_PACKS_DIRNAME
 
 

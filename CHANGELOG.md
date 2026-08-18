@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Desktop GUI can select `--preset unrestricted|contract` on the deploy wizard and materialize or remove fixture packs from a dedicated Fixtures view. The frozen sidecar embeds `fixture_packs/` so `--scaffold-list` works without a source checkout. Public installer remains an unsigned `desktop-v0.3.7-beta.1` candidate after the existing desktop publication workflow; this source change does not itself publish a DMG or NSIS.
+
 ## [0.3.7] - 2026-08-18
 
 ### Added
