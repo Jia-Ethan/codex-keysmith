@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；公开 unsigned 档为 `desktop-v0.3.7-beta.1` |
+| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；下一档尚未发布的 unsigned 候选为 `desktop-v0.3.7-beta.1` |
 
 ## 3. 总体架构
 
