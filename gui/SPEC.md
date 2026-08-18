@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：源码已具备指令层 GUI（M1–M5）、场景库页、preset 选择与 fixture scaffold 页；冻结 sidecar 内嵌 `fixture_packs/`。公开安装包在发布前仍是 `desktop-v0.3.5-beta.1`；下一档 unsigned Desktop 为 `desktop-v0.3.7-beta.1`。正式签名、公证与实体设备验收仍待完成
+> 状态：源码已具备指令层 GUI（M1–M5）、场景库页、preset 选择与 fixture scaffold 页；冻结 sidecar 内嵌 `fixture_packs/`。`desktop-v0.3.7-beta.1` 已作为当前 unsigned Desktop 公开发布；正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；下一档尚未发布的 unsigned 候选为 `desktop-v0.3.7-beta.1` |
+| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；已发布为 unsigned `desktop-v0.3.7-beta.1` |
 
 ## 3. 总体架构
 
@@ -343,13 +343,13 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
 | **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
 | **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；预览绑定规范目标与场景/部署标识，选择变化后失效；状态与写结果保留 blocker、stdout/stderr，并在每次写操作后刷新；进入 `desktop-v0.3.5-beta.1` |
-| **Desktop 双通道与夹具页** ✅ | Deploy 双 preset、本地文件模式、Fixtures 列表/预览/写入/删除、sidecar 内嵌 fixture packs | GUI 只调用既有 CLI；部署参数互斥；夹具预览绑定 pack/目录/force 并明确未修改 `~/.codex`；源码候选为 `desktop-v0.3.7-beta.1` |
+| **Desktop 双通道与夹具页** ✅ | Deploy 双 preset、本地文件模式、Fixtures 列表/预览/写入/删除、sidecar 内嵌 fixture packs | GUI 只调用既有 CLI；部署参数互斥；夹具预览绑定 pack/目录/force 并明确未修改 `~/.codex`；已进入 `desktop-v0.3.7-beta.1` |
 
 ## 10. 交接说明（给接手 Agent）
 
 **起点：** canonical 仓库内的 `gui/` 目录；CLI 源码固定取仓库根目录 `codex-instruct.py`，GUI 与 CLI 可绑定到同一提交。
 
-**当前交付（截至 2026-08-18，v0.3.7 源码候选）：**
+**当前交付（截至 2026-08-18，v0.3.7 源码与 unsigned Desktop Beta）：**
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
 - `src/`：React 19 前端，六视图（Dashboard / Deploy / Scenarios / Fixtures / Manage / Settings）+ react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
@@ -372,11 +372,11 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 - `Hooks restore: available …` 是提示行不是状态，解析时映射为 `restorable`
 - kv 区可能出现 `[Error] config.toml …` 中文诊断行，需转成 warning 展示而非吞掉
 
-**后续工作（正式发布门禁）：**
+**后续工作（signed Desktop 门禁）：**
 
-1. 从最终发布提交在原生 Apple Silicon / Windows x64 runner 上重跑阻断构建与安装包验证，并绑定标签、source commit、build manifest 和资产校验和
-2. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
-3. 验证最终安装版本、架构、sidecar、图标、升级/降级和卸载残留后再创建 GitHub Release
+1. Apple Developer ID 签名、公证和 stapling；Windows Authenticode 签名与时间戳
+2. 在 macOS Apple Silicon 与 Windows x64 实体设备验证安装版本、架构、sidecar、图标、升级/降级和卸载残留
+3. 通过独立签名工作流发布新的 signed Desktop 版本，不覆盖现有 unsigned beta
 
 **长期约束（仍需遵守）：**
 
