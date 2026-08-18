@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Desktop GUI can select `--preset unrestricted|contract` on the deploy wizard and materialize or remove fixture packs from a dedicated Fixtures view. The frozen sidecar embeds `fixture_packs/` so `--scaffold-list` works without a source checkout. Public installer remains an unsigned `desktop-v0.3.7-beta.1` candidate after the existing desktop publication workflow; this source change does not itself publish a DMG or NSIS.
 
+### Fixed
+
+- Uninstall no longer treats a missing top-level `model_instructions_file` as an ownership conflict. `inactive-by-config` still blocks deploy, but `--uninstall` now leaves the current `config.toml` unchanged and reverts the managed prompt, hooks/legacy, and manifest. This unblocks Windows desktop users whose Codex or profile switcher stripped the field after a v0.2.0 deployment (#52). A field that points at another path remains fail-closed.
+
 ## [0.3.7] - 2026-08-18
 
 ### Added
