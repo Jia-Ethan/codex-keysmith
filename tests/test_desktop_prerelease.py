@@ -16,12 +16,13 @@ COMMIT = "a" * 40
 TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
-PUBLISHED_DESKTOP_VERSION = "0.3.7"
+PUBLISHED_DESKTOP_VERSION = "0.3.8"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
-PUBLISHED_SOURCE_VERSION = "0.3.7"
+PUBLISHED_SOURCE_VERSION = "0.3.8"
 HISTORICAL_DESKTOP_VERSION = "0.3.5"
 HISTORICAL_DESKTOP_TAG = f"desktop-v{HISTORICAL_DESKTOP_VERSION}-beta.1"
-CANDIDATE_DESKTOP_TAG = f"desktop-v{VERSION}-beta.1"
+PREVIOUS_DESKTOP_VERSION = "0.3.7"
+PREVIOUS_DESKTOP_TAG = f"desktop-v{PREVIOUS_DESKTOP_VERSION}-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -595,18 +596,18 @@ def test_historical_desktop_v035_notes_remain_unchanged():
     assert release_notes == expected
 
 
-def test_published_desktop_v037_notes_remain_unchanged():
+def test_previous_desktop_v037_notes_remain_unchanged():
     release_notes = (
-        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+        REPO_ROOT / f"docs/releases/{PREVIOUS_DESKTOP_TAG}.md"
     ).read_text(encoding="utf-8")
     assert release_notes.startswith(
-        f"# codex-keysmith v{PUBLISHED_DESKTOP_VERSION} Desktop Beta\n"
+        f"# codex-keysmith v{PREVIOUS_DESKTOP_VERSION} Desktop Beta\n"
     )
     for marker in (
         "WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA",
-        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
-        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
-        f"v{PUBLISHED_DESKTOP_VERSION}",
+        f"codex-keysmith-{PREVIOUS_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
+        f"codex-keysmith-{PREVIOUS_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
+        f"v{PREVIOUS_DESKTOP_VERSION}",
         "SHA256SUMS",
         "unrestricted",
         "contract",
@@ -615,9 +616,9 @@ def test_published_desktop_v037_notes_remain_unchanged():
         assert marker in release_notes
 
 
-def test_candidate_prerelease_release_notes_match_approved_compact_copy():
+def test_published_prerelease_release_notes_match_approved_compact_copy():
     release_notes = (
-        REPO_ROOT / f"docs/releases/{CANDIDATE_DESKTOP_TAG}.md"
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
     ).read_text(encoding="utf-8")
     expected = textwrap.dedent(
         """\
