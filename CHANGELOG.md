@@ -6,13 +6,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Added
-
-- Desktop GUI can select `--preset unrestricted|contract` on the deploy wizard and materialize or remove fixture packs from a dedicated Fixtures view. The frozen sidecar embeds `fixture_packs/` so `--scaffold-list` works without a source checkout. Public installer remains an unsigned `desktop-v0.3.7-beta.1` candidate after the existing desktop publication workflow; this source change does not itself publish a DMG or NSIS.
+## [0.3.8] - 2026-08-19
 
 ### Fixed
 
 - Uninstall no longer treats a missing top-level `model_instructions_file` as an ownership conflict. `inactive-by-config` still blocks deploy, but `--uninstall` now leaves the current `config.toml` unchanged and reverts the managed prompt, hooks/legacy, and manifest. This unblocks Windows desktop users whose Codex or profile switcher stripped the field after a v0.2.0 deployment (#52). A field that points at another path remains fail-closed.
+- Failed in-process uninstall rollback now restores only paths that were actually written, removed, renamed, or moved. An untouched inactive `config.toml` remains byte-identical and preserves its inode and hardlink relationships.
+
+### Desktop
+
+- Prepared unsigned `desktop-v0.3.8-beta.1` for macOS Apple Silicon and Windows x64 with the same GUI and frozen sidecar behavior as `desktop-v0.3.7-beta.1`, plus the inactive-by-config uninstall fix. This source change prepares the candidate; publication remains a separate signed-tag, main-only workflow action.
 
 ## [0.3.7] - 2026-08-18
 
@@ -253,7 +256,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.8
 [0.3.7]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.5
