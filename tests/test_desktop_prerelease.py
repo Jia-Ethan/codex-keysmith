@@ -16,9 +16,12 @@ COMMIT = "a" * 40
 TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
-PUBLISHED_DESKTOP_VERSION = "0.3.5"
+PUBLISHED_DESKTOP_VERSION = "0.3.7"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
 PUBLISHED_SOURCE_VERSION = "0.3.7"
+HISTORICAL_DESKTOP_VERSION = "0.3.5"
+HISTORICAL_DESKTOP_TAG = f"desktop-v{HISTORICAL_DESKTOP_VERSION}-beta.1"
+CANDIDATE_DESKTOP_TAG = f"desktop-v{VERSION}-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -571,22 +574,56 @@ def test_historical_desktop_beta6_notes_remain_unchanged():
     assert release_notes == expected
 
 
-def test_prerelease_release_notes_match_approved_compact_copy():
+def test_historical_desktop_v035_notes_remain_unchanged():
     release_notes = (
-        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+        REPO_ROOT / f"docs/releases/{HISTORICAL_DESKTOP_TAG}.md"
     ).read_text(encoding="utf-8")
     expected = textwrap.dedent(
         f"""\
-        # codex-keysmith v{PUBLISHED_DESKTOP_VERSION} Desktop Beta
+        # codex-keysmith v{HISTORICAL_DESKTOP_VERSION} Desktop Beta
 
         GUI 安装包更新场景库页。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
 
         ## 下载
 
-        - macOS Apple Silicon：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg`
-        - Windows x64：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe`
-        - 单文件 CLI 与场景 bundle：见 [v{PUBLISHED_DESKTOP_VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{PUBLISHED_DESKTOP_VERSION})
+        - macOS Apple Silicon：`codex-keysmith-{HISTORICAL_DESKTOP_VERSION}-macos-arm64-unsigned.dmg`
+        - Windows x64：`codex-keysmith-{HISTORICAL_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe`
+        - 单文件 CLI 与场景 bundle：见 [v{HISTORICAL_DESKTOP_VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{HISTORICAL_DESKTOP_VERSION})
         - 文件校验：`SHA256SUMS`
+        """
+    )
+    assert release_notes == expected
+
+
+def test_published_desktop_v037_notes_remain_unchanged():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    assert release_notes.startswith(
+        f"# codex-keysmith v{PUBLISHED_DESKTOP_VERSION} Desktop Beta\n"
+    )
+    for marker in (
+        "WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA",
+        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
+        f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
+        f"v{PUBLISHED_DESKTOP_VERSION}",
+        "SHA256SUMS",
+        "unrestricted",
+        "contract",
+        "fixture_packs/",
+    ):
+        assert marker in release_notes
+
+
+def test_candidate_prerelease_release_notes_match_approved_compact_copy():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{CANDIDATE_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith 桌面测试版
+
+        修复升级后当前配置不再引用受管提示词时无法卸载的问题；卸载会保留现有 Codex 配置。
         """
     )
     assert release_notes == expected
