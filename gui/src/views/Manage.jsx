@@ -1,7 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Undo2, Anchor, Zap } from "lucide-react";
+import { Undo2, Anchor, Zap, Power } from "lucide-react";
 import { cliRun, cliExecute, fetchStatus } from "@/lib/api";
 import { parseUninstallPreview, gatePreview } from "@/lib/parser";
 import { useAppState } from "@/hooks/useAppState";
@@ -79,6 +79,7 @@ export function Manage() {
   const cliUnavailable = cliInfo.checked && !cliInfo.path;
   const dirs = status?.directories ?? [];
   const hasResidue = dirs.some((d) => d.residue.length > 0);
+  const hasInactive = dirs.some((d) => d.activation === "inactive-by-config");
 
   return (
     <div>
@@ -115,6 +116,22 @@ export function Manage() {
 
       {cliInfo.checked && cliInfo.path && (
         <div className="mt-6 flex flex-col gap-4">
+          <ActionCard
+            opKey="reactivate"
+            t={t}
+            title={t("manage.reactivate")}
+            desc={t("manage.reactivateDesc")}
+            icon={<Power className="size-[18px]" aria-hidden="true" />}
+            cliArgs={["--reactivate"]}
+            dirs={dirs}
+            operationInProgress={operationInProgress}
+            invalidationEpoch={previewEpoch}
+            onWriteSuccess={handleWriteSuccess}
+            enabled={hasInactive}
+            highlight={hasInactive}
+            extraBadge={hasInactive ? t("manage.reactivateAvailable") : null}
+            delay={0.08}
+          />
           <ActionCard
             opKey="uninstall"
             t={t}

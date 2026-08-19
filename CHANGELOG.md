@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- `inactive-by-config` now has a constrained `--reactivate` path. When the manifest and managed Markdown remain healthy and only the top-level `model_instructions_file` is missing, preview/confirm restores that field into the current live `config.toml` after a timestamped backup. Deploy stays blocked; Markdown, hooks, and the manifest are not rewritten. The GUI Manage page exposes the same preview-gated action, and Dashboard/Deploy point inactive-by-config users there instead of a full deploy (#36).
+
 ## [0.3.8] - 2026-08-19
 
 ### Fixed

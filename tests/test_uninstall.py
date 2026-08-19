@@ -459,7 +459,7 @@ def test_ccswitch_missing_reference_is_inactive_deploy_blocked_and_uninstall_lea
     assert "配置激活状态: inactive-by-config" in status.stdout
     assert "结构健康: healthy" in status.stdout
     assert "卸载就绪度: ready（将保留当前 config.toml）" in status.stdout
-    assert "可部署性: blocked（先切回 active 配置）" in status.stdout
+    assert "可部署性: blocked（先切回 active 配置，或使用 --reactivate 只恢复字段）" in status.stdout
     assert "hooks 隔离不随 config.toml 配置切换" in status.stdout
     assert deploy.returncode == 1
     assert preview.returncode == 0, preview.stdout + preview.stderr
@@ -556,12 +556,15 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
     assert status.returncode == 0, status.stdout + status.stderr
     assert "Config activation: inactive-by-config" in status.stdout
     assert "Uninstall readiness: ready (current config.toml will be left unchanged)" in status.stdout
-    assert "Deployability: blocked (switch back to an active profile first)" in status.stdout
+    assert "Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)" in status.stdout
     assert "Hook isolation does not follow config.toml profile switches" in status.stdout
+    assert "or use --reactivate to restore only the missing field" in status.stdout
     assert preview.returncode == 1
     assert deploy.returncode == 1
     assert "existing deployment manifest ownership conflict" in preview.stdout
     assert "existing deployment manifest ownership conflict" in deploy.stdout
+    assert "--reactivate" in preview.stdout
+    assert "--reactivate" in status.stdout
     uninstall_preview = _run(
         "--codex-dir",
         codex_dir,
@@ -573,6 +576,140 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
     assert "Leave the current config.toml unchanged" in uninstall_preview.stdout
     for result in (status, preview, deploy, uninstall_preview):
         assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+
+
+def test_inactive_reactivate_restores_only_missing_field_and_preserves_live_config(
+    tmp_path,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = (
+        'model = "ccswitch-off"\r\n'
+        'approval_policy = "on-request"\r\n'
+    )
+    config.write_bytes(inactive_config.encode("utf-8"))
+    md_before = (codex_dir / "gpt-unrestricted.md").read_bytes()
+    manifest_before = (codex_dir / codex_instruct.MANIFEST_FILENAME).read_bytes()
+    hooks_before = {
+        path.name: path.read_bytes()
+        for path in codex_dir.iterdir()
+        if path.name.startswith("hooks.json")
+    }
+
+    preview = _run("--codex-dir", codex_dir, "--reactivate")
+    english = _run("--codex-dir", codex_dir, "--reactivate", "--lang", "en")
+    result = _run("--codex-dir", codex_dir, "--reactivate", "--yes")
+    status = _run("--codex-dir", codex_dir, "--status")
+
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert "确认重新激活请添加 --yes" in preview.stdout
+    assert english.returncode == 0, english.stdout + english.stderr
+    assert "add --yes to confirm reactivation" in english.stdout
+    assert re.search(r"[\u3400-\u9fff]", english.stdout + english.stderr) is None
+    assert result.returncode == 0, result.stdout + result.stderr
+    restored = config.read_bytes()
+    assert b'model_instructions_file = "./gpt-unrestricted.md"' in restored
+    assert b'model = "ccswitch-off"' in restored
+    assert b'approval_policy = "on-request"' in restored
+    assert restored.startswith(b'model = "ccswitch-off"\r\n')
+    assert (codex_dir / "gpt-unrestricted.md").read_bytes() == md_before
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).read_bytes() == manifest_before
+    assert {
+        path.name: path.read_bytes()
+        for path in codex_dir.iterdir()
+        if path.name.startswith("hooks.json")
+    } == hooks_before
+    assert list(codex_dir.glob("config.toml.bak_*"))
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "配置激活状态: active" in status.stdout
+    assert "可部署性: ready" in status.stdout
+    assert "卸载就绪度: ready" in status.stdout
+
+
+def test_reactivate_skips_active_and_blocks_conflict_or_damaged_markdown(tmp_path):
+    active_dir = _make_codex_dir(tmp_path, name=".codex-active")
+    _deploy(active_dir)
+    active_before = _snapshot_files(active_dir)
+    active = _run("--codex-dir", active_dir, "--reactivate", "--yes")
+
+    drifted = _make_codex_dir(tmp_path, name=".codex-drifted")
+    _deploy(drifted)
+    (drifted / "gpt-unrestricted.md").write_text("drifted prompt\n", encoding="utf-8")
+    (drifted / "config.toml").write_text('model = "ccswitch-off"\n', encoding="utf-8")
+    drifted_before = _snapshot_files(drifted)
+    drifted_result = _run("--codex-dir", drifted, "--reactivate", "--yes")
+
+    conflict = _make_codex_dir(tmp_path, name=".codex-conflict")
+    _deploy(conflict)
+    (conflict / "config.toml").write_text(
+        'model_instructions_file = "./other.md"\n',
+        encoding="utf-8",
+    )
+    conflict_before = _snapshot_files(conflict)
+    conflict_result = _run("--codex-dir", conflict, "--reactivate", "--yes")
+
+    assert active.returncode == 0, active.stdout + active.stderr
+    assert "没有需要重新激活的 inactive-by-config 目录" in active.stdout
+    assert _snapshot_files(active_dir) == active_before
+    assert drifted_result.returncode == 1
+    assert conflict_result.returncode == 1
+    assert _snapshot_files(drifted) == drifted_before
+    assert _snapshot_files(conflict) == conflict_before
+
+
+def test_cli_rejects_reactivate_with_file_or_preset(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text('model = "ccswitch-off"\n', encoding="utf-8")
+    before = _snapshot_files(codex_dir)
+
+    with_file = _run(
+        "--codex-dir",
+        codex_dir,
+        "--reactivate",
+        "--file",
+        str(codex_dir / "gpt-unrestricted.md"),
+    )
+    with_preset = _run(
+        "--codex-dir",
+        codex_dir,
+        "--reactivate",
+        "--preset",
+        "contract",
+        "--lang",
+        "en",
+    )
+
+    assert with_file.returncode == 2
+    assert with_preset.returncode == 2
+    assert "--reactivate" in with_preset.stderr
+    assert "--preset" in with_preset.stderr
+    assert re.search(r"[\u3400-\u9fff]", with_preset.stderr) is None
+    assert _snapshot_files(codex_dir) == before
+
+
+def test_reactivate_failure_restores_live_config_from_backup(tmp_path, monkeypatch):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = b'model = "ccswitch-off"\n'
+    config.write_bytes(inactive_config)
+    md_before = (codex_dir / "gpt-unrestricted.md").read_bytes()
+
+    def fail_verify(plan):
+        raise codex_instruct.HooksConflict("forced reactivate verify failure")
+
+    monkeypatch.setattr(codex_instruct, "_verify_reactivate_result", fail_verify)
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(codex_dir)], True)
+
+    assert error.value.code == 1
+    assert config.read_bytes() == inactive_config
+    assert (codex_dir / "gpt-unrestricted.md").read_bytes() == md_before
+    assert list(codex_dir.glob("config.toml.bak_*"))
 
 
 @pytest.mark.parametrize("config_active", [False, True], ids=["field-missing", "field-active"])
@@ -601,16 +738,18 @@ def test_managed_markdown_damage_forces_activation_conflict_and_blocks_writes(
     status = _run("--codex-dir", codex_dir, "--status", "--lang", "en")
     preview = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
     deploy = _run("--codex-dir", codex_dir, "--yes", "--lang", "en")
+    reactivate = _run("--codex-dir", codex_dir, "--reactivate", "--yes", "--lang", "en")
     uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes", "--lang", "en")
 
     assert status.returncode == 1
     assert preview.returncode == 1
     assert deploy.returncode == 1
+    assert reactivate.returncode == 1
     assert uninstall.returncode == 1
     assert "Config activation: conflict" in status.stdout
     assert "Config activation: active" not in status.stdout
     assert "Config activation: inactive-by-config" not in status.stdout
-    for result in (status, preview, deploy, uninstall):
+    for result in (status, preview, deploy, reactivate, uninstall):
         assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
     assert sorted(path.name for path in codex_dir.iterdir()) == before_names
     assert config.read_bytes() == before_config
@@ -657,10 +796,12 @@ def test_damaged_manifest_recovery_evidence_forces_activation_conflict(
 
     status = _run("--codex-dir", codex_dir, "--status")
     deploy = _run("--codex-dir", codex_dir, "--yes")
+    reactivate = _run("--codex-dir", codex_dir, "--reactivate", "--yes")
     uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
 
     assert status.returncode == 1
     assert deploy.returncode == 1
+    assert reactivate.returncode == 1
     assert uninstall.returncode == 1
     assert "配置激活状态: conflict" in status.stdout
     assert "配置激活状态: active" not in status.stdout

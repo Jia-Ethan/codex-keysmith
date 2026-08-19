@@ -252,6 +252,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
   - 结构健康（healthy / blocked）
   - 关键行：model_instructions_file、hooks 状态、事务残留、旧版迁移
   - 残留存在时显示「恢复中断操作」按钮（跳 Manage）
+  - `inactive-by-config` 且结构健康时显示「恢复配置引用」按钮（跳 Manage，走 `--reactivate`）
 - 部署详情面板（有 manifest 时）：部署时间、tool_version、文件名、hooks 隔离、旧版归档
 
 ### 6.2 Deploy 向导（核心流程，3 步）
@@ -262,6 +263,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 ### 6.3 Manage
 
+- **恢复配置引用**（`--reactivate`）：仅在 status 为 `inactive-by-config` 时可用；先预览，确认后 `--yes`。只补回 manifest 期望的顶层 `model_instructions_file`，备份当前 `config.toml`，不改写受管提示词、hooks 或 manifest
 - **卸载**（`--uninstall`）：先预览（显示将撤销哪一层），确认后 `--yes`；多次卸载逐层回滚
 - **恢复 hooks**（`--restore-hooks`）：确认后执行
 - **恢复中断事务**（`--recover`）：仅在 status 显示残留时可用，确认后 `--yes`

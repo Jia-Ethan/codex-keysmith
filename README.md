@@ -85,9 +85,11 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN
 ```
 
-卸载每次只撤销最新一层。中断事务先 `--status`，再 `--recover` 预览，确认后加 `--yes`。不要手工删除 journal、备份或 manifest。
+卸载每次只撤销最新一层。若 `--status` 显示 `inactive-by-config`，用 `--reactivate` 只补回缺失的顶层 `model_instructions_file`，不要手工改 `config.toml`，也不要为补字段再走一遍完整部署。中断事务先 `--status`，再 `--recover` 预览，确认后加 `--yes`。不要手工删除 journal、备份或 manifest。
 
 ### 平台与 Beta 限制
 
