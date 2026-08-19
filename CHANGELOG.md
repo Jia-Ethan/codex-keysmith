@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Desktop
 
-- Prepared unsigned `desktop-v0.3.8-beta.1` for macOS Apple Silicon and Windows x64 with the same GUI and frozen sidecar behavior as `desktop-v0.3.7-beta.1`, plus the inactive-by-config uninstall fix. This source change prepares the candidate; publication remains a separate signed-tag, main-only workflow action.
+- Published unsigned Desktop Beta `desktop-v0.3.8-beta.1` for macOS Apple Silicon and Windows x64 with the same GUI and frozen sidecar behavior as `desktop-v0.3.7-beta.1`, plus the inactive-by-config uninstall fix. Its public assets are the DMG, NSIS setup executable, two candidate ZIPs, and `SHA256SUMS`; stable Latest remains `v0.3.8`.
 
 ## [0.3.7] - 2026-08-18
 
