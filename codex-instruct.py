@@ -44,7 +44,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # ─── 内置 GPT 破限指令内容 ──────────────────────────────────────────────────
 BUILTIN_GPT_UNRESTRICTED_MD = r"""Codex operates in local execution mode. Answer requests directly in the
@@ -439,6 +439,8 @@ _EN_REPLACEMENTS = (
     ("active（默认部署会整体隔离）", "active (the default deployment will isolate the whole file)"),
     ("conflict（恢复不会覆盖任何一方）", "conflict (restore will overwrite neither file)"),
     ("ready（部署会先备份已有 disabled）", "ready (deployment will first back up the existing disabled file)"),
+    ("ready（将保留当前 config.toml）", "ready (current config.toml will be left unchanged)"),
+    ("[提示]", "[Notice]"),
 )
 
 
@@ -3481,11 +3483,14 @@ def inspect_directory(
             for blocker in ownership_plan.blockers:
                 prefixed = f"{ownership_prefix}{blocker}"
                 plan.blockers.append(prefixed)
-                if (
-                    ownership_plan.activation_state == "inactive"
-                    and blocker == ownership_plan.activation_blocker
-                ):
-                    plan.inactive_config_blocker = prefixed
+            if (
+                ownership_plan.activation_state == "inactive"
+                and ownership_plan.activation_blocker
+            ):
+                prefixed = f"{ownership_prefix}{ownership_plan.activation_blocker}"
+                plan.inactive_config_blocker = prefixed
+                if prefixed not in plan.blockers:
+                    plan.blockers.append(prefixed)
 
     if not skip_hooks_isolation:
         for label, node in (("hooks.json", hooks), ("hooks.json.disabled", disabled)):
@@ -9588,6 +9593,7 @@ class UninstallPlan:
     hooks_state: str = "unchanged"
     activation_state: str = "not-installed"
     activation_blocker: Optional[str] = None
+    leave_config_untouched: bool = False
     blockers: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
@@ -9609,6 +9615,7 @@ class UninstallState:
     snapshots: Optional[Dict[Path, Optional[Path]]] = None
     snapshot_fingerprints: Optional[Dict[str, FileFingerprint]] = None
     post_expected: Optional[Dict[Path, Optional[Dict[str, Any]]]] = None
+    mutated_paths: Optional[Set[Path]] = None
     manifest_archive: Optional[Path] = None
     manifest_archive_fingerprint: Optional[FileFingerprint] = None
 
@@ -9619,6 +9626,8 @@ class UninstallState:
             self.snapshot_fingerprints = {}
         if self.post_expected is None:
             self.post_expected = {}
+        if self.mutated_paths is None:
+            self.mutated_paths = set()
 
     @property
     def codex_dir(self) -> Path:
@@ -9785,13 +9794,16 @@ def _preflight_uninstall_config(
     if analysis.instruction_statement is None:
         plan.activation_state = "inactive"
         plan.activation_blocker = _localized(
-            "config.toml 顶层 model_instructions_file 所有权冲突: "
-            f"当前字段缺失，预期仍引用 {owned_reference}",
-            "top-level config.toml model_instructions_file ownership conflict: "
-            "the current field is missing; "
-            f"expected it to still reference {owned_reference}",
+            "config.toml 顶层 model_instructions_file 当前缺失，"
+            f"预期引用 {owned_reference}；卸载将保留当前 config.toml，不回写部署前备份",
+            "top-level config.toml model_instructions_file is missing; "
+            f"expected it to still reference {owned_reference}. "
+            "Uninstall will leave the current config.toml unchanged "
+            "and will not restore the pre-deployment backup",
         )
-        plan.blockers.append(plan.activation_blocker)
+        # Missing field is not a competing owner. Uninstall may proceed, but
+        # must not take the schema-1 full-file backup restore path.
+        plan.leave_config_untouched = True
         return
     if analysis.instruction_reference != owned_reference:
         plan.activation_state = "conflict"
@@ -13001,9 +13013,9 @@ def _create_uninstall_journals(
                     None
                     if plan.merged_config_content is not None
                     else (
-                        config["before"]
-                        if config["changed"]
-                        else _portable_fingerprint(current(config_path))
+                        _portable_fingerprint(current(config_path))
+                        if plan.leave_config_untouched or not config["changed"]
+                        else config["before"]
                     )
                 ),
                 (
@@ -13296,6 +13308,15 @@ def _record_post(state: UninstallState, path: Path) -> None:
     state.post_expected[path] = _portable_fingerprint(_fingerprint_or_none(path))
 
 
+def _record_mutated_publication(
+    state: UninstallState,
+    path: Path,
+    published: FileFingerprint,
+) -> None:
+    state.post_expected[path] = _portable_fingerprint(published)
+    state.mutated_paths.add(path)
+
+
 def _update_uninstall_phase(state: UninstallState, phase: str) -> None:
     states = _ACTIVE_DEPLOYMENT_STATES
     if not states or state not in states:
@@ -13322,12 +13343,11 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             config_path,
             plan.merged_config_content,
             expected_fingerprint=plan.current_fingerprints[config_path],
-            on_published=lambda published: state.post_expected.__setitem__(
-                config_path,
-                _portable_fingerprint(published),
+            on_published=lambda published: _record_mutated_publication(
+                state, config_path, published
             ),
         )
-    elif config["changed"]:
+    elif config["changed"] and not plan.leave_config_untouched:
         current = plan.current_fingerprints[config_path]
         config_backup = codex_dir / config["backup"]
         _replace_owned_from_backup(
@@ -13337,6 +13357,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             plan.current_fingerprints[config_backup],
         )
         _record_post(state, config_path)
+        state.mutated_paths.add(config_path)
     else:
         expected = plan.current_fingerprints[config_path]
         if not _path_has_fingerprint(config_path, expected):
@@ -13346,7 +13367,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
                     f"config.toml changed after uninstall field validation: {config_path}",
                 )
             )
-        state.post_expected[config_path] = _portable_fingerprint(expected)
+        _record_post(state, config_path)
 
     _update_uninstall_phase(state, "md-intent")
     md_path = codex_dir / md["path"]
@@ -13362,6 +13383,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             plan.current_fingerprints[md_backup],
         )
     _record_post(state, md_path)
+    state.mutated_paths.add(md_path)
 
     _update_uninstall_phase(state, "hooks-intent")
     hooks_path = codex_dir / "hooks.json"
@@ -13372,6 +13394,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
             raise HooksConflict(f"卸载时 hooks.json 被并发创建: {hooks_path}")
         state.post_expected[hooks_path] = _portable_fingerprint(disabled_current)
         state.post_expected[disabled_path] = None
+        state.mutated_paths.update((hooks_path, disabled_path))
         if _fingerprint_regular_file(hooks_path) != disabled_current:
             raise HooksConflict(f"卸载恢复的 hooks.json 已漂移: {hooks_path}")
         if hooks["disabled_before"] is not None:
@@ -13400,6 +13423,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
                 f"卸载时 hooks.json.disabled 被并发创建: {disabled_path}"
             )
         _record_post(state, disabled_path)
+        state.mutated_paths.add(disabled_path)
     if hooks["isolated"]:
         _record_post(state, hooks_path)
         _record_post(state, disabled_path)
@@ -13416,6 +13440,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
         if not restored:
             raise HooksConflict(f"卸载时旧版提示词被并发创建: {legacy_path}")
         _record_post(state, legacy_path)
+        state.mutated_paths.add(legacy_path)
 
     _update_uninstall_phase(state, "manifest-intent")
     manifest_path = codex_dir / MANIFEST_FILENAME
@@ -13426,10 +13451,11 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
         timestamp,
         exact_archive=state.manifest_archive,
     )
+    state.post_expected[manifest_path] = None
+    state.mutated_paths.add(manifest_path)
     state.manifest_archive_fingerprint = _fingerprint_regular_file(
         state.manifest_archive
     )
-    state.post_expected[manifest_path] = None
     if previous["before"] is not None:
         restored = _copy_file_no_replace(
             codex_dir / previous["backup"],
@@ -13446,7 +13472,7 @@ def _execute_uninstall_state(state: UninstallState, timestamp: str) -> None:
 def _rollback_uninstall_state(state: UninstallState) -> List[str]:
     errors = []
     for path, snapshot in reversed(list(state.snapshots.items())):
-        if path not in state.post_expected:
+        if path not in state.mutated_paths:
             continue
         expected = state.post_expected[path]
         try:
@@ -13562,12 +13588,31 @@ def _uninstall_locked(codex_dirs: List[str], yes: bool) -> None:
             f"  [计划] {plan.codex_dir}: deployment {manifest['deployment_id']} "
             f"(v{manifest['tool_version']})"
         )
-        _print(
-            _localized(
-                "         恢复 config/MD/hooks/legacy，并归档当前部署清单",
-                "         Restore config/MD/hooks/legacy and archive the current deployment manifest",
+        if plan.leave_config_untouched:
+            _print(
+                _localized(
+                    "         保留当前 config.toml（顶层 model_instructions_file 已缺失，不回写备份），"
+                    "恢复 MD/hooks/legacy，并归档当前部署清单",
+                    "         Leave the current config.toml unchanged "
+                    "(the owned model_instructions_file is already absent; "
+                    "the pre-deployment backup will not be restored), "
+                    "restore MD/hooks/legacy, and archive the current deployment manifest",
+                )
             )
-        )
+            if plan.activation_blocker:
+                _print(
+                    _localized(
+                        f"  [提示] {plan.codex_dir}: {plan.activation_blocker}",
+                        f"  [Notice] {plan.codex_dir}: {plan.activation_blocker}",
+                    )
+                )
+        else:
+            _print(
+                _localized(
+                    "         恢复 config/MD/hooks/legacy，并归档当前部署清单",
+                    "         Restore config/MD/hooks/legacy and archive the current deployment manifest",
+                )
+            )
         for blocker in plan.blockers:
             _print(f"  [阻塞] {plan.codex_dir}: {blocker}")
     if blockers:
@@ -14475,9 +14520,14 @@ def show_status(codex_dirs: List[str]) -> None:
             _print(
                 _localized(
                     "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致；"
-                    "切回引用受管 MD 的配置后可继续部署或卸载。",
+                    "部署仍需先切回引用受管 MD 的配置。"
+                    "卸载会保留当前 config.toml，只撤销提示词文件与部署清单；"
+                    "若 On 副本仍引用该文件，请稍后在 On 副本中删除该字段。",
                     "    [Notice] This matches a normal-mode CCSwitch profile without the field; "
-                    "switch back to a profile that references the managed Markdown before deploy or uninstall.",
+                    "switch back to a profile that references the managed Markdown before deploy. "
+                    "Uninstall will leave the current config.toml unchanged and only revert "
+                    "the managed prompt and manifest; if an On profile still references that file, "
+                    "remove the field from the On copy afterwards.",
                 )
             )
             if plan.manifest_hooks_isolated:
@@ -14524,22 +14574,15 @@ def show_status(codex_dirs: List[str]) -> None:
             + ("blocked" if structural_errors else "healthy")
         )
         if plan.manifest.exists:
-            if inactive_by_config:
-                _print(
-                    _localized(
-                        "    卸载就绪度: blocked（先切回 active 配置）",
-                        "    Uninstall readiness: blocked (switch back to an active profile first)",
-                    )
-                )
+            uninstall_blocked = (
+                bool(plan.uninstall_blockers) or plan.activation_state == "conflict"
+            )
+            if uninstall_blocked:
+                _print("    卸载就绪度: blocked")
+            elif inactive_by_config:
+                _print("    卸载就绪度: ready（将保留当前 config.toml）")
             else:
-                _print(
-                    "    卸载就绪度: "
-                    + (
-                        "blocked"
-                        if plan.uninstall_blockers or plan.activation_state == "conflict"
-                        else "ready"
-                    )
-                )
+                _print("    卸载就绪度: ready")
         else:
             _print("    卸载就绪度: not-applicable")
         if status_errors:
