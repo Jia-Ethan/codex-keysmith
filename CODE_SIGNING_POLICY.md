@@ -2,9 +2,9 @@
 
 ## Current desktop beta
 
-`desktop-v0.3.7-beta.1` publishes `codex-keysmith-0.3.7-macos-arm64-unsigned.dmg` and `codex-keysmith-0.3.7-windows-x64-unsigned-setup.exe` as the current unsigned Desktop Beta. The public asset set is those two installers, two candidate ZIPs, and `SHA256SUMS`. Stable CLI and source assets remain on the separate `v0.3.7` Release. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
+`desktop-v0.3.8-beta.1` publishes `codex-keysmith-0.3.8-macos-arm64-unsigned.dmg` and `codex-keysmith-0.3.8-windows-x64-unsigned-setup.exe` as the current unsigned Desktop Beta. The public asset set is those two installers, two candidate ZIPs, and `SHA256SUMS`. Stable CLI and source assets remain on the separate `v0.3.8` Release. The DMG is not Apple-signed or notarized, and the installer has no Authenticode signature. macOS may show Gatekeeper warnings; Windows may show **Unknown publisher** and Microsoft Defender SmartScreen warnings.
 
-`desktop-v0.3.8-beta.1` is the next unpublished candidate and will use the same unsigned macOS Apple Silicon / Windows x64 boundary. `desktop-v0.3.5-beta.1` and the `desktop-v0.2.0-beta.*` line remain historical prereleases. None is overwritten by a later beta.
+`desktop-v0.3.7-beta.1`, `desktop-v0.3.5-beta.1`, and the `desktop-v0.2.0-beta.*` line remain historical prereleases. None is overwritten by a later beta.
 
 The signed `desktop-v0.2.0-beta.1` tag is retained as immutable evidence of an aborted publication attempt. Its draft was removed before asset upload, so it has no public Release or downloadable assets.
 
