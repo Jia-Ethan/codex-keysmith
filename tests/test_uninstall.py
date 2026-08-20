@@ -4,8 +4,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -459,7 +461,7 @@ def test_ccswitch_missing_reference_is_inactive_deploy_blocked_and_uninstall_lea
     assert "配置激活状态: inactive-by-config" in status.stdout
     assert "结构健康: healthy" in status.stdout
     assert "卸载就绪度: ready（将保留当前 config.toml）" in status.stdout
-    assert "可部署性: blocked（先切回 active 配置）" in status.stdout
+    assert "可部署性: blocked（先切回 active 配置，或使用 --reactivate 只恢复字段）" in status.stdout
     assert "hooks 隔离不随 config.toml 配置切换" in status.stdout
     assert deploy.returncode == 1
     assert preview.returncode == 0, preview.stdout + preview.stderr
@@ -556,12 +558,15 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
     assert status.returncode == 0, status.stdout + status.stderr
     assert "Config activation: inactive-by-config" in status.stdout
     assert "Uninstall readiness: ready (current config.toml will be left unchanged)" in status.stdout
-    assert "Deployability: blocked (switch back to an active profile first)" in status.stdout
+    assert "Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)" in status.stdout
     assert "Hook isolation does not follow config.toml profile switches" in status.stdout
+    assert "or use --reactivate to restore only the missing field" in status.stdout
     assert preview.returncode == 1
     assert deploy.returncode == 1
     assert "existing deployment manifest ownership conflict" in preview.stdout
     assert "existing deployment manifest ownership conflict" in deploy.stdout
+    assert "--reactivate" in preview.stdout
+    assert "--reactivate" in status.stdout
     uninstall_preview = _run(
         "--codex-dir",
         codex_dir,
@@ -573,6 +578,593 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
     assert "Leave the current config.toml unchanged" in uninstall_preview.stdout
     for result in (status, preview, deploy, uninstall_preview):
         assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
+
+
+def test_inactive_reactivate_restores_only_missing_field_and_preserves_live_config(
+    tmp_path,
+):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = (
+        'model = "ccswitch-off"\r\n'
+        'approval_policy = "on-request"\r\n'
+    )
+    config.write_bytes(inactive_config.encode("utf-8"))
+    md_before = (codex_dir / "gpt-unrestricted.md").read_bytes()
+    manifest_before = (codex_dir / codex_instruct.MANIFEST_FILENAME).read_bytes()
+    hooks_before = {
+        path.name: path.read_bytes()
+        for path in codex_dir.iterdir()
+        if path.name.startswith("hooks.json")
+    }
+
+    preview = _run("--codex-dir", codex_dir, "--reactivate")
+    english = _run("--codex-dir", codex_dir, "--reactivate", "--lang", "en")
+    result = _run("--codex-dir", codex_dir, "--reactivate", "--yes")
+    status = _run("--codex-dir", codex_dir, "--status")
+
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert "确认重新激活请添加 --yes" in preview.stdout
+    assert english.returncode == 0, english.stdout + english.stderr
+    assert "add --yes to confirm reactivation" in english.stdout
+    assert re.search(r"[\u3400-\u9fff]", english.stdout + english.stderr) is None
+    assert result.returncode == 0, result.stdout + result.stderr
+    restored = config.read_bytes()
+    assert b'model_instructions_file = "./gpt-unrestricted.md"' in restored
+    assert b'model = "ccswitch-off"' in restored
+    assert b'approval_policy = "on-request"' in restored
+    assert restored.startswith(b'model = "ccswitch-off"\r\n')
+    assert (codex_dir / "gpt-unrestricted.md").read_bytes() == md_before
+    assert (codex_dir / codex_instruct.MANIFEST_FILENAME).read_bytes() == manifest_before
+    assert {
+        path.name: path.read_bytes()
+        for path in codex_dir.iterdir()
+        if path.name.startswith("hooks.json")
+    } == hooks_before
+    assert list(codex_dir.glob("config.toml.bak_*"))
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "配置激活状态: active" in status.stdout
+    assert "可部署性: ready" in status.stdout
+    assert "卸载就绪度: ready" in status.stdout
+
+
+def test_reactivate_skips_active_and_blocks_conflict_or_damaged_markdown(tmp_path):
+    active_dir = _make_codex_dir(tmp_path, name=".codex-active")
+    _deploy(active_dir)
+    active_before = _snapshot_files(active_dir)
+    active = _run("--codex-dir", active_dir, "--reactivate", "--yes")
+
+    drifted = _make_codex_dir(tmp_path, name=".codex-drifted")
+    _deploy(drifted)
+    (drifted / "gpt-unrestricted.md").write_text("drifted prompt\n", encoding="utf-8")
+    (drifted / "config.toml").write_text('model = "ccswitch-off"\n', encoding="utf-8")
+    drifted_before = _snapshot_files(drifted)
+    drifted_result = _run("--codex-dir", drifted, "--reactivate", "--yes")
+
+    conflict = _make_codex_dir(tmp_path, name=".codex-conflict")
+    _deploy(conflict)
+    (conflict / "config.toml").write_text(
+        'model_instructions_file = "./other.md"\n',
+        encoding="utf-8",
+    )
+    conflict_before = _snapshot_files(conflict)
+    conflict_result = _run("--codex-dir", conflict, "--reactivate", "--yes")
+
+    assert active.returncode == 0, active.stdout + active.stderr
+    assert "没有需要重新激活的 inactive-by-config 目录" in active.stdout
+    assert _snapshot_files(active_dir) == active_before
+    assert drifted_result.returncode == 1
+    assert conflict_result.returncode == 1
+    assert _snapshot_files(drifted) == drifted_before
+    assert _snapshot_files(conflict) == conflict_before
+
+
+def test_cli_rejects_reactivate_with_file_or_preset(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    (codex_dir / "config.toml").write_text('model = "ccswitch-off"\n', encoding="utf-8")
+    before = _snapshot_files(codex_dir)
+
+    with_file = _run(
+        "--codex-dir",
+        codex_dir,
+        "--reactivate",
+        "--file",
+        str(codex_dir / "gpt-unrestricted.md"),
+    )
+    with_preset = _run(
+        "--codex-dir",
+        codex_dir,
+        "--reactivate",
+        "--preset",
+        "contract",
+        "--lang",
+        "en",
+    )
+
+    assert with_file.returncode == 2
+    assert with_preset.returncode == 2
+    assert "--reactivate" in with_preset.stderr
+    assert "--preset" in with_preset.stderr
+    assert re.search(r"[\u3400-\u9fff]", with_preset.stderr) is None
+    assert _snapshot_files(codex_dir) == before
+
+
+def test_reactivate_failure_restores_live_config_from_backup(tmp_path, monkeypatch):
+    codex_dir = _make_codex_dir(tmp_path)
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = b'model = "ccswitch-off"\n'
+    config.write_bytes(inactive_config)
+    md_before = (codex_dir / "gpt-unrestricted.md").read_bytes()
+
+    def fail_verify(plan):
+        raise codex_instruct.HooksConflict("forced reactivate verify failure")
+
+    monkeypatch.setattr(codex_instruct, "_verify_reactivate_result", fail_verify)
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(codex_dir)], True)
+
+    assert error.value.code == 1
+    assert config.read_bytes() == inactive_config
+    assert (codex_dir / "gpt-unrestricted.md").read_bytes() == md_before
+    assert list(codex_dir.glob("config.toml.bak_*"))
+
+
+def test_reactivate_second_directory_failure_restores_first_participant(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-first"),
+        _make_codex_dir(tmp_path, name=".codex-second"),
+    ]
+    inactive_configs = {}
+    for index, codex_dir in enumerate(codex_dirs, start=1):
+        _deploy(codex_dir)
+        inactive = f'model = "ccswitch-off-{index}"\n'.encode()
+        (codex_dir / "config.toml").write_bytes(inactive)
+        inactive_configs[codex_dir.resolve()] = inactive
+
+    original_verify = codex_instruct._verify_reactivate_result
+    verified = []
+
+    def fail_second_verify(plan):
+        verified.append(plan.codex_dir.resolve())
+        original_verify(plan)
+        if len(verified) == 2:
+            raise codex_instruct.HooksConflict("forced second participant failure")
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_verify_reactivate_result",
+        fail_second_verify,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    assert error.value.code == 1
+    assert len(verified) == 2
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_bytes() == inactive_configs[
+            codex_dir.resolve()
+        ]
+        assert list(codex_dir.glob("config.toml.bak_*"))
+
+
+def test_reactivate_batch_rollback_failure_warns_and_preserves_backup(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-rollback-first"),
+        _make_codex_dir(tmp_path, name=".codex-rollback-second"),
+    ]
+    for codex_dir in codex_dirs:
+        _deploy(codex_dir)
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+
+    original_verify = codex_instruct._verify_reactivate_result
+    original_restore = codex_instruct._restore_reactivate_backup
+    verified = []
+    first_published_dir = None
+
+    def fail_second_verify(plan):
+        nonlocal first_published_dir
+        verified.append(plan.codex_dir.resolve())
+        original_verify(plan)
+        if len(verified) == 1:
+            first_published_dir = plan.codex_dir.resolve()
+        else:
+            raise codex_instruct.HooksConflict("forced second participant failure")
+
+    def fail_first_restore(config_path, backup, expected_after):
+        if config_path.parent.resolve() == first_published_dir:
+            raise codex_instruct.HooksConflict("forced earlier participant rollback failure")
+        original_restore(config_path, backup, expected_after)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_verify_reactivate_result",
+        fail_second_verify,
+    )
+    monkeypatch.setattr(
+        codex_instruct,
+        "_restore_reactivate_backup",
+        fail_first_restore,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    output = capsys.readouterr().out
+    assert error.value.code == 1
+    assert "[回滚警告] forced earlier participant rollback failure" in output
+    assert "重新激活回滚未完整完成" in output
+    assert first_published_dir is not None
+    assert list(first_published_dir.glob("config.toml.bak_*"))
+
+
+def test_reactivate_final_sweep_detects_earlier_participant_drift(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-final-first"),
+        _make_codex_dir(tmp_path, name=".codex-final-second"),
+    ]
+    inactive_configs = {}
+    for index, codex_dir in enumerate(codex_dirs, start=1):
+        _deploy(codex_dir)
+        inactive = f'model = "ccswitch-off-{index}"\n'.encode()
+        (codex_dir / "config.toml").write_bytes(inactive)
+        inactive_configs[codex_dir.resolve()] = inactive
+
+    original_verify = codex_instruct._verify_reactivate_result
+    verify_calls = 0
+    first_verified_dir = None
+
+    def drift_first_after_immediate_verification(plan):
+        nonlocal first_verified_dir, verify_calls
+        verify_calls += 1
+        original_verify(plan)
+        if verify_calls == 1:
+            first_verified_dir = plan.codex_dir.resolve()
+        elif verify_calls == 2:
+            assert first_verified_dir is not None
+            (first_verified_dir / "gpt-unrestricted.md").write_text(
+                "concurrent managed prompt drift\n",
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_verify_reactivate_result",
+        drift_first_after_immediate_verification,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    assert error.value.code == 1
+    assert verify_calls == 3
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_bytes() == inactive_configs[
+            codex_dir.resolve()
+        ]
+
+
+def test_reactivate_keyboard_interrupt_rolls_back_in_reverse_order(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-interrupt-first"),
+        _make_codex_dir(tmp_path, name=".codex-interrupt-second"),
+    ]
+    inactive_configs = {}
+    for index, codex_dir in enumerate(codex_dirs, start=1):
+        _deploy(codex_dir)
+        inactive = f'model = "ccswitch-interrupt-{index}"\n'.encode()
+        (codex_dir / "config.toml").write_bytes(inactive)
+        inactive_configs[codex_dir.resolve()] = inactive
+
+    original_verify = codex_instruct._verify_reactivate_result
+    original_rollback = codex_instruct._rollback_reactivate_state
+    verified = []
+    rollback_order = []
+
+    def interrupt_second(plan):
+        verified.append(plan.codex_dir.resolve())
+        original_verify(plan)
+        if len(verified) == 2:
+            raise KeyboardInterrupt
+
+    def record_rollback(state):
+        rollback_order.append(state.plan.codex_dir.resolve())
+        original_rollback(state)
+
+    monkeypatch.setattr(codex_instruct, "_verify_reactivate_result", interrupt_second)
+    monkeypatch.setattr(codex_instruct, "_rollback_reactivate_state", record_rollback)
+
+    with pytest.raises(KeyboardInterrupt):
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    assert rollback_order == list(reversed(verified))
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_bytes() == inactive_configs[
+            codex_dir.resolve()
+        ]
+
+
+def test_reactivate_rollback_preserves_concurrent_config_replacement(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-race-first"),
+        _make_codex_dir(tmp_path, name=".codex-race-second"),
+    ]
+    for codex_dir in codex_dirs:
+        _deploy(codex_dir)
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+    second_before = (codex_dirs[1] / "config.toml").read_bytes()
+    concurrent = b'model = "concurrent-owner"\n'
+
+    original_verify = codex_instruct._verify_reactivate_result
+    verified = 0
+
+    def race_then_fail(plan):
+        nonlocal verified
+        original_verify(plan)
+        verified += 1
+        if verified == 2:
+            (codex_dirs[0] / "config.toml").write_bytes(concurrent)
+            raise codex_instruct.HooksConflict("forced failure after concurrent replacement")
+
+    monkeypatch.setattr(codex_instruct, "_verify_reactivate_result", race_then_fail)
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    output = capsys.readouterr().out
+    assert error.value.code == 1
+    assert (codex_dirs[0] / "config.toml").read_bytes() == concurrent
+    assert (codex_dirs[1] / "config.toml").read_bytes() == second_before
+    assert list(codex_dirs[0].glob("config.toml.bak_*"))
+    assert "拒绝覆盖重新激活后发生并发变化" in output
+
+
+def test_reactivate_preflight_blocker_keeps_every_config_unchanged(tmp_path):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-block-first"),
+        _make_codex_dir(tmp_path, name=".codex-block-second"),
+    ]
+    before = {}
+    backups_before = {}
+    for codex_dir in codex_dirs:
+        _deploy(codex_dir)
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+        before[codex_dir.resolve()] = (codex_dir / "config.toml").read_bytes()
+        backups_before[codex_dir.resolve()] = sorted(codex_dir.glob("config.toml.bak_*"))
+    (codex_dirs[1] / "gpt-unrestricted.md").write_text(
+        "damaged managed prompt\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    assert error.value.code == 1
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_bytes() == before[codex_dir.resolve()]
+        assert sorted(codex_dir.glob("config.toml.bak_*")) == backups_before[
+            codex_dir.resolve()
+        ]
+
+
+def test_reactivate_two_directories_succeeds_after_participant_final_sweep(tmp_path):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-success-first"),
+        _make_codex_dir(tmp_path, name=".codex-success-second"),
+    ]
+    expected = {}
+    for codex_dir in codex_dirs:
+        _deploy(codex_dir)
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+        expected[codex_dir.resolve()] = inspect = (
+            codex_instruct.inspect_reactivate_directory(codex_dir)
+        )
+        assert inspect.updated_config_content is not None
+
+    codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_bytes() == (
+            expected[codex_dir.resolve()].updated_config_content.encode("utf-8")
+        )
+        assert list(codex_dir.glob("config.toml.bak_*"))
+
+
+def test_reactivate_write_residue_cleanup_failure_restores_and_cleans_residue(
+    tmp_path,
+    monkeypatch,
+):
+    codex_dir = _make_codex_dir(tmp_path, name=".codex-residue-cleanup")
+    _deploy(codex_dir)
+    inactive = b'model = "ccswitch-off"\n'
+    (codex_dir / "config.toml").write_bytes(inactive)
+    real_strict_cleanup = codex_instruct._strict_cleanup_transaction_dir
+    injected = False
+
+    def fail_first_write_cleanup(transaction_dir):
+        nonlocal injected
+        if not injected and Path(transaction_dir).name.startswith(".keysmith-write-"):
+            injected = True
+            raise codex_instruct.TransactionResidueCleanupFailure(
+                "injected reactivate write-residue cleanup failure",
+                Path(transaction_dir),
+            )
+        return real_strict_cleanup(transaction_dir)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_strict_cleanup_transaction_dir",
+        fail_first_write_cleanup,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(codex_dir)], True)
+
+    assert error.value.code == 1
+    assert injected is True
+    assert (codex_dir / "config.toml").read_bytes() == inactive
+    assert not list(codex_dir.glob(".keysmith-write-*"))
+
+
+def test_reactivate_write_residue_retry_failure_stays_blocked(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    codex_dir = _make_codex_dir(tmp_path, name=".codex-residue-blocked")
+    _deploy(codex_dir)
+    inactive = b'model = "ccswitch-off"\n'
+    (codex_dir / "config.toml").write_bytes(inactive)
+    real_strict_cleanup = codex_instruct._strict_cleanup_transaction_dir
+    real_remove = codex_instruct._remove_transaction_dir
+    failed_residue = None
+
+    def fail_first_write_cleanup(transaction_dir):
+        nonlocal failed_residue
+        if failed_residue is None and Path(transaction_dir).name.startswith(
+            ".keysmith-write-"
+        ):
+            failed_residue = Path(transaction_dir)
+            raise codex_instruct.TransactionResidueCleanupFailure(
+                "injected reactivate write-residue cleanup failure",
+                failed_residue,
+            )
+        return real_strict_cleanup(transaction_dir)
+
+    def fail_residue_retry(transaction_dir):
+        if failed_residue is not None and Path(transaction_dir) == failed_residue:
+            raise codex_instruct.HooksConflict("injected residue retry failure")
+        return real_remove(transaction_dir)
+
+    monkeypatch.setattr(
+        codex_instruct,
+        "_strict_cleanup_transaction_dir",
+        fail_first_write_cleanup,
+    )
+    monkeypatch.setattr(
+        codex_instruct,
+        "_remove_transaction_dir",
+        fail_residue_retry,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        codex_instruct.reactivate([str(codex_dir)], True)
+
+    output = capsys.readouterr().out
+    assert error.value.code == 1
+    assert (codex_dir / "config.toml").read_bytes() == inactive
+    assert failed_residue is not None and failed_residue.exists()
+    assert "status 将保持 blocked" in output
+    status = _run("--codex-dir", codex_dir, "--status")
+    assert status.returncode == 1
+    assert failed_residue.name in status.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL contract")
+def test_reactivate_sigkill_is_non_durable_and_rerun_forward_completes(tmp_path):
+    codex_dirs = [
+        _make_codex_dir(tmp_path, name=".codex-kill-first"),
+        _make_codex_dir(tmp_path, name=".codex-kill-second"),
+    ]
+    expected_active = {}
+    for codex_dir in codex_dirs:
+        _deploy(codex_dir)
+        (codex_dir / "config.toml").write_text(
+            'model = "ccswitch-off"\n',
+            encoding="utf-8",
+        )
+        expected_active[codex_dir.resolve()] = (
+            codex_instruct.inspect_reactivate_directory(codex_dir).updated_config_content
+        )
+
+    marker = tmp_path / "reactivate-first-published"
+    child = tmp_path / "kill_reactivate.py"
+    child.write_text(
+        "import importlib.util, pathlib, sys, time\n"
+        f"module_path = pathlib.Path({str(MODULE_PATH)!r})\n"
+        "spec = importlib.util.spec_from_file_location('kill_reactivate_module', module_path)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules[spec.name] = module\n"
+        "spec.loader.exec_module(module)\n"
+        "real_verify = module._verify_reactivate_result\n"
+        "calls = 0\n"
+        "def stop_after_first(plan):\n"
+        "    global calls\n"
+        "    real_verify(plan)\n"
+        "    calls += 1\n"
+        "    if calls == 1:\n"
+        f"        pathlib.Path({str(marker)!r}).write_text('ready\\n', encoding='utf-8')\n"
+        "        time.sleep(60)\n"
+        "module._verify_reactivate_result = stop_after_first\n"
+        f"module.reactivate({[str(path) for path in codex_dirs]!r}, True)\n",
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(child)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not marker.exists():
+        stdout, stderr = process.communicate(timeout=5)
+        pytest.fail(f"reactivate checkpoint not reached: {stdout}\n{stderr}")
+    process.kill()
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == -signal.SIGKILL, stdout + stderr
+    assert (codex_dirs[0] / "config.toml").read_text(encoding="utf-8") == expected_active[
+        codex_dirs[0].resolve()
+    ]
+    assert (codex_dirs[1] / "config.toml").read_text(encoding="utf-8") != expected_active[
+        codex_dirs[1].resolve()
+    ]
+    for codex_dir in codex_dirs:
+        assert not list(codex_dir.glob(".codex-keysmith-transaction-*"))
+        assert list(codex_dir.glob("config.toml.bak_*"))
+
+    codex_instruct.reactivate([str(path) for path in codex_dirs], True)
+
+    for codex_dir in codex_dirs:
+        assert (codex_dir / "config.toml").read_text(encoding="utf-8") == expected_active[
+            codex_dir.resolve()
+        ]
 
 
 @pytest.mark.parametrize("config_active", [False, True], ids=["field-missing", "field-active"])
@@ -601,16 +1193,18 @@ def test_managed_markdown_damage_forces_activation_conflict_and_blocks_writes(
     status = _run("--codex-dir", codex_dir, "--status", "--lang", "en")
     preview = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
     deploy = _run("--codex-dir", codex_dir, "--yes", "--lang", "en")
+    reactivate = _run("--codex-dir", codex_dir, "--reactivate", "--yes", "--lang", "en")
     uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes", "--lang", "en")
 
     assert status.returncode == 1
     assert preview.returncode == 1
     assert deploy.returncode == 1
+    assert reactivate.returncode == 1
     assert uninstall.returncode == 1
     assert "Config activation: conflict" in status.stdout
     assert "Config activation: active" not in status.stdout
     assert "Config activation: inactive-by-config" not in status.stdout
-    for result in (status, preview, deploy, uninstall):
+    for result in (status, preview, deploy, reactivate, uninstall):
         assert re.search(r"[\u3400-\u9fff]", result.stdout + result.stderr) is None
     assert sorted(path.name for path in codex_dir.iterdir()) == before_names
     assert config.read_bytes() == before_config
@@ -657,10 +1251,12 @@ def test_damaged_manifest_recovery_evidence_forces_activation_conflict(
 
     status = _run("--codex-dir", codex_dir, "--status")
     deploy = _run("--codex-dir", codex_dir, "--yes")
+    reactivate = _run("--codex-dir", codex_dir, "--reactivate", "--yes")
     uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
 
     assert status.returncode == 1
     assert deploy.returncode == 1
+    assert reactivate.returncode == 1
     assert uninstall.returncode == 1
     assert "配置激活状态: conflict" in status.stdout
     assert "配置激活状态: active" not in status.stdout

@@ -91,7 +91,7 @@ const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
     Hooks restore: available (restore will overwrite neither file)
     Structural health: healthy
     Uninstall readiness: ready (current config.toml will be left unchanged)
-    Deployability: blocked (switch back to an active profile first)`;
+    Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)`;
 
 // ── SPEC §5.2 真实 dry-run 输出 ──
 const DRY_RUN_OK = `[Prompt] Source: bundled examples/gpt-unrestricted.md; SHA-256: 2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0
@@ -573,6 +573,24 @@ describe("gatePreview（问题 1：门禁不可绕过）", () => {
 });
 
 describe("parseUninstallPreview", () => {
+  it("解析重新激活计划", () => {
+    const out = `[Reactivate] Inspecting 1 Codex configuration location(s):
+  [Plan] /tmp/fake-codex: restore top-level model_instructions_file = "./gpt-unrestricted.md"
+         Backup the current config.toml; leave the managed prompt, hooks, and deployment manifest unchanged
+         config.toml backup: /tmp/fake-codex/config.toml.bak_20260819_233000
+[Preview] No files were changed; add --yes to confirm reactivation.`;
+    const r = parseUninstallPreview(out);
+    expect(r.plans).toHaveLength(1);
+    expect(r.plans[0].dir).toBe("/tmp/fake-codex");
+    expect(r.plans[0].summary).toContain("restore top-level model_instructions_file");
+    expect(r.plans[0].detail).toContain("Backup the current config.toml");
+    expect(r.semanticComplete).toBe(true);
+    expect(gatePreview(
+      { stdout: out, stderr: "", exit_code: 0, timed_out: false },
+      r,
+    ).ok).toBe(true);
+  });
+
   it("解析回滚计划", () => {
     const out = `[Uninstall] Preview (no changes made):
   [Plan] /tmp/fake-codex: revert 3 layer(s)
@@ -619,6 +637,9 @@ describe("parseUninstallPreview", () => {
     "[Done] No interrupted deployment transaction requires recovery.",
     "[Done] No interrupted uninstall transaction requires recovery.",
     "[Done] Restored 0 hooks.json file(s).",
+    "[Done] No codex-keysmith deployment manifest was found; nothing to reactivate.",
+    "[Done] No inactive-by-config location requires reactivation.",
+    "[Done] Reactivated 1 config reference(s).",
   ])("明确 no-op/完成输出放行：%s", (stdout) => {
     const parsed = parseUninstallPreview(stdout);
     const gate = gatePreview(
@@ -632,6 +653,7 @@ describe("parseUninstallPreview", () => {
   it.each([
     "[Preview] No files were changed; add --yes to confirm uninstall.",
     "[Preview] No files were changed; add --yes to confirm recovery.",
+    "[Preview] No files were changed; add --yes to confirm reactivation.",
     "[Preview] No files were changed; add --yes to clean the initializing journal.",
     "[Preview] Cleanup residue was not changed; add --yes to confirm cleanup.",
     "[Preview] Found an empty initializing journal before intent publication; nothing changed. Add --yes to remove it.",

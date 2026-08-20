@@ -13,7 +13,7 @@
 - `python3 codex-instruct.py --version` 输出、Release tag 和 commit SHA；
 - 操作系统、Python 版本和 Codex CLI 版本；
 - 最小复现步骤、预期结果和实际结果；
-- 脱敏后的 `--status` / `--dry-run` 输出，以及是否涉及 deploy、recover、restore-hooks 或 uninstall；如果存在 durable journal，只报告 transaction ID 和节点类型，不粘贴完整内容。
+- 脱敏后的 `--status` / `--dry-run` 输出，以及是否涉及 deploy、recover、restore-hooks、uninstall 或 reactivate；如果存在 durable journal，只报告 transaction ID 和节点类型，不粘贴完整内容。
 
 公开内容必须删除 token、cookie、用户名、私人路径、完整配置和 Prompt Bank 响应。安全漏洞请按 [安全政策](SECURITY.md) 私密报告。
 
@@ -61,7 +61,7 @@ git diff --check
 
 当前完整测试集为 400+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 81% 门槛让 CI 通过。Release 验证必须使用完整、非 shallow 的 checkout 并取得全部 tags。候选构建必须使用完整 `--source-commit` 并精确匹配 HEAD，并能以非交互、有限超时方式验证每个已配置 remote 的同名 tag；remote 不可达、需要认证或与本地 tag/候选 commit 不一致时必须 fail closed。如果 `v$VERSION` 已存在于其他 commit，builder 必须拒绝且不得生成同版本资产。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本、密封 `codex-keysmith-scenarios-v<VERSION>.bundle` 和 `SHA256SUMS` 可重复构建、内容完整且版本一致。不可变 tag 的恢复发布不得重写 tag 或沿用旧 run；必须从 `main` 输入完整 tag object/peeled commit，令同一 run 的所有阻断测试与 publish job checkout 该 tag，并按 numeric Release ID 操作 draft。
 
-Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows fresh deployment 已按 `EXPLICIT_BETA` 开放；相关改动必须保留 preview/执行路径的 beta 警告，并确保 status、recover、uninstall 与 restore-hooks 不误报。P0 原生后端与阻断式 recovery/lifecycle CI 不构成正式支持徽章或无边界兼容性声明。P1 仍需逐阶段硬中断、路径别名、长路径、本地化目录与 cleanup double-fault 证据，P2 正式支持边界仍未关闭。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows fresh deployment 已按 `EXPLICIT_BETA` 开放；相关改动必须保留 preview/执行路径的 beta 警告，并确保 status、recover、uninstall、restore-hooks 与 reactivate 不误报。P0 原生后端与阻断式 recovery/lifecycle CI 不构成正式支持徽章或无边界兼容性声明。P1 仍需逐阶段硬中断、路径别名、长路径、本地化目录与 cleanup double-fault 证据，P2 正式支持边界仍未关闭。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
 
 ---
 
@@ -74,7 +74,7 @@ Before opening a bug report, search existing issues and use the bug form. Includ
 - `python3 codex-instruct.py --version`, the Release tag, and commit SHA;
 - operating system, Python version, and Codex CLI version;
 - minimal reproduction steps, expected behavior, and actual behavior;
-- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, or uninstall is involved. If a durable journal exists, report only its transaction ID and node types, not complete content.
+- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, uninstall, or reactivate is involved. If a durable journal exists, report only its transaction ID and node types, not complete content.
 
 Remove tokens, cookies, usernames, private paths, complete configuration, and prompt-bank responses from public content. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
@@ -90,4 +90,4 @@ For a contribution:
 
 The current full suite contains 400+ tests. Do not remove tests, narrow measured source, or lower the combined 81% branch-coverage gate to make CI pass. Release verification requires a complete, non-shallow checkout with all tags. Candidate builds must pass a full `--source-commit` that exactly matches HEAD and must verify the same tag on every configured remote with non-interactive access and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, must fail closed. If `v$VERSION` already exists at another commit, the builder must refuse without generating same-version assets. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, sealed `codex-keysmith-scenarios-v<VERSION>.bundle`, and `SHA256SUMS` assets with complete content and consistent versions. Recovery publication for an immutable tag must not rewrite the tag or reuse an older run; it must start from `main` with the full tag-object and peeled-commit SHAs, make every blocking and publish job check out that tag in the same run, and address the draft by numeric Release ID.
 
-A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. Windows fresh deployment is open under `EXPLICIT_BETA`; related changes must preserve the beta warning on preview and execution without emitting it from status, recover, uninstall, or restore-hooks. The native P0 backend and blocking recovery/lifecycle CI are not a formal support badge or an unbounded compatibility claim. P1 still requires per-phase hard interruption, path aliases, long paths, localized profiles, and cleanup double-fault evidence, while the P2 formal-support boundary remains open. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. Windows fresh deployment is open under `EXPLICIT_BETA`; related changes must preserve the beta warning on preview and execution without emitting it from status, recover, uninstall, restore-hooks, or reactivate. The native P0 backend and blocking recovery/lifecycle CI are not a formal support badge or an unbounded compatibility claim. P1 still requires per-phase hard interruption, path aliases, long paths, localized profiles, and cleanup double-fault evidence, while the P2 formal-support boundary remains open. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.
