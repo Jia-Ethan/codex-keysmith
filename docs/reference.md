@@ -171,7 +171,9 @@ python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN  
 - 当前 `config.toml` 可被零依赖扫描器解析，且顶层 `model_instructions_file` 缺失而不是指向其他路径；
 - 没有事务残留或其他所有权冲突。
 
-写入前备份当前 `config.toml`，只插入 manifest 期望的顶层字段，保留其余 live 内容；不改写 Markdown、hooks 或 manifest。字段已存在且指向受管文件时是成功 no-op。这不会把 CCSwitch Off 副本变成持久 On；它只修改当前 live config。
+写入前先为全部参与目录备份当前 `config.toml`，再逐目录插入 manifest 期望的顶层字段，并在结束前复核全部参与目录。可捕获异常、`Ctrl-C` 或 `SystemExit` 会反序恢复本次已发布的目录；并发替换会被保留，原备份也会保留供人工核对。不改写 Markdown、hooks 或 manifest。字段已存在且指向受管文件时是成功 no-op。这不会把 CCSwitch Off 副本变成持久 On；它只修改当前 live config。
+
+`--reactivate` 没有 deploy/uninstall 的 durable journal：`SIGKILL`、进程丢失或断电可能让部分目录已 active、其余仍 inactive，`--recover` 不处理该状态。没有冲突或异常残留时，重新运行 `--reactivate --yes` 会跳过已 active 目录并完成其余目录；否则保留时间戳备份，先用 `--status` 核对并人工恢复。
 
 ### 升级工具与回滚
 
@@ -261,11 +263,12 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | `--pack-dir DIR` | fixture 包目录；省略时使用脚本旁 `fixture_packs/` |
 | `--force` | 覆盖 registry 指纹不匹配的已存在包目录（先改名为 `*.bak_<timestamp>`） |
 | `--dry-run` | 预览部署，不写文件 |
-| `--yes` | 确认常规部署、清单式卸载或中断恢复 |
+| `--yes` | 确认常规部署、重新激活、清单式卸载或中断恢复 |
 | `--codex-dir` | 显式选择单个 `.codex`；省略后使用自动发现 |
 | `--status` | 只读状态；不解析 hooks JSON |
 | `--restore-hooks` | 只恢复 disabled hooks |
 | `--uninstall` | 预览或撤销最新一层受管理部署 |
+| `--reactivate` | 预览或补回 inactive-by-config 缺失的顶层配置引用 |
 | `--recover` | 预览或恢复 durable journal 记录的中断 deploy/uninstall |
 | `--skip-hooks-isolation` | 保持 hooks 活跃；必须显式指定 `--codex-dir` |
 | `--scenario-list` | 列出场景 root 与平台/依赖探测结果；不执行 validator/verify |
@@ -290,8 +293,9 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 - 复制型备份通过集中式文件系统后端独占、no-follow 创建并持久化：POSIX 使用 `0600` 后再应用原文件权限；Windows 使用受保护 ACL，并以原生句柄复核稳定身份与完整指纹；
 - 多目录 deploy/uninstall 先全部预检，再持久化私有 journal 目录、journal/intent JSON 和 before snapshots，之后才修改资源；
 - 部署、`--recover` 和 uninstall 都在删除自身恢复证据前执行全部受管理参与目录的 final fingerprint sweep；
+- `--reactivate` 也会在进程内完成全参与目录 final sweep，并对可捕获失败反序回滚，但不创建 durable journal；
 - 不跟随 symlink，不使用完整 TOML 解析器；遇到歧义、重复目标键、占用命名空间或不安全语法时停止；
-- `SIGKILL` 无法运行 Python 回滚，但 deploy/uninstall 首次修改前已完成持久化 journal；后续 status 会检出并 fail closed，等待显式 `--recover`；
+- `SIGKILL` 无法运行 Python 回滚；deploy/uninstall 首次修改前已完成持久化 journal，后续 status 会检出并 fail closed，等待显式 `--recover`。reactivate 不属于该恢复协议，硬中断后可能部分完成，应先 `--status`，无冲突时重跑以完成其余目录；
 - macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`。Windows 逐 journal phase 的硬中断证据仍属 P1，因此该实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
 - journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；
 - `model_instructions_file` 对单份 live config 仍是全局项；CCSwitch 的 Provider 有效 config 可切换其存在状态，但通用配置合并可能重新注入它，Keysmith 不管理 CCSwitch 数据库、回填结果或代理接管热切换；hooks 只能整份隔离且不随 config 快照切换；
@@ -449,7 +453,9 @@ python3 codex-instruct.py --codex-dir ~/.codex --reactivate --lang en        # p
 python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang en  # restore the field only
 ```
 
-`--reactivate` writes only when the manifest and managed Markdown fingerprints still match, the live `config.toml` can be scanned, and the top-level `model_instructions_file` is missing rather than pointing at another path. It backs up the current config, inserts the manifest-owned field, and leaves Markdown, hooks, and the manifest unchanged. An already-active config is a successful no-op.
+`--reactivate` writes only when the manifest and managed Markdown fingerprints still match, the live `config.toml` can be scanned, and the top-level `model_instructions_file` is missing rather than pointing at another path. It backs up every participant before the first publish, inserts the manifest-owned field, performs a participant-wide final sweep, and leaves Markdown, hooks, and the manifest unchanged. Catchable failures, `Ctrl-C`, and `SystemExit` restore published participants in reverse order; concurrent replacements and their backups are preserved. An already-active config is a successful no-op.
+
+Reactivation has no durable deploy/uninstall journal. `SIGKILL`, process loss, or power loss can leave some directories active and others inactive, and `--recover` does not process that state. If status shows no conflict or abnormal residue, rerunning `--reactivate --yes` skips active directories and forward-completes the rest; otherwise retain the timestamped backups for manual review.
 
 ### Recover an interrupted transaction
 
@@ -520,11 +526,12 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | `--pack-dir DIR` | Fixture pack directory; defaults to `fixture_packs/` next to the script |
 | `--force` | Replace a materialized pack whose registry fingerprint does not match (renames the old directory to `*.bak_<timestamp>` first) |
 | `--dry-run` | Preview deployment without writes |
-| `--yes` | Confirm deployment, manifest-based uninstall, or interrupted-transaction recovery |
+| `--yes` | Confirm deployment, reactivation, manifest-based uninstall, or interrupted-transaction recovery |
 | `--codex-dir` | Explicitly select one `.codex`; omission uses discovery |
 | `--status` | Read-only status; never parses hook JSON |
 | `--restore-hooks` | Restore disabled hooks only |
 | `--uninstall` | Preview or remove the newest managed layer |
+| `--reactivate` | Preview or restore the missing inactive-by-config top-level reference |
 | `--recover` | Preview or restore an interrupted deploy/uninstall |
 | `--skip-hooks-isolation` | Keep hooks active; requires explicit `--codex-dir` |
 | `--scenario-list` | List packages and platform/dependency probes without running validator/verify |
@@ -546,7 +553,8 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 ### Transaction boundaries and known limits
 
 - File content is `fsync`ed; publication uses same-volume atomic no-replace renames.
-- `SIGKILL` cannot run Python rollback, but the durable journal is prepared before the first mutation; a later status detects it and fails closed until explicit `--recover`.
+- Deploy, recovery, uninstall, and in-process reactivation perform a participant-wide final sweep.
+- `SIGKILL` cannot run Python rollback. Deploy/uninstall prepare a durable journal before the first mutation, so later status fails closed until explicit `--recover`. Reactivation has no durable journal; a hard interruption may partially complete and must be checked with status before an idempotent forward-completing rerun.
 - Windows P0 backend calls `FlushFileBuffers` on managed handles; the per-journal-phase hard-interruption matrix remains P1, so it is not a formal support claim.
 - Journal, intent, companion, manifest, and cleanup-claim evidence is not cryptographic authentication against coordinated same-user tampering.
 - `model_instructions_file` remains global within one live config. CCSwitch can switch its presence through effective provider configs, but Common Config merging can reintroduce it; Keysmith does not manage the CCSwitch database, backfill outcome, or proxy-takeover hot switching. Hook isolation is whole-file and does not follow those configs.

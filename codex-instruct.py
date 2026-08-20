@@ -250,7 +250,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -13756,6 +13756,13 @@ class ReactivatePlan:
             self.blockers = []
 
 
+@dataclass
+class ReactivateState:
+    plan: ReactivatePlan
+    backup: Optional[Path] = None
+    published_fingerprint: Optional[FileFingerprint] = None
+
+
 def find_reactivate_dirs() -> List[str]:
     return find_uninstall_dirs()
 
@@ -13905,6 +13912,35 @@ def _restore_reactivate_backup(
         backup_content,
         expected_fingerprint=expected_after,
     )
+    restored_content, _fingerprint = _read_regular_text_with_fingerprint(
+        config_path,
+        "恢复后的 config.toml",
+    )
+    if restored_content != backup_content:
+        raise HooksConflict(f"重新激活回滚后 config.toml 发生变化: {config_path}")
+
+
+def _rollback_reactivate_state(state: ReactivateState) -> None:
+    if state.backup is None or state.published_fingerprint is None:
+        return
+    config_path = state.plan.codex_dir / "config.toml"
+    original_fingerprint = state.plan.config_fingerprint
+    if original_fingerprint is not None and _path_has_fingerprint(
+        config_path,
+        original_fingerprint,
+    ):
+        # atomic_write_text may already have restored its own failed publish.
+        return
+    if not _path_has_fingerprint(config_path, state.published_fingerprint):
+        raise HooksConflict(
+            f"拒绝覆盖重新激活后发生并发变化的 config.toml: {config_path}; "
+            f"原始备份保留在 {state.backup}"
+        )
+    _restore_reactivate_backup(
+        config_path,
+        state.backup,
+        state.published_fingerprint,
+    )
 
 
 def _reactivate_locked(codex_dirs: List[str], yes: bool) -> None:
@@ -14004,29 +14040,36 @@ def _reactivate_locked(codex_dirs: List[str], yes: bool) -> None:
             )
             sys.exit(1)
 
-    restored = 0
-    for plan in refreshed:
-        config_path = plan.codex_dir / "config.toml"
-        backup = None
-        published_fingerprint = None
-        try:
+    states = [ReactivateState(plan=plan) for plan in refreshed]
+    try:
+        for state in states:
+            plan = state.plan
             _verify_atomic_rename_support(plan.codex_dir)
             _reject_hooks_transaction_residue(plan.codex_dir)
+        # Prepare every rollback copy before publishing the first participant.
+        # The batch handles in-process failures and soft interrupts, but is not
+        # crash-durable across SIGKILL, process loss, or power loss; backups are
+        # intentionally retained as recovery evidence for that boundary.
+        for state in states:
+            plan = state.plan
+            config_path = plan.codex_dir / "config.toml"
             if not _path_has_fingerprint(config_path, plan.config_fingerprint):
                 raise HooksConflict(f"config.toml 在预检后发生变化: {config_path}")
-            backup = backup_config(
+            state.backup = backup_config(
                 config_path,
                 timestamp,
                 expected_fingerprint=plan.config_fingerprint,
             )
 
+        for state in states:
+            plan = state.plan
+            config_path = plan.codex_dir / "config.toml"
+
             def record_publish(
                 fingerprint: FileFingerprint,
-                current_plan: ReactivatePlan = plan,
+                current_state: ReactivateState = state,
             ) -> None:
-                nonlocal published_fingerprint
-                published_fingerprint = fingerprint
-                current_plan.config_fingerprint = fingerprint
+                current_state.published_fingerprint = fingerprint
 
             atomic_write_text(
                 config_path,
@@ -14035,32 +14078,63 @@ def _reactivate_locked(codex_dirs: List[str], yes: bool) -> None:
                 on_published=record_publish,
             )
             _verify_reactivate_result(plan)
-        except BaseException as exc:
-            if backup is not None and published_fingerprint is not None:
-                try:
-                    _restore_reactivate_backup(
-                        config_path,
-                        backup,
-                        published_fingerprint,
+
+        # A later participant can race an earlier one after its immediate
+        # verification. Recheck the whole batch before reporting success.
+        for state in states:
+            _verify_reactivate_result(state.plan)
+    except BaseException as exc:
+        _print(
+            _localized(
+                f"[错误] 重新激活失败，开始反向恢复所有已发布目录: {exc}",
+                "[Error] Reactivation failed; restoring all published "
+                f"directories in reverse order: {exc}",
+            )
+        )
+        rollback_errors = []
+        for state in reversed(states):
+            try:
+                _rollback_reactivate_state(state)
+            except BaseException as restore_exc:
+                rollback_errors.append(str(restore_exc))
+                _print(f"  [回滚警告] {restore_exc}")
+        if isinstance(exc, TransactionResidueCleanupFailure):
+            try:
+                _remove_transaction_dir(exc.transaction_dir)
+            except BaseException as cleanup_exc:
+                rollback_errors.append(str(cleanup_exc))
+                _print(
+                    _localized(
+                        "  [回滚警告] 重新激活写入残留清理失败；"
+                        f"status 将保持 blocked: {cleanup_exc}",
+                        "  [Rollback warning] Reactivation write-residue cleanup "
+                        f"failed; status remains blocked: {cleanup_exc}",
                     )
-                except BaseException as restore_exc:
-                    _print(f"  [回滚警告] {restore_exc}")
+                )
+        if rollback_errors:
             _print(
                 _localized(
-                    f"[错误] 重新激活失败，未完成写入: {exc}",
-                    f"[Error] Reactivation failed before completion: {exc}",
+                    "[错误] 重新激活回滚未完整完成；请使用保留的 config.toml 备份恢复。",
+                    "[Error] Reactivation rollback was incomplete; restore from "
+                    "the retained config.toml backup(s).",
                 )
             )
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
-            sys.exit(1)
-        _print(f"  [备份] config.toml → {backup.name}")
+        elif any(state.published_fingerprint is not None for state in states):
+            _print("[回滚] 已恢复重新激活前状态。")
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        sys.exit(1)
+
+    for state in states:
+        plan = state.plan
+        if state.backup is None:
+            raise HooksConflict(f"重新激活成功但缺少 config.toml 备份: {plan.codex_dir}")
+        _print(f"  [备份] config.toml → {state.backup.name}")
         _print(
             "  [配置] 已设置 model_instructions_file = "
             f'"{plan.owned_reference}"'
         )
-        restored += 1
-    _print(f"[完成] 已重新激活 {restored} 个配置引用。")
+    _print(f"[完成] 已重新激活 {len(states)} 个配置引用。")
 
 
 def reactivate(codex_dirs: List[str], yes: bool) -> None:

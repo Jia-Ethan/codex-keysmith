@@ -168,6 +168,12 @@ manifest 始终拥有本轮 MD 生命周期；config 的长期所有权仅是顶
 
 每次成功卸载只撤销一层。没有 manifest 是成功 no-op；v0.1.0 之前的无 manifest 状态不由工具猜测所有权。卸载硬中断留下的 durable journal、已登记 residue 或 cleanup marker 由 `--recover` 验证并恢复卸载前状态；用户并发漂移或证据篡改会 fail closed。
 
+### `--reactivate` 进程内批处理边界
+
+`--reactivate` 不是 durable journal operation。它会先锁定和预检全部目录，验证原子重命名能力与事务残留，再为全部 actionable 目录创建 `config.toml` 时间戳备份；只有这些步骤全部成功后才开始发布。每次发布后会立即验证，全部发布后还会对所有参与目录执行 final sweep。可捕获异常、`Ctrl-C` 或 `SystemExit` 会按反向顺序以发布指纹 CAS 恢复；若目录已被并发替换，工具不覆盖并发内容，并保留原始备份和明确 warning。
+
+该路径不写 `.codex-keysmith-transaction-*`，所以 `SIGKILL`、进程丢失或断电可能留下部分目录 active。`--recover` 只处理 durable deploy/uninstall，不处理 reactivate。硬中断后先运行 `--status`；没有冲突或异常 residue 时，重跑 `--reactivate --yes` 会跳过已 active 目录并 forward-complete 其余目录。需要承诺硬中断后自动恢复全局 before-state 时，必须新增独立的 durable `operation=reactivate`，不能复用或暗示现有 journal 已覆盖。
+
 ### 崩溃与持久化边界
 
 在操作系统和文件系统兑现标准 `fsync` 语义的正常崩溃模型中，deploy/uninstall 首次修改前已经有 durable journal。`SIGKILL` 回归覆盖已移动资源、已登记 claim、journal/companion pending、partial snapshot 与 journal cleanup marker。仍有两个刻意 fail-closed 的极窄窗口：journal directory 已 `mkdir`、但首份 immutable intent 尚未完成发布；以及单步骤事务目录已 `mkdtemp`、但 residue record 尚未持久化。两者都会被 status 检测，但没有足够所有权证据自动删除，需停止并发写入后人工核对。
@@ -248,6 +254,12 @@ Uninstall validates manifest, Markdown, semantic top-level `model_instructions_f
 Confirmed uninstall publishes an immutable multi-directory durable intent and private before-state snapshots before its first mutation. The journal snapshots the complete live config. A merged config after-state has one immutable SHA-only allowance because atomic publication creates a new mtime; other resources retain exact portable after-state rules. Config merge uses the existing atomic CAS write path, so a post-preflight race is rejected and reverse recovery restores the complete live-before snapshot. Uninstall then restores Markdown and only the actually managed hooks/legacy state, archives the current manifest at the exact journal-selected path, and restores the previous layer. It performs a complete final sweep across all participants, persists `committed`, and uses re-enterable cleanup before removing journal evidence. Each run removes one layer; absent manifest is a successful no-op, and pre-v0.1.0 unmanaged state is never guessed.
 
 A hard interruption during uninstall leaves a durable journal, registered residue, or cleanup marker that status blocks and preserves. `--recover` validates this evidence and restores the pre-uninstall state; concurrent user drift or tampered evidence fails closed.
+
+### In-process `--reactivate` batch boundary
+
+Reactivation is not a durable journal operation. It locks and preflights every directory, checks atomic-rename support and transaction residue, and creates every actionable config backup before the first publish. Each publish is verified immediately, followed by a participant-wide final sweep. Catchable errors, `Ctrl-C`, and `SystemExit` restore published participants in reverse order with a published-fingerprint CAS. A concurrent replacement is never overwritten; the replacement and timestamped backup are preserved with an explicit warning.
+
+No `.codex-keysmith-transaction-*` is written for reactivation. `SIGKILL`, process loss, or power loss may therefore leave a partially active batch, and `--recover` handles only durable deploy/uninstall operations. After a hard interruption, run status first. If there is no conflict or abnormal residue, rerunning `--reactivate --yes` skips already-active directories and forward-completes the rest. A promise to restore the global before-state after hard interruption would require a separate durable `operation=reactivate` rather than reusing or implying coverage from the current journal.
 
 ### Crash and durability boundary
 

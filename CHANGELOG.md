@@ -6,9 +6,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-08-20
+
+This section describes the unpublished `0.3.9` source candidate.
+
 ### Fixed
 
 - `inactive-by-config` now has a constrained `--reactivate` path. When the manifest and managed Markdown remain healthy and only the top-level `model_instructions_file` is missing, preview/confirm restores that field into the current live `config.toml` after a timestamped backup. Deploy stays blocked; Markdown, hooks, and the manifest are not rewritten. The GUI Manage page exposes the same preview-gated action, and Dashboard/Deploy point inactive-by-config users there instead of a full deploy (#36).
+- Multi-directory `--reactivate` now rolls back every directory written by the current invocation when a later directory fails, instead of leaving earlier directories committed behind a non-zero exit.
+
+### Desktop
+
+- Prepared the unsigned `desktop-v0.3.9-beta.1` source line with the same `0.3.9` CLI sidecar and GUI recovery path. Publication remains a separate signed-tag, main-only workflow action; the published `desktop-v0.3.8-beta.1` assets remain immutable.
 
 ## [0.3.8] - 2026-08-19
 
@@ -19,7 +28,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Desktop
 
-- Prepared unsigned `desktop-v0.3.8-beta.1` for macOS Apple Silicon and Windows x64 with the same GUI and frozen sidecar behavior as `desktop-v0.3.7-beta.1`, plus the inactive-by-config uninstall fix. This source change prepares the candidate; publication remains a separate signed-tag, main-only workflow action.
+- Published unsigned Desktop Beta `desktop-v0.3.8-beta.1` for macOS Apple Silicon and Windows x64 with the same GUI and frozen sidecar behavior as `desktop-v0.3.7-beta.1`, plus the inactive-by-config uninstall fix. Its public assets are the DMG, NSIS setup executable, two candidate ZIPs, and `SHA256SUMS`; stable Latest remains `v0.3.8`.
 
 ## [0.3.7] - 2026-08-18
 
@@ -260,7 +269,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.9
 [0.3.8]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.8
 [0.3.7]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.6

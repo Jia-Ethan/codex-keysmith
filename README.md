@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.8" src="https://img.shields.io/badge/source-v0.3.8-0099CC">
+  <img alt="Source version v0.3.9" src="https://img.shields.io/badge/source-v0.3.9-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -44,9 +44,9 @@ Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指
 
 ### 安装方式
 
-1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行；当前稳定资产名为 `codex-instruct-v0.3.7.py`。不要 `curl | python`。
-2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.7-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar、双 preset 与四个 fixture 包。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
-3. **源码。** clone 后直接 `python3 codex-instruct.py`。当前默认分支源码版本为 `0.3.8`；最新稳定 Release 仍以 Releases 页为准。
+1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行；当前稳定资产名为 `codex-instruct-v0.3.8.py`。不要 `curl | python`。
+2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.8-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar、双 preset 与四个 fixture 包，并包含 inactive-by-config 卸载修复。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
+3. **源码。** clone 后直接 `python3 codex-instruct.py`。此源码树版本为 `0.3.9`；最新稳定 Release 仍是不可变的 `v0.3.8` 资产，以 Releases 页为准。
 
 ### 快速开始
 
@@ -85,11 +85,16 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang zh-CN
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --lang zh-CN
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN
 ```
 
-卸载每次只撤销最新一层。若 `--status` 显示 `inactive-by-config`，用 `--reactivate` 只补回缺失的顶层 `model_instructions_file`，不要手工改 `config.toml`，也不要为补字段再走一遍完整部署。中断事务先 `--status`，再 `--recover` 预览，确认后加 `--yes`。不要手工删除 journal、备份或 manifest。
+卸载每次只撤销最新一层。`--reactivate` 从 `v0.3.9` 开始提供，当前不可变的 `v0.3.8` 单文件资产不含该参数；`v0.3.9` 正式发布前，只能从此源码树运行：
+
+```bash
+python3 codex-instruct.py --codex-dir ~/.codex --reactivate --lang zh-CN
+python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN
+```
+
+若 `--status` 显示 `inactive-by-config`，`--reactivate` 只补回缺失的顶层 `model_instructions_file`，不要手工改 `config.toml`，也不要为补字段再走一遍完整部署。它会回滚可捕获的批量失败，但不创建 durable journal；硬中断后先运行 `--status`，无冲突时重跑 `--reactivate --yes` 完成其余目录。`--recover` 只处理 deploy/uninstall 中断事务。不要手工删除 journal、备份或 manifest。
 
 ### 平台与 Beta 限制
 
