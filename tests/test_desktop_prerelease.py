@@ -631,7 +631,7 @@ def test_published_prerelease_release_notes_match_approved_compact_copy():
     assert release_notes == expected
 
 
-def test_candidate_prerelease_release_notes_disclose_unpublished_state():
+def test_candidate_prerelease_release_notes_match_approved_compact_copy():
     release_notes = (
         REPO_ROOT / f"docs/releases/{CANDIDATE_DESKTOP_TAG}.md"
     ).read_text(encoding="utf-8")
@@ -639,7 +639,7 @@ def test_candidate_prerelease_release_notes_disclose_unpublished_state():
         """\
         # codex-keysmith 桌面测试版
 
-        新增受约束的配置引用恢复，并将 CLI sidecar 与 GUI 源码统一升级为 `0.3.9`。此候选尚未发布。
+        新增“恢复配置引用”入口。
         """
     )
     assert release_notes == expected
