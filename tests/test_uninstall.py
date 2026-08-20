@@ -830,13 +830,17 @@ def test_reactivate_final_sweep_detects_earlier_participant_drift(
 
     original_verify = codex_instruct._verify_reactivate_result
     verify_calls = 0
+    first_verified_dir = None
 
     def drift_first_after_immediate_verification(plan):
-        nonlocal verify_calls
+        nonlocal first_verified_dir, verify_calls
         verify_calls += 1
         original_verify(plan)
-        if verify_calls == 2:
-            (codex_dirs[0] / "gpt-unrestricted.md").write_text(
+        if verify_calls == 1:
+            first_verified_dir = plan.codex_dir.resolve()
+        elif verify_calls == 2:
+            assert first_verified_dir is not None
+            (first_verified_dir / "gpt-unrestricted.md").write_text(
                 "concurrent managed prompt drift\n",
                 encoding="utf-8",
             )
@@ -894,7 +898,7 @@ def test_reactivate_keyboard_interrupt_rolls_back_in_reverse_order(
     with pytest.raises(KeyboardInterrupt):
         codex_instruct.reactivate([str(path) for path in codex_dirs], True)
 
-    assert rollback_order == [path.resolve() for path in reversed(codex_dirs)]
+    assert rollback_order == list(reversed(verified))
     for codex_dir in codex_dirs:
         assert (codex_dir / "config.toml").read_bytes() == inactive_configs[
             codex_dir.resolve()
@@ -994,9 +998,9 @@ def test_reactivate_two_directories_succeeds_after_participant_final_sweep(tmp_p
     codex_instruct.reactivate([str(path) for path in codex_dirs], True)
 
     for codex_dir in codex_dirs:
-        assert (codex_dir / "config.toml").read_text(encoding="utf-8") == expected[
-            codex_dir.resolve()
-        ].updated_config_content
+        assert (codex_dir / "config.toml").read_bytes() == (
+            expected[codex_dir.resolve()].updated_config_content.encode("utf-8")
+        )
         assert list(codex_dir.glob("config.toml.bak_*"))
 
 
