@@ -31,6 +31,14 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
+export function isInactiveConfigBlocker(detail) {
+  const text = String(detail || "");
+  return (
+    text.includes("model_instructions_file is missing")
+    || text.includes("model_instructions_file 当前缺失")
+  );
+}
+
 export function buildDeployArgs({ source, preset, filePath, name, codexDir, skipHooks }) {
   const args = [];
   if (source === "file") {
@@ -474,6 +482,14 @@ function Step2({ t, preview, loading, onBack, onNext }) {
               <div className="text-sm font-semibold text-danger">{gateMessage}</div>
               {(gate.detail || preview.error || preview.stderr) && (
                 <pre className="log-block mt-2.5">{gate.detail || preview.error || preview.stderr}</pre>
+              )}
+              {isInactiveConfigBlocker(gate.detail || preview.error || preview.stderr) && (
+                <div className="mt-3">
+                  <p className="text-xs text-secondary-foreground">{t("deploy.reactivateInsteadHint")}</p>
+                  <Button className="mt-2.5" size="sm" onClick={() => setView("manage")}>
+                    {t("deploy.reactivateInstead")}
+                  </Button>
+                </div>
               )}
             </div>
           )}

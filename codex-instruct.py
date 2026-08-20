@@ -13,11 +13,13 @@ Codex MD 指令文件部署脚本
   - --name 只允许安全文件名，禁止路径穿越和绝对路径
   - 写入前备份 config.toml；若同名 MD 已存在，也先备份
   - 隔离 hooks.json 前保留时间戳备份，可通过 --restore-hooks 恢复
+  - inactive-by-config 时可用 --reactivate 只补回缺失的顶层字段
 
 用法：
   python3 codex-instruct.py --dry-run
   python3 codex-instruct.py --codex-dir ~/.codex --yes
   python3 codex-instruct.py --codex-dir ~/.codex --restore-hooks
+  python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes
   python3 codex-instruct.py --file my_rules.md --name my-rules --codex-dir ~/.codex --yes
 """
 
@@ -248,7 +250,7 @@ BEGIN.
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BARE_TOML_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 VERSION = __version__
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = ".codex-keysmith-manifest.json"
@@ -342,7 +344,11 @@ _LOADED_RECOVERY_EVIDENCE: Dict[
 _FILESYSTEM_CHECKPOINT_HOOK: Optional[Callable[[str], None]] = None
 _EN_REPLACEMENTS = (
     ("未找到 codex-keysmith 部署清单；无需卸载。", "No codex-keysmith deployment manifest was found; nothing to uninstall."),
+    ("未找到 codex-keysmith 部署清单；无需重新激活。", "No codex-keysmith deployment manifest was found; nothing to reactivate."),
+    ("没有需要重新激活的 inactive-by-config 目录。", "No inactive-by-config location requires reactivation."),
+    ("未修改任何文件；确认重新激活请添加 --yes。", "No files were changed; add --yes to confirm reactivation."),
     ("卸载预检发现", "Uninstall preflight found"),
+    ("重新激活预检发现", "Reactivate preflight found"),
     ("个所有权或完整性冲突；未修改文件。", " ownership or integrity conflict(s); no files were changed."),
     ("没有受管理的部署；无需卸载。", "No managed deployment was found; nothing to uninstall."),
     ("未修改任何文件；确认卸载请添加 --yes。", "No files were changed; add --yes to confirm uninstall."),
@@ -431,6 +437,7 @@ _EN_REPLACEMENTS = (
     ("[检测]", "[Detect]"),
     ("[清单]", "[Manifest]"),
     ("[卸载]", "[Uninstall]"),
+    ("[重新激活]", "[Reactivate]"),
     ("[计划]", "[Plan]"),
     ("[预览]", "[Preview]"),
     ("[醒目警告]", "[Important warning]"),
@@ -552,8 +559,10 @@ def _tr(value: str) -> str:
         (r"^(\s*)\[状态\] 找到 (\d+) 个 Codex 配置目录（只读检查）:$", r"\1[Status] Found \2 Codex configuration location(s) (read-only inspection):"),
         (r"^(\s*)\[\+\] 找到 (\d+) 个 Codex 配置目录:$", r"\1[+] Found \2 Codex configuration location(s):"),
         (r"^(\s*)\[卸载\] 检查 (\d+) 个 Codex 配置目录:$", r"\1[Uninstall] Inspecting \2 Codex configuration location(s):"),
+        (r"^(\s*)\[重新激活\] 检查 (\d+) 个 Codex 配置目录:$", r"\1[Reactivate] Inspecting \2 Codex configuration location(s):"),
         (r"^(\s*)\[完成\] 已部署到 (\d+) 个 Codex 配置目录。$", r"\1[Done] Deployed to \2 Codex configuration location(s)."),
         (r"^(\s*)\[完成\] 已卸载 (\d+) 个受管理部署。$", r"\1[Done] Uninstalled \2 managed deployment(s)."),
+        (r"^(\s*)\[完成\] 已重新激活 (\d+) 个配置引用。$", r"\1[Done] Reactivated \2 config reference(s)."),
         (r"^(\s*)\[完成\] 已恢复 (\d+) 个 hooks.json。$", r"\1[Done] Restored \2 hooks.json file(s)."),
         (r"^(\s*)\[错误\] (\d+) 个目录存在冲突或异常节点。$", r"\1[Error] \2 location(s) contain conflicts or abnormal nodes."),
         (r"^(\s*)\[错误\] dry-run 发现 (\d+) 个可确认的阻塞问题；未修改任何文件。$", r"\1[Error] dry-run found \2 confirmed blocker(s); no files were changed."),
@@ -13729,6 +13738,413 @@ def uninstall(codex_dirs: List[str], yes: bool) -> None:
         _uninstall_locked([str(item.path) for item in locks.directories], yes)
 
 
+@dataclass
+class ReactivatePlan:
+    codex_dir: Path
+    md_filename: str = DEFAULT_MD_FILENAME
+    owned_reference: Optional[str] = None
+    config_content: Optional[str] = None
+    updated_config_content: Optional[str] = None
+    config_fingerprint: Optional[FileFingerprint] = None
+    md_fingerprint: Optional[FileFingerprint] = None
+    manifest_fingerprint: Optional[FileFingerprint] = None
+    skip_reason: Optional[str] = None
+    blockers: Optional[List[str]] = None
+
+    def __post_init__(self) -> None:
+        if self.blockers is None:
+            self.blockers = []
+
+
+@dataclass
+class ReactivateState:
+    plan: ReactivatePlan
+    backup: Optional[Path] = None
+    published_fingerprint: Optional[FileFingerprint] = None
+
+
+def find_reactivate_dirs() -> List[str]:
+    return find_uninstall_dirs()
+
+
+def _manifest_managed_md_filename(codex_dir: Path) -> str:
+    manifest_node = _classify_node(codex_dir / MANIFEST_FILENAME)
+    if not manifest_node.regular:
+        return DEFAULT_MD_FILENAME
+    try:
+        manifest, _fingerprint = _load_manifest(manifest_node.path)
+    except (OSError, TypeError, UnicodeDecodeError, ValueError):
+        return DEFAULT_MD_FILENAME
+    manifest_md = manifest.get("md", {}).get("path") if isinstance(manifest, dict) else None
+    if isinstance(manifest_md, str) and manifest_md:
+        try:
+            return normalize_md_name(manifest_md)
+        except ValueError:
+            return DEFAULT_MD_FILENAME
+    return DEFAULT_MD_FILENAME
+
+
+def inspect_reactivate_directory(codex_dir: Path) -> ReactivatePlan:
+    md_filename = _manifest_managed_md_filename(codex_dir)
+    plan = inspect_directory(
+        codex_dir,
+        md_filename=md_filename,
+        skip_hooks_isolation=True,
+        status_mode=True,
+    )
+    result = ReactivatePlan(codex_dir=codex_dir, md_filename=md_filename)
+    extra_blockers = [
+        blocker
+        for blocker in plan.blockers
+        if blocker != plan.inactive_config_blocker
+    ]
+    if not plan.manifest.exists:
+        if extra_blockers:
+            result.blockers.extend(extra_blockers)
+        else:
+            result.skip_reason = _localized(
+                "未找到部署清单",
+                "deployment manifest not found",
+            )
+        return result
+    if (
+        plan.activation_state == "active"
+        and plan.inactive_config_blocker is None
+        and not extra_blockers
+    ):
+        result.skip_reason = _localized(
+            "当前配置已是 active，无需补回字段",
+            "the current config is already active; no field restoration is needed",
+        )
+        result.owned_reference = f"./{md_filename}"
+        return result
+    if plan.activation_state != "inactive" or plan.inactive_config_blocker is None:
+        if extra_blockers:
+            result.blockers.extend(extra_blockers)
+        else:
+            result.blockers.append(
+                _localized(
+                    "当前状态不是可恢复的 inactive-by-config",
+                    "the current state is not a restorable inactive-by-config",
+                )
+            )
+        return result
+    if extra_blockers:
+        result.blockers.extend(extra_blockers)
+        return result
+    if (
+        not plan.config_content
+        or not plan.updated_config_content
+        or not plan.config_changed
+        or plan.config_fingerprint is None
+        or plan.current_fingerprint is None
+        or plan.manifest_fingerprint is None
+    ):
+        result.blockers.append(
+            _localized(
+                "无法安全计算仅恢复顶层字段的 config.toml",
+                "cannot safely compute a field-only config.toml restoration",
+            )
+        )
+        return result
+    owned_reference = f"./{md_filename}"
+    restored_analysis = _analyze_toml_root(plan.updated_config_content)
+    if restored_analysis.instruction_reference != owned_reference:
+        result.blockers.append(
+            _localized(
+                f"恢复后的顶层 model_instructions_file 不是 {owned_reference}",
+                f"restored top-level model_instructions_file is not {owned_reference}",
+            )
+        )
+        return result
+    result.owned_reference = owned_reference
+    result.config_content = plan.config_content
+    result.updated_config_content = plan.updated_config_content
+    result.config_fingerprint = plan.config_fingerprint
+    result.md_fingerprint = plan.current_fingerprint
+    result.manifest_fingerprint = plan.manifest_fingerprint
+    return result
+
+
+def _verify_reactivate_result(plan: ReactivatePlan) -> None:
+    config_path = plan.codex_dir / "config.toml"
+    content, _fingerprint = _read_regular_text_with_fingerprint(
+        config_path,
+        "config.toml",
+    )
+    if content != plan.updated_config_content:
+        raise ConfigConflict("重新激活后 config.toml 与预检内容不一致")
+    analysis = _analyze_toml_root(content)
+    if analysis.instruction_reference != plan.owned_reference:
+        raise ConfigConflict(
+            "重新激活后顶层 model_instructions_file 未指向受管提示词"
+        )
+    md_path = plan.codex_dir / plan.md_filename
+    if plan.md_fingerprint is None or not _path_has_fingerprint(
+        md_path,
+        plan.md_fingerprint,
+    ):
+        raise HooksConflict("重新激活后受管提示词发生变化")
+    manifest_path = plan.codex_dir / MANIFEST_FILENAME
+    if plan.manifest_fingerprint is None or not _path_has_fingerprint(
+        manifest_path,
+        plan.manifest_fingerprint,
+    ):
+        raise HooksConflict("重新激活后部署清单发生变化")
+    verify_plan = inspect_reactivate_directory(plan.codex_dir)
+    if verify_plan.blockers or verify_plan.skip_reason is None:
+        raise HooksConflict("重新激活后状态不是 active")
+    if verify_plan.owned_reference != plan.owned_reference:
+        raise HooksConflict("重新激活后受管引用发生变化")
+
+
+def _restore_reactivate_backup(
+    config_path: Path,
+    backup: Path,
+    expected_after: FileFingerprint,
+) -> None:
+    backup_content, _fingerprint = _read_regular_text_with_fingerprint(
+        backup,
+        "config.toml 备份",
+    )
+    atomic_write_text(
+        config_path,
+        backup_content,
+        expected_fingerprint=expected_after,
+    )
+    restored_content, _fingerprint = _read_regular_text_with_fingerprint(
+        config_path,
+        "恢复后的 config.toml",
+    )
+    if restored_content != backup_content:
+        raise HooksConflict(f"重新激活回滚后 config.toml 发生变化: {config_path}")
+
+
+def _rollback_reactivate_state(state: ReactivateState) -> None:
+    if state.backup is None or state.published_fingerprint is None:
+        return
+    config_path = state.plan.codex_dir / "config.toml"
+    original_fingerprint = state.plan.config_fingerprint
+    if original_fingerprint is not None and _path_has_fingerprint(
+        config_path,
+        original_fingerprint,
+    ):
+        # atomic_write_text may already have restored its own failed publish.
+        return
+    if not _path_has_fingerprint(config_path, state.published_fingerprint):
+        raise HooksConflict(
+            f"拒绝覆盖重新激活后发生并发变化的 config.toml: {config_path}; "
+            f"原始备份保留在 {state.backup}"
+        )
+    _restore_reactivate_backup(
+        config_path,
+        state.backup,
+        state.published_fingerprint,
+    )
+
+
+def _reactivate_locked(codex_dirs: List[str], yes: bool) -> None:
+    if not codex_dirs:
+        _print("[完成] 未找到 codex-keysmith 部署清单；无需重新激活。")
+        return
+    plans = [inspect_reactivate_directory(Path(directory)) for directory in codex_dirs]
+    blockers = [
+        f"{plan.codex_dir}: {blocker}"
+        for plan in plans
+        for blocker in plan.blockers
+    ]
+    _print(f"[重新激活] 检查 {len(plans)} 个 Codex 配置目录:")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for plan in plans:
+        if plan.blockers:
+            for blocker in plan.blockers:
+                _print(f"  [阻塞] {plan.codex_dir}: {blocker}")
+            continue
+        if plan.skip_reason:
+            _print(f"  [跳过] {plan.codex_dir}: {plan.skip_reason}")
+            continue
+        _print(
+            _localized(
+                f"  [计划] {plan.codex_dir}: 恢复顶层 "
+                f'model_instructions_file = "{plan.owned_reference}"',
+                f"  [Plan] {plan.codex_dir}: restore top-level "
+                f'model_instructions_file = "{plan.owned_reference}"',
+            )
+        )
+        _print(
+            _localized(
+                "         备份当前 config.toml，不改写受管提示词、hooks 或部署清单",
+                "         Backup the current config.toml; leave the managed prompt, "
+                "hooks, and deployment manifest unchanged",
+            )
+        )
+        _print(
+            _localized(
+                "         config.toml 备份: ",
+                "         config.toml backup: ",
+            ),
+            _preview_unique_backup_path(plan.codex_dir / "config.toml", timestamp),
+        )
+    if blockers:
+        _print(
+            _localized(
+                f"[错误] 重新激活预检发现 {len(blockers)} 个冲突；未修改文件。",
+                f"[Error] Reactivate preflight found {len(blockers)} conflict(s); "
+                "no files were changed.",
+            )
+        )
+        sys.exit(1)
+    actionable = [plan for plan in plans if plan.skip_reason is None and not plan.blockers]
+    if not actionable:
+        _print("[完成] 没有需要重新激活的 inactive-by-config 目录。")
+        return
+    if not yes:
+        _print("[预览] 未修改任何文件；确认重新激活请添加 --yes。")
+        return
+
+    refreshed = [
+        inspect_reactivate_directory(plan.codex_dir) for plan in actionable
+    ]
+    refresh_blockers = [
+        f"{plan.codex_dir}: {blocker}"
+        for plan in refreshed
+        for blocker in plan.blockers
+    ]
+    if refresh_blockers or any(plan.skip_reason for plan in refreshed):
+        _print(
+            _localized(
+                "[错误] 重新激活预检在写入前发生变化；未修改文件。",
+                "[Error] Reactivation preflight changed before writes; no files were changed.",
+            )
+        )
+        for blocker in refresh_blockers:
+            _print(f"  - {blocker}")
+        for plan in refreshed:
+            if plan.skip_reason:
+                _print(f"  - {plan.codex_dir}: {plan.skip_reason}")
+        sys.exit(1)
+    for original, current in zip(actionable, refreshed):
+        if (
+            original.owned_reference != current.owned_reference
+            or original.updated_config_content != current.updated_config_content
+            or original.config_fingerprint != current.config_fingerprint
+            or original.md_fingerprint != current.md_fingerprint
+            or original.manifest_fingerprint != current.manifest_fingerprint
+        ):
+            _print(
+                _localized(
+                    f"[错误] {original.codex_dir}: 重新激活预检指纹已变化；未修改文件。",
+                    f"[Error] {original.codex_dir}: reactivation preflight fingerprint "
+                    "changed; no files were changed.",
+                )
+            )
+            sys.exit(1)
+
+    states = [ReactivateState(plan=plan) for plan in refreshed]
+    try:
+        for state in states:
+            plan = state.plan
+            _verify_atomic_rename_support(plan.codex_dir)
+            _reject_hooks_transaction_residue(plan.codex_dir)
+        # Prepare every rollback copy before publishing the first participant.
+        # The batch handles in-process failures and soft interrupts, but is not
+        # crash-durable across SIGKILL, process loss, or power loss; backups are
+        # intentionally retained as recovery evidence for that boundary.
+        for state in states:
+            plan = state.plan
+            config_path = plan.codex_dir / "config.toml"
+            if not _path_has_fingerprint(config_path, plan.config_fingerprint):
+                raise HooksConflict(f"config.toml 在预检后发生变化: {config_path}")
+            state.backup = backup_config(
+                config_path,
+                timestamp,
+                expected_fingerprint=plan.config_fingerprint,
+            )
+
+        for state in states:
+            plan = state.plan
+            config_path = plan.codex_dir / "config.toml"
+
+            def record_publish(
+                fingerprint: FileFingerprint,
+                current_state: ReactivateState = state,
+            ) -> None:
+                current_state.published_fingerprint = fingerprint
+
+            atomic_write_text(
+                config_path,
+                plan.updated_config_content or "",
+                expected_fingerprint=plan.config_fingerprint,
+                on_published=record_publish,
+            )
+            _verify_reactivate_result(plan)
+
+        # A later participant can race an earlier one after its immediate
+        # verification. Recheck the whole batch before reporting success.
+        for state in states:
+            _verify_reactivate_result(state.plan)
+    except BaseException as exc:
+        _print(
+            _localized(
+                f"[错误] 重新激活失败，开始反向恢复所有已发布目录: {exc}",
+                "[Error] Reactivation failed; restoring all published "
+                f"directories in reverse order: {exc}",
+            )
+        )
+        rollback_errors = []
+        for state in reversed(states):
+            try:
+                _rollback_reactivate_state(state)
+            except BaseException as restore_exc:
+                rollback_errors.append(str(restore_exc))
+                _print(f"  [回滚警告] {restore_exc}")
+        if isinstance(exc, TransactionResidueCleanupFailure):
+            try:
+                _remove_transaction_dir(exc.transaction_dir)
+            except BaseException as cleanup_exc:
+                rollback_errors.append(str(cleanup_exc))
+                _print(
+                    _localized(
+                        "  [回滚警告] 重新激活写入残留清理失败；"
+                        f"status 将保持 blocked: {cleanup_exc}",
+                        "  [Rollback warning] Reactivation write-residue cleanup "
+                        f"failed; status remains blocked: {cleanup_exc}",
+                    )
+                )
+        if rollback_errors:
+            _print(
+                _localized(
+                    "[错误] 重新激活回滚未完整完成；请使用保留的 config.toml 备份恢复。",
+                    "[Error] Reactivation rollback was incomplete; restore from "
+                    "the retained config.toml backup(s).",
+                )
+            )
+        elif any(state.published_fingerprint is not None for state in states):
+            _print("[回滚] 已恢复重新激活前状态。")
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        sys.exit(1)
+
+    for state in states:
+        plan = state.plan
+        if state.backup is None:
+            raise HooksConflict(f"重新激活成功但缺少 config.toml 备份: {plan.codex_dir}")
+        _print(f"  [备份] config.toml → {state.backup.name}")
+        _print(
+            "  [配置] 已设置 model_instructions_file = "
+            f'"{plan.owned_reference}"'
+        )
+    _print(f"[完成] 已重新激活 {len(states)} 个配置引用。")
+
+
+def reactivate(codex_dirs: List[str], yes: bool) -> None:
+    if not yes or not codex_dirs:
+        _reactivate_locked(codex_dirs, yes)
+        return
+    with _DirectoryLockSet(codex_dirs) as locks:
+        _reactivate_locked([str(item.path) for item in locks.directories], yes)
+
+
 @dataclass(frozen=True)
 class TomlRootStatement:
     start: int
@@ -14519,12 +14935,15 @@ def show_status(codex_dirs: List[str]) -> None:
         if inactive_by_config:
             _print(
                 _localized(
-                    "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致；"
-                    "部署仍需先切回引用受管 MD 的配置。"
+                    "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致。"
+                    "部署仍保持 blocked。若只要把缺失的顶层字段补回当前 live config，"
+                    "请使用 --reactivate：它会先备份 config.toml，不改写受管提示词、hooks 或 manifest。"
                     "卸载会保留当前 config.toml，只撤销提示词文件与部署清单；"
                     "若 On 副本仍引用该文件，请稍后在 On 副本中删除该字段。",
-                    "    [Notice] This matches a normal-mode CCSwitch profile without the field; "
-                    "switch back to a profile that references the managed Markdown before deploy. "
+                    "    [Notice] This matches a normal-mode CCSwitch profile without the field. "
+                    "Deploy stays blocked. To restore only the missing top-level field into the "
+                    "current live config, use --reactivate; it backs up config.toml and does not "
+                    "rewrite the managed prompt, hooks, or manifest. "
                     "Uninstall will leave the current config.toml unchanged and only revert "
                     "the managed prompt and manifest; if an On profile still references that file, "
                     "remove the field from the On copy afterwards.",
@@ -14593,8 +15012,9 @@ def show_status(codex_dirs: List[str]) -> None:
         elif inactive_by_config:
             _print(
                 _localized(
-                    "    可部署性: blocked（先切回 active 配置）",
-                    "    Deployability: blocked (switch back to an active profile first)",
+                    "    可部署性: blocked（先切回 active 配置，或使用 --reactivate 只恢复字段）",
+                    "    Deployability: blocked (switch back to an active profile first, "
+                    "or use --reactivate to restore only the missing field)",
                 )
             )
         else:
@@ -14805,6 +15225,21 @@ def _deploy_locked(args, codex_dirs: Optional[List[str]] = None) -> None:
             for blocker in plan.blockers:
                 blocker_count += 1
                 _print(f"    → [阻塞] {blocker}")
+            if (
+                plan.inactive_config_blocker
+                and plan.blockers == [plan.inactive_config_blocker]
+            ):
+                _print(
+                    _localized(
+                        "    → [提示] 部署保持 blocked。若只要补回缺失的顶层 "
+                        "model_instructions_file，请改用 --reactivate（会备份当前 "
+                        "config.toml，不改写受管提示词、hooks 或 manifest）。",
+                        "    → [Notice] Deploy stays blocked. To restore only the missing "
+                        "top-level model_instructions_file, use --reactivate (it backs up "
+                        "the current config.toml and does not rewrite the managed prompt, "
+                        "hooks, or manifest).",
+                    )
+                )
         if blocker_count:
             _print(f"\n[错误] dry-run 发现 {blocker_count} 个可确认的阻塞问题；未修改任何文件。")
             sys.exit(1)
@@ -15916,6 +16351,8 @@ def main() -> None:
                                                 执行清单式卸载
   %(prog)s --codex-dir ~/.codex --recover          预览中断事务恢复
   %(prog)s --codex-dir ~/.codex --recover --yes    执行部署/卸载事务恢复
+  %(prog)s --codex-dir ~/.codex --reactivate       预览只恢复缺失的顶层字段
+  %(prog)s --codex-dir ~/.codex --reactivate --yes 补回 inactive-by-config 的字段
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 部署但保持 hooks 活跃
   %(prog)s --scenario-list                    静态列出源码场景库
@@ -15941,6 +16378,8 @@ Examples:
                                                 Run manifest-based uninstall
   %(prog)s --codex-dir ~/.codex --recover          Preview interrupted transaction recovery
   %(prog)s --codex-dir ~/.codex --recover --yes    Recover an interrupted deploy/uninstall
+  %(prog)s --codex-dir ~/.codex --reactivate       Preview restoring the missing top-level field
+  %(prog)s --codex-dir ~/.codex --reactivate --yes Restore the inactive-by-config field only
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 Deploy while leaving hooks active
   %(prog)s --scenario-list                    Statically list source scenarios
@@ -16031,6 +16470,14 @@ Examples:
         ),
     )
     operation_group.add_argument(
+        "--reactivate",
+        action="store_true",
+        help=_localized(
+            "预览或只把缺失的顶层 model_instructions_file 补回当前 config.toml",
+            "Preview or restore only the missing top-level model_instructions_file",
+        ),
+    )
+    operation_group.add_argument(
         "--scenario-list",
         action="store_true",
         help="List statically validated scenario packages without executing them",
@@ -16059,8 +16506,8 @@ Examples:
         "--yes",
         action="store_true",
         help=_localized(
-            "确认部署、卸载或中断恢复；未提供时仅预览",
-            "Confirm deployment, uninstall, or interrupted recovery; otherwise preview only",
+            "确认部署、卸载、中断恢复或重新激活；未提供时仅预览",
+            "Confirm deployment, uninstall, interrupted recovery, or reactivation; otherwise preview only",
         ),
     )
     parser.add_argument(
@@ -16181,6 +16628,7 @@ Examples:
             or args.status
             or args.uninstall
             or args.recover
+            or args.reactivate
             or args.deploy_scenario
             or args.scenario_list
             or args.scenario_status
@@ -16319,6 +16767,18 @@ Examples:
                 "--recover conflicts with --file, --name, --preset, and --skip-hooks-isolation",
             )
         )
+    if args.reactivate and (
+        hasattr(args, "file")
+        or hasattr(args, "name")
+        or explicit_preset is not None
+        or args.skip_hooks_isolation
+    ):
+        parser.error(
+            _localized(
+                "--reactivate 不能与 --file、--name、--preset 或 --skip-hooks-isolation 同时使用",
+                "--reactivate conflicts with --file, --name, --preset, and --skip-hooks-isolation",
+            )
+        )
 
     if not hasattr(args, "file"):
         args.file = None
@@ -16330,7 +16790,9 @@ Examples:
             codex_root = resolve_codex_dir(
                 args.codex_dir,
                 require_config=False,
-                reject_residue=not (args.status or args.uninstall or args.recover),
+                reject_residue=not (
+                    args.status or args.uninstall or args.recover or args.reactivate
+                ),
             )
         except OSError as exc:
             _print(f"[错误] {exc}")
@@ -16348,6 +16810,9 @@ Examples:
         elif args.recover:
             global find_recovery_dirs
             find_recovery_dirs = lambda: [str(codex_root)]  # noqa: E731
+        elif args.reactivate:
+            global find_reactivate_dirs
+            find_reactivate_dirs = lambda: [str(codex_root)]  # noqa: E731
         else:
             global find_codex_dirs
             find_codex_dirs = lambda: [str(codex_root)]  # noqa: E731
@@ -16362,6 +16827,10 @@ Examples:
 
     if args.recover:
         recover_deployment(find_recovery_dirs(), args.yes)
+        return
+
+    if args.reactivate:
+        reactivate(find_reactivate_dirs(), args.yes)
         return
 
     if args.restore_hooks:

@@ -1,6 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Terminal, Zap, AlertTriangle, ExternalLink } from "lucide-react";
+import { RefreshCw, Terminal, Zap, AlertTriangle, ExternalLink, Power } from "lucide-react";
 import { toast } from "sonner";
 import { fetchStatus, readManifest, isTauriMissing } from "@/lib/api";
 import { useAppState } from "@/hooks/useAppState";
@@ -349,6 +349,13 @@ function StatusCard({ dir, index, t }) {
           <Button variant="warning" size="sm" className="mt-3" onClick={() => setView("manage")}>
             <Zap className="size-3.5" aria-hidden="true" />
             {t("dash.recoverAction")}
+          </Button>
+        )}
+
+        {dir.activation === "inactive-by-config" && dir.health === "healthy" && (
+          <Button size="sm" className={hasResidue ? "mt-2" : "mt-3"} onClick={() => setView("manage")}>
+            <Power className="size-3.5" aria-hidden="true" />
+            {t("dash.reactivateAction")}
           </Button>
         )}
 

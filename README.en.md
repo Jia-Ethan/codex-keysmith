@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.8" src="https://img.shields.io/badge/source-v0.3.8-0099CC">
+  <img alt="Source version v0.3.9" src="https://img.shields.io/badge/source-v0.3.9-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -46,7 +46,7 @@ The Keysmith series **deploys, verifies, and revokes** custom instructions for l
 
 1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run; the current stable asset is `codex-instruct-v0.3.8.py`. Do not `curl | python`.
 2. **Easier: unsigned Desktop Beta.** See the [Desktop prerelease](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.8-beta.1): macOS Apple Silicon DMG and Windows x64 NSIS, with an embedded CLI sidecar, two presets, four fixture packs, and the inactive-by-config uninstall fix. No signing, no auto-update, no Linux GUI. Install notes: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
-3. **Source.** Clone and run `python3 codex-instruct.py`. The default branch source version is `0.3.8`; check the Releases page for the latest stable Release.
+3. **Source.** Clone and run `python3 codex-instruct.py`. This source tree is version `0.3.9`; the latest stable Release remains the immutable `v0.3.8` asset set. Check the Releases page for the published state.
 
 ### Quick start
 
@@ -87,7 +87,14 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang en
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang en
 ```
 
-Each uninstall peels one layer. For an interrupted transaction, run `--status`, preview with `--recover`, then add `--yes`. Do not delete journals, backups, or the manifest by hand.
+Each uninstall peels one layer. `--reactivate` is available from `v0.3.9`; the immutable `v0.3.8` single-file asset does not contain that option. Until `v0.3.9` is formally published, run it only from this source tree:
+
+```bash
+python3 codex-instruct.py --codex-dir ~/.codex --reactivate --lang en
+python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang en
+```
+
+If `--status` reports `inactive-by-config`, `--reactivate` restores only the missing top-level `model_instructions_file`. Do not edit `config.toml` by hand or run a full deploy just to put the field back. Catchable batch failures roll back, but reactivation creates no durable journal; after a hard interruption, run `--status` and rerun `--reactivate --yes` to finish the remaining directories when no conflict is present. `--recover` handles interrupted deploy/uninstall transactions only. Do not delete journals, backups, or the manifest by hand.
 
 ### Platforms and Beta limits
 

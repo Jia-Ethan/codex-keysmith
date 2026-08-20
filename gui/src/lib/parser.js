@@ -48,6 +48,7 @@ const VALID_DEPLOYABILITY = new Set(["ready", "blocked"]);
 const MANAGEMENT_PREVIEW_SENTINELS = new Set([
   "[Preview] No files were changed; add --yes to confirm uninstall.",
   "[Preview] No files were changed; add --yes to confirm recovery.",
+  "[Preview] No files were changed; add --yes to confirm reactivation.",
   "[Preview] No files were changed; add --yes to clean the initializing journal.",
   "[Preview] Cleanup residue was not changed; add --yes to confirm cleanup.",
   "[Preview] Found an empty initializing journal before intent publication; nothing changed. Add --yes to remove it.",
@@ -428,10 +429,13 @@ export function parseUninstallPreview(stdout) {
       result.blockers.push(trimmed.replace(/^\[(?:Error|Blocked)\]\s*/, ""));
     }
 
-    if (/^\[Done\] (?:No codex-keysmith deployment manifest was found; nothing to uninstall\.|No managed deployment was found; nothing to uninstall\.|No interrupted (?:deployment|uninstall) transaction requires recovery\.)$/.test(trimmed)) {
+    if (/^\[Done\] (?:No codex-keysmith deployment manifest was found; nothing to (?:uninstall|reactivate)\.|No managed deployment was found; nothing to uninstall\.|No inactive-by-config location requires reactivation\.|No interrupted (?:deployment|uninstall) transaction requires recovery\.)$/.test(trimmed)) {
       result.noOp = trimmed;
     }
     if (/^\[Done\] Restored \d+ hooks\.json file\(s\)\.$/.test(trimmed)) {
+      result.completion = trimmed;
+    }
+    if (/^\[Done\] Reactivated \d+ config reference\(s\)\.$/.test(trimmed)) {
       result.completion = trimmed;
     }
 

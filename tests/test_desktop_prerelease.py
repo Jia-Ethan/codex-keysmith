@@ -23,6 +23,7 @@ HISTORICAL_DESKTOP_VERSION = "0.3.5"
 HISTORICAL_DESKTOP_TAG = f"desktop-v{HISTORICAL_DESKTOP_VERSION}-beta.1"
 PREVIOUS_DESKTOP_VERSION = "0.3.7"
 PREVIOUS_DESKTOP_TAG = f"desktop-v{PREVIOUS_DESKTOP_VERSION}-beta.1"
+CANDIDATE_DESKTOP_TAG = f"desktop-v{VERSION}-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -625,6 +626,20 @@ def test_published_prerelease_release_notes_match_approved_compact_copy():
         # codex-keysmith 桌面测试版
 
         修复升级后当前配置不再引用受管提示词时无法卸载的问题；卸载会保留现有 Codex 配置。
+        """
+    )
+    assert release_notes == expected
+
+
+def test_candidate_prerelease_release_notes_disclose_unpublished_state():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{CANDIDATE_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith 桌面测试版
+
+        新增受约束的配置引用恢复，并将 CLI sidecar 与 GUI 源码统一升级为 `0.3.9`。此候选尚未发布。
         """
     )
     assert release_notes == expected
