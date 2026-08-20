@@ -254,18 +254,17 @@ def test_repository_version_metadata_is_release_state_neutral():
         assert "--codex-dir ~/.codex --dry-run" in quick_start
 
 
-def test_readmes_do_not_attribute_reactivate_to_immutable_v038_asset():
+def test_readmes_use_published_v039_reactivate_command():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     english_readme = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
 
     assert "`--reactivate` 从 `v0.3.9` 开始提供" in readme
-    assert "`v0.3.8` 单文件资产不含该参数" in readme
-    assert "python3 codex-instruct.py --codex-dir ~/.codex --reactivate" in readme
+    assert "python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate" in readme
     assert "`--reactivate` is available from `v0.3.9`" in english_readme
-    assert "`v0.3.8` single-file asset does not contain that option" in english_readme
-    assert "python3 codex-instruct.py --codex-dir ~/.codex --reactivate" in english_readme
+    assert "python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate" in english_readme
     for quick_start in (readme, english_readme):
-        assert "codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate" not in quick_start
+        assert "v0.3.9` 正式发布前" not in quick_start
+        assert "Until `v0.3.9` is formally published" not in quick_start
 
 
 def test_cli_and_desktop_source_versions_match():

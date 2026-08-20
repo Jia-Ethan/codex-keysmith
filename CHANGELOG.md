@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Desktop
 
-- Prepared the unsigned `desktop-v0.3.9-beta.1` source line with the same `0.3.9` CLI sidecar and GUI recovery path. Publication remains a separate signed-tag, main-only workflow action; the published `desktop-v0.3.8-beta.1` assets remain immutable.
+- Published unsigned Desktop Beta `desktop-v0.3.9-beta.1` for macOS Apple Silicon and Windows x64 with the same `0.3.9` CLI sidecar and GUI recovery path. Its public assets are the DMG, NSIS setup executable, two candidate ZIPs, and `SHA256SUMS`; stable Latest remains `v0.3.9`.
 
 ## [0.3.8] - 2026-08-19
 
