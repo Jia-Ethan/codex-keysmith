@@ -91,6 +91,7 @@ SENSITIVE_QUERY_KEY_RE = re.compile(
 SUPPORTED_CREDENTIAL_ENV_NAMES = (
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
+    "MINIMAX_API_KEY",
 )
 MODEL_SERVICE_ENV_NAMES = (
     "HTTP_PROXY",
@@ -159,6 +160,7 @@ PASSTHROUGH_ENV_NAMES = (
     "OPENAI_BASE_URL",
     "OPENAI_ORG_ID",
     "OPENAI_PROJECT_ID",
+    "MINIMAX_API_KEY",
 )
 
 _KEYSMITH_MODULE = None
@@ -345,25 +347,30 @@ def _codex_provider_config(environment: Dict[str, str]) -> Tuple[str, ...]:
     base_url = _normalize_openai_base_url(raw)
     if not base_url:
         return ()
+    is_minimax = urlsplit(base_url).hostname in {"api.minimax.io", "api.minimaxi.com"}
+    provider_name = "minimax" if is_minimax else COMPAT_PROVIDER_NAME
+    provider_wire_api = "chat" if is_minimax else COMPAT_PROVIDER_WIRE_API
+    provider_env_key = "MINIMAX_API_KEY" if is_minimax else "OPENAI_API_KEY"
+    provider_service_name = "minimax" if is_minimax else "openai"
     return (
-        'model_provider="{}"'.format(COMPAT_PROVIDER_NAME),
+        'model_provider="{}"'.format(provider_name),
         "model_providers.{}.name={}".format(
-            COMPAT_PROVIDER_NAME,
-            _toml_basic_string("openai"),
+            provider_name,
+            _toml_basic_string(provider_service_name),
         ),
         "model_providers.{}.wire_api={}".format(
-            COMPAT_PROVIDER_NAME,
-            _toml_basic_string(COMPAT_PROVIDER_WIRE_API),
+            provider_name,
+            _toml_basic_string(provider_wire_api),
         ),
         "model_providers.{}.base_url={}".format(
-            COMPAT_PROVIDER_NAME,
+            provider_name,
             _toml_basic_string(base_url),
         ),
         "model_providers.{}.env_key={}".format(
-            COMPAT_PROVIDER_NAME,
-            _toml_basic_string("OPENAI_API_KEY"),
+            provider_name,
+            _toml_basic_string(provider_env_key),
         ),
-        "model_providers.{}.supports_websockets=false".format(COMPAT_PROVIDER_NAME),
+        "model_providers.{}.supports_websockets=false".format(provider_name),
     )
 
 

@@ -314,6 +314,17 @@ def test_codex_provider_config_injects_isolated_compatible_endpoint(scenario_ban
     assert combined[len(scenario_bank_runner.CODEX_SHELL_ENV_CONFIG) :] == overrides
 
 
+def test_codex_provider_config_supports_minimax_chat_endpoint(scenario_bank_runner):
+    overrides = scenario_bank_runner._codex_provider_config(
+        {"OPENAI_BASE_URL": "https://api.minimax.io/v1/", "MINIMAX_API_KEY": "test-key"}
+    )
+    assert 'model_provider="minimax"' in overrides
+    assert 'model_providers.minimax.name="minimax"' in overrides
+    assert 'model_providers.minimax.wire_api="chat"' in overrides
+    assert 'model_providers.minimax.base_url="https://api.minimax.io/v1"' in overrides
+    assert 'model_providers.minimax.env_key="MINIMAX_API_KEY"' in overrides
+
+
 def test_live_trial_injects_openai_base_url_as_isolated_provider(
     scenario_bank_runner,
     monkeypatch,
