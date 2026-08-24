@@ -126,7 +126,7 @@ python3 codex-instruct.py --scaffold pytest_complete --yes
 
 ### 贡献、安全与系列
 
-提交前阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。漏洞走 [`SECURITY.md`](SECURITY.md) 的 GitHub 私密渠道。社区讨论：[LINUX DO](https://linux.do)。
+提交前阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。漏洞走 [`SECURITY.md`](SECURITY.md) 的 GitHub 私密渠道。官方反馈：[GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions/66)；社区交流：[LINUX DO](https://linux.do)。
 
 - [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — Codex 全局指令
 - [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — Claude Code 可卸载 import block

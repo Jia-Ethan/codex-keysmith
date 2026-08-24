@@ -126,7 +126,7 @@ A standalone script without `fixture_packs/` beside it will tell you to download
 
 ### Contributing, security, and the series
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md). Community: [LINUX DO](https://linux.do).
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md). Official feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions/66). Community: [LINUX DO](https://linux.do).
 
 - [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — global Codex instructions
 - [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — uninstallable Claude Code import blocks
