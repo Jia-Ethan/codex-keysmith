@@ -38,7 +38,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     可部署性: ready
 ```
 
-`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要时用 manifest 中的受管 MD 路径作为当前提示词节点。只读字段 `preset` 根据 manifest 记录的 MD SHA-256 判定为 `unrestricted`、`contract`、`custom` 或 `unknown`（无 manifest）。必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，可部署性 blocked。若只要把缺失字段补回当前 live config，使用 `--reactivate`（先备份 `config.toml`，不改写受管提示词、hooks 或 manifest）；完整部署仍须先切回引用受管 MD 的 active 配置。卸载就绪度为 `ready`：卸载保留当前 `config.toml`，只撤销提示词文件、受管理 hooks/legacy 和当前 manifest，不回写部署前备份。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
+`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要时用 manifest 中的受管 MD 路径作为当前提示词节点。只读字段 `preset` 根据 manifest 记录的 MD SHA-256 判定为 `unrestricted`、`contract`、`persona-contract`、`custom` 或 `unknown`（无 manifest）。必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，可部署性 blocked。若只要把缺失字段补回当前 live config，使用 `--reactivate`（先备份 `config.toml`，不改写受管提示词、hooks 或 manifest）；完整部署仍须先切回引用受管 MD 的 active 配置。卸载就绪度为 `ready`：卸载保留当前 `config.toml`，只撤销提示词文件、受管理 hooks/legacy 和当前 manifest，不回写部署前备份。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
 
 ### 会修改哪些文件
 
@@ -254,8 +254,8 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | 参数 | 说明 |
 | --- | --- |
 | `--file`, `-f` | 外部 Markdown；省略时使用内置提示词。与 `--preset` 互斥 |
-| `--name`, `-n` | 输出文件名，不含 `.md`；默认随 `--preset`：`unrestricted`→`gpt-unrestricted`，`contract`→`gpt-contract` |
-| `--preset` | 内置稿：`unrestricted`（默认）或 `contract`。现有部署不会被这次选择替换；不可与 `--file` 同时使用 |
+| `--name`, `-n` | 输出文件名，不含 `.md`；默认随 `--preset`：`unrestricted`→`gpt-unrestricted`，`contract`→`gpt-contract`，`persona-contract`→`gpt-persona-contract` |
+| `--preset` | 内置稿：`unrestricted`（默认）、`contract` 或 `persona-contract`。现有部署不会被这次选择替换；不可与 `--file` 同时使用 |
 | `--scaffold PACK` | 预览或物化一个 fixture 包到 `--workspace-root`；默认 `~/.codex-fixture-workspace/<pack>`。不写 `~/.codex` |
 | `--scaffold-list` | 列出 `--pack-dir` 或脚本旁 `fixture_packs/` 中的包 |
 | `--scaffold-uninstall PACK` | 预览或删除已物化的该包目录，不删其他包，不碰 `~/.codex` |
@@ -407,7 +407,7 @@ codex-keysmith/
 python3 codex-instruct.py --codex-dir ~/.codex --status --lang en
 ```
 
-`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence, using the managed Markdown path from the manifest when present. The read-only `preset` field is `unrestricted`, `contract`, `custom`, or `unknown` (no manifest), based on the managed Markdown SHA-256. Missing, abnormal, or drifted managed Markdown or required hook backups produce `conflict`, make uninstall readiness and deployability `blocked`, and exit 1. If the manifest and managed Markdown remain intact while the current config has no top-level `model_instructions_file`, status reports `inactive-by-config`: it exits 0 and keeps structural health `healthy`. Deploy stays blocked. Use `--reactivate` to restore only the missing top-level field into the current live config after a timestamped backup, without rewriting the managed prompt, hooks, or manifest. A full deploy still requires an active profile that references the managed Markdown. Uninstall readiness is `ready`: uninstall leaves the current `config.toml` unchanged and only reverts the managed prompt, managed hooks/legacy, and current manifest. A present field that targets another path remains a `conflict` and exits 1. Status also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
+`--status` changes no files and never reads or parses active/disabled hook content. It reads the manifest and verifies required restoration evidence, using the managed Markdown path from the manifest when present. The read-only `preset` field is `unrestricted`, `contract`, `persona-contract`, `custom`, or `unknown` (no manifest), based on the managed Markdown SHA-256. Missing, abnormal, or drifted managed Markdown or required hook backups produce `conflict`, make uninstall readiness and deployability `blocked`, and exit 1. If the manifest and managed Markdown remain intact while the current config has no top-level `model_instructions_file`, status reports `inactive-by-config`: it exits 0 and keeps structural health `healthy`. Deploy stays blocked. Use `--reactivate` to restore only the missing top-level field into the current live config after a timestamped backup, without rewriting the managed prompt, hooks, or manifest. A full deploy still requires an active profile that references the managed Markdown. Uninstall readiness is `ready`: uninstall leaves the current `config.toml` unchanged and only reverts the managed prompt, managed hooks/legacy, and current manifest. A present field that targets another path remains a `conflict` and exits 1. Status also detects `.codex-keysmith-transaction-<id>`, cleanup claims/markers, and `.keysmith-*` residue through directory enumeration and `lstat`. Status never parses `journal.json`; only explicit `--recover` reads recovery content.
 
 ### Files changed by a confirmed deployment
 
@@ -517,8 +517,8 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | Option | Description |
 | --- | --- |
 | `--file`, `-f` | External Markdown; omit it for the bundled prompt. Conflicts with `--preset` |
-| `--name`, `-n` | Destination name without `.md`; default follows `--preset`: `unrestricted`→`gpt-unrestricted`, `contract`→`gpt-contract` |
-| `--preset` | Bundled prompt: `unrestricted` (default) or `contract`. Existing deployments are not replaced by this option. Conflicts with `--file` |
+| `--name`, `-n` | Destination name without `.md`; default follows `--preset`: `unrestricted`→`gpt-unrestricted`, `contract`→`gpt-contract`, `persona-contract`→`gpt-persona-contract` |
+| `--preset` | Bundled prompt: `unrestricted` (default), `contract`, or `persona-contract`. Existing deployments are not replaced by this option. Conflicts with `--file` |
 | `--scaffold PACK` | Preview or materialize one fixture pack under `--workspace-root` (default `~/.codex-fixture-workspace/<pack>`). Does not write `~/.codex` |
 | `--scaffold-list` | List packs in `--pack-dir` or `fixture_packs/` next to the script |
 | `--scaffold-uninstall PACK` | Preview or delete that materialized pack only; does not touch other packs or `~/.codex` |
