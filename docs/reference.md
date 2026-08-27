@@ -315,10 +315,26 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_prompt_bank_regression.py \
 
 当前 bank 最多 12 cases，每 case 最多 2 次尝试，即最多 24 次真实请求，超时上界约 48 分钟。Live 调用可能产生费用。已有报告默认拒绝覆盖，需要 `--overwrite-report` 才会替换。PR CI 只运行离线校验和 mocked adapter。
 
+### 版本号同步
+
+源码版本同时记录在 6 个文件里：`VERSION`、`codex-instruct.py` 的 `__version__`、`gui/package.json`、`gui/package-lock.json`（顶层与 root package 共 2 处）、`gui/src-tauri/Cargo.toml`、`gui/src-tauri/Cargo.lock`。`gui/src-tauri/tauri.conf.json` 不在内，它通过 `"version": "../package.json"` 继承，且校验器拒绝其他写法。
+
+任意一处不一致都会让 Desktop Candidate 在版本校验步骤直接失败，构建不会开始。不要手工逐个编辑：
+
+```bash
+python3 scripts/bump_version.py check              # 汇报当前版本；不一致时 fail closed
+python3 scripts/bump_version.py set 0.5.0 --dry-run
+python3 scripts/bump_version.py set 0.5.0          # 一次性改全 6 处并自校验
+```
+
+`set` 在写入前要求当前树已经自洽，因此不会把一个已漂移的状态当作新基线；任何一步失败都会整体回滚，不留下混合版本的工作树。它只改版本字段，不重排 JSON、不触碰依赖锁定的其他条目，也不代替 CHANGELOG、`docs/releases/` 和 README 徒标的人工更新。
+
 ### 维护者验证
 
 ```bash
-python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/bump_version.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
+python3 scripts/bump_version.py check                 # 6 个来源文件版本必须一致
+python3 scripts/validate_desktop_candidate.py config --root .
 python3 -m pytest -p no:cacheprovider -q tests
 python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
@@ -381,6 +397,7 @@ codex-keysmith/
 │   └── package-lock.json
 ├── scripts/
 │   ├── build_release.py
+│   ├── bump_version.py
 │   └── run_prompt_bank_regression.py
 ├── tests/
 ├── CHANGELOG.md
@@ -571,10 +588,26 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_prompt_bank_regression.py \
 
 At most 12 cases, 2 attempts each: 24 real requests, ~48-minute theoretical timeout ceiling. Existing reports are rejected by default; `--overwrite-report` is required to replace one. PR CI runs only offline validation and mocked adapter tests.
 
+### Version synchronization
+
+The source version lives in six files: `VERSION`, `__version__` in `codex-instruct.py`, `gui/package.json`, `gui/package-lock.json` (both the top level and the root package entry), `gui/src-tauri/Cargo.toml`, and `gui/src-tauri/Cargo.lock`. `gui/src-tauri/tauri.conf.json` is excluded because it inherits the version through `"version": "../package.json"`, and the validator rejects any other arrangement.
+
+A single stale entry fails the Desktop Candidate version step before any build starts. Do not edit them by hand:
+
+```bash
+python3 scripts/bump_version.py check              # report the version; fail closed on disagreement
+python3 scripts/bump_version.py set 0.5.0 --dry-run
+python3 scripts/bump_version.py set 0.5.0          # rewrite all six in one verified step
+```
+
+`set` requires the tree to already agree, so a partial bump is never adopted as the new baseline. Any failure rolls the whole tree back instead of leaving mixed versions behind. It only rewrites version fields: JSON is not reordered, unrelated lock entries are untouched, and it does not replace the manual CHANGELOG, `docs/releases/`, or README badge updates.
+
 ### Maintainer verification
 
 ```bash
-python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/bump_version.py scripts/run_prompt_bank_regression.py scripts/run_scenario_bank.py
+python3 scripts/bump_version.py check                 # all six version sources must agree
+python3 scripts/validate_desktop_candidate.py config --root .
 python3 -m pytest -p no:cacheprovider -q tests
 python3 -m ruff check codex-instruct.py tests scripts
 python3 -m coverage erase
