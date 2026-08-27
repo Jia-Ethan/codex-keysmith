@@ -1325,6 +1325,9 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
         in quality_job
     )
     assert "python scripts/run_scenario_bank.py --validate-only" in quality_job
+    assert "python scripts/bump_version.py check" in quality_job
+    assert "python scripts/validate_desktop_candidate.py config --root ." in quality_job
+    assert "scripts/bump_version.py" in quality_job.split("Run Ruff", 1)[0]
 
     release_workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
