@@ -47,15 +47,46 @@ def _semver(value: object, source: str) -> str:
 
 
 def _read_text(path: Path) -> str:
+    """Read a file as text with newlines normalized to ``\\n``.
+
+    Decoding is done manually instead of via ``Path.read_text`` so the raw
+    bytes stay available to :func:`_detect_newline`.
+    """
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise BumpError(f"cannot read UTF-8 text file {path}: {exc}") from exc
+        data = path.read_bytes()
+    except OSError as exc:
+        raise BumpError(f"cannot read {path}: {exc}") from exc
+    try:
+        return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeError as exc:
+        raise BumpError(f"cannot decode UTF-8 text file {path}: {exc}") from exc
 
 
-def _write_text(path: Path, text: str) -> None:
-    # Write bytes so the existing newline convention survives verbatim on every
-    # platform; Path.write_text(newline=...) is unavailable on Python 3.9.
+def _detect_newline(path: Path) -> str:
+    """Return the newline sequence the file already uses.
+
+    A bump must never silently rewrite an entire file's line endings, which is
+    what happens if CRLF content is read with universal newlines and written
+    back as LF.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise BumpError(f"cannot read {path}: {exc}") from exc
+    if b"\r\n" in data:
+        return "\r\n"
+    if b"\n" in data:
+        return "\n"
+    if b"\r" in data:
+        return "\r"
+    return "\n"
+
+
+def _write_text(path: Path, text: str, newline: str = "\n") -> None:
+    # Write bytes so the file's existing newline convention survives verbatim
+    # on every platform; Path.write_text(newline=...) needs Python 3.10.
+    if newline != "\n":
+        text = text.replace("\n", newline)
     try:
         path.write_bytes(text.encode("utf-8"))
     except OSError as exc:
@@ -86,9 +117,9 @@ def _substitute_once(text: str, pattern: re.Pattern[str], new_version: str, path
 def _bump_version_file(path: Path, new_version: str) -> str:
     text = _read_text(path)
     current = _semver(text.strip(), str(path))
-    # Preserve the original trailing-newline convention.
-    suffix = text[len(text.rstrip("\r\n")) :]
-    _write_text(path, new_version + (suffix or "\n"))
+    # Preserve whether the file ends with a newline at all.
+    suffix = text[len(text.rstrip("\n")) :]
+    _write_text(path, new_version + (suffix or "\n"), _detect_newline(path))
     return current
 
 
@@ -105,7 +136,11 @@ def _bump_python_script(path: Path, new_version: str) -> str:
             f" found {len(matches)}"
         )
     current = _semver(matches[0].group("version"), str(path))
-    _write_text(path, _substitute_once(text, pattern, new_version, path))
+    _write_text(
+        path,
+        _substitute_once(text, pattern, new_version, path),
+        _detect_newline(path),
+    )
     return current
 
 
@@ -116,8 +151,9 @@ def _bump_package_json(path: Path, new_version: str) -> str:
     if data.get("name") != GUI_PACKAGE_NAME:
         raise BumpError(f"{path} must declare package name {GUI_PACKAGE_NAME}")
     current = _semver(data.get("version"), str(path))
+    newline = _detect_newline(path)
     data["version"] = new_version
-    _write_text(path, _dump_json(data))
+    _write_text(path, _dump_json(data), newline)
     return current
 
 
@@ -135,9 +171,10 @@ def _bump_package_lock(path: Path, new_version: str) -> str:
     root_version = _semver(root.get("version"), str(path))
     if document_version != root_version:
         raise BumpError(f"package-lock versions already disagree in {path}")
+    newline = _detect_newline(path)
     data["version"] = new_version
     root["version"] = new_version
-    _write_text(path, _dump_json(data))
+    _write_text(path, _dump_json(data), newline)
     return document_version
 
 
@@ -150,7 +187,11 @@ def _bump_cargo_toml(path: Path, new_version: str) -> str:
     if len(matches) != 1:
         raise BumpError(f"missing [package] version in {path}")
     current = _semver(matches[0].group("version"), str(path))
-    _write_text(path, _substitute_once(text, pattern, new_version, path))
+    _write_text(
+        path,
+        _substitute_once(text, pattern, new_version, path),
+        _detect_newline(path),
+    )
     return current
 
 
@@ -168,7 +209,11 @@ def _bump_cargo_lock(path: Path, new_version: str) -> str:
             f" found {len(matches)}"
         )
     current = _semver(matches[0].group("version"), str(path))
-    _write_text(path, _substitute_once(text, pattern, new_version, path))
+    _write_text(
+        path,
+        _substitute_once(text, pattern, new_version, path),
+        _detect_newline(path),
+    )
     return current
 
 
