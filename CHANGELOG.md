@@ -14,6 +14,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - `examples/gpt-contract.md` absorbs the delivery-engine obligations (build the complete surface, verify and report what actually ran, attack weak points, land the result) while staying a thin contract. The frozen `gpt-contract` SHA-256 in `tests/test_preset.py` is updated accordingly; the default `unrestricted` prompt remains byte-identical.
 - `scripts/run_prompt_bank_regression.py` accepts `--prompt-file` to evaluate an arbitrary Markdown prompt against a bank in live mode, skipping the static prompt-mapping checks tied to bundled presets while keeping schema, coverage, and response assertions. Used to live-test the new preset with `codex exec` under an isolated `CODEX_HOME`. Live mode also translates `OPENAI_BASE_URL` into an isolated Codex custom provider via `-c` overrides (same pattern as `scripts/run_scenario_bank.py`), so gateway-backed credentials work without touching `~/.codex/config.toml`.
 - GUI source version metadata (`gui/package.json`, `Cargo.toml`, lockfile) synchronized to `0.4.0`. No new Desktop installer is published in this release.
+- `scripts/bump_version.py` rewrites every source-version file in one verified step (`set <x.y.z>`, with `--dry-run`) and reports drift with `check`. It reuses the release gate's own parsers, refuses to run on a tree whose versions already disagree, and rolls the whole tree back if any file fails, so a partial bump is neither adopted as a new baseline nor left behind as a mixed tree.
+
+### Fixed
+
+- The Quality CI job now verifies source-version agreement and desktop configuration before the long test, coverage, and build stages. A stale `gui/src-tauri/Cargo.lock` version previously passed every fast job and failed only in Desktop Candidate after toolchain setup, costing a full CI round trip per release bump.
 
 ## [0.3.9] - 2026-08-20
 
