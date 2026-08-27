@@ -37,6 +37,7 @@ ARCHIVE_FILES = (
     "docs/fixture-channel.md",
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
+    "examples/gpt-persona-contract.md",
     "scripts/run_scenario_bank.py",
 )
 

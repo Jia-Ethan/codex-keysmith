@@ -39,6 +39,7 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/releases/v0.4.0.md",
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
+    "examples/gpt-persona-contract.md",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",
