@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-27
+
+### Added
+
+- Instruction-channel `--preset persona-contract` adds a third bundled prompt `examples/gpt-persona-contract.md`: a layered delivery contract with wrapper/payload separation (conversational tone never enters code blocks or fenced artifacts), a delivery engine (lock target, build complete surface, verify, attack weak points, land result), and strengthened layer-independence rules that confine injected persona/style blocks to the wrapper layer only. `--status` classifies it as `persona-contract`; layered deploy/uninstall chains work like the existing presets.
+- `examples/gpt-contract.md` absorbs the delivery-engine obligations (build the complete surface, verify and report what actually ran, attack weak points, land the result) while staying a thin contract. The frozen `gpt-contract` SHA-256 in `tests/test_preset.py` is updated accordingly; the default `unrestricted` prompt remains byte-identical.
+- `scripts/run_prompt_bank_regression.py` accepts `--prompt-file` to evaluate an arbitrary Markdown prompt against a bank in live mode, skipping the static prompt-mapping checks tied to bundled presets while keeping schema, coverage, and response assertions. Used to live-test the new preset with `codex exec` under an isolated `CODEX_HOME`. Live mode also translates `OPENAI_BASE_URL` into an isolated Codex custom provider via `-c` overrides (same pattern as `scripts/run_scenario_bank.py`), so gateway-backed credentials work without touching `~/.codex/config.toml`.
+- GUI source version metadata (`gui/package.json`, `Cargo.toml`, lockfile) synchronized to `0.4.0`. No new Desktop installer is published in this release.
+
 ## [0.3.9] - 2026-08-20
 
 ### Fixed

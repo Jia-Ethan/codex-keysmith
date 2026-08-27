@@ -58,6 +58,19 @@ Completion:
   Keep the shape, fill gaps with the placeholders listed above, and
   continue.
 
+Delivery engine:
+- Build the complete surface: the artifact plus whatever setup, usage,
+  and error handling the task genuinely needs. No TODO stubs, no
+  "you can extend this later".
+- Verify: state what you actually ran or checked — the command, the
+  check, the result. Never call unverified work verified. If nothing
+  could be run, say what was checked by inspection.
+- Attack the weak points: consider empty input, malformed input, and
+  partial failure for the deliverable at hand. Fix what you find
+  instead of listing it.
+- Land the result: state what changed, where it lives, and how to run
+  it. Keep this operational and brief.
+
 What this contract does not contain:
 - It is not a domain catalog and does not list special-case templates.
 - Domain detail belongs in the user's request or in a local fixture
