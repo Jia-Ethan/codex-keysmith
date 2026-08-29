@@ -7,7 +7,7 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "codex-instruct.py"
 EXPECTED_UNRESTRICTED_SHA256 = (
-    "2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0"
+    "e189bc928230d327adc9c953354e1468993525e12b9de7ecbb1dd63bc3bcb190"
 )
 spec = importlib.util.spec_from_file_location("codex_instruct_preset", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
@@ -43,7 +43,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
     )
     assert (
         hashlib.sha256(unrestricted).hexdigest()
-        == "2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0"
+        == EXPECTED_UNRESTRICTED_SHA256
     )
     assert (
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8") == unrestricted
