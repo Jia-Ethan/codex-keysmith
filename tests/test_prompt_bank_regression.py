@@ -578,7 +578,22 @@ def test_live_adapter_is_isolated_and_writes_jsonl_report(
         assert "--skip-git-repo-check" in command
         assert "--ignore-rules" in command
         assert command[command.index("--sandbox") + 1] == "read-only"
-        assert command[-3:] == ["--model", "TEST_MODEL", "-"]
+        assert command[-1] == "-"
+        assert command[command.index("--model") + 1] == "TEST_MODEL"
+        # OPENAI_BASE_URL is injected as an isolated custom provider via -c.
+        provider_overrides = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "-c"
+        ]
+        assert any(
+            'model_provider="custom"' in override for override in provider_overrides
+        )
+        assert any(
+            'model_providers.custom.base_url="https://private-api.example/v1"'
+            in override
+            for override in provider_overrides
+        )
         response_path = Path(command[command.index("--output-last-message") + 1])
         response_path.write_text(
             case["expected_first_line"]

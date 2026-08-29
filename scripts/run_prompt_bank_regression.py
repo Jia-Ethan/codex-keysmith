@@ -129,6 +129,9 @@ REQUIRED_CASE_FIELDS = {
 ALLOWED_ROOT_FIELDS = {"version", "prompt_source", "cases"}
 ALLOWED_CASE_FIELDS = REQUIRED_CASE_FIELDS
 
+COMPAT_PROVIDER_NAME = "custom"
+COMPAT_PROVIDER_WIRE_API = "responses"
+
 CREDENTIAL_ENV_NAMES = (
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
@@ -345,8 +348,17 @@ def _validate_prompt_mapping(case: Dict[str, Any], prompt: str) -> None:
         )
 
 
-def load_and_validate_bank(bank_path: Path) -> Tuple[Dict[str, Any], Path, str]:
-    """Load a bank and validate schema, coverage, and prompt-contract mapping."""
+def load_and_validate_bank(
+    bank_path: Path,
+    prompt_override: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], Path, str]:
+    """Load a bank and validate schema, coverage, and prompt-contract mapping.
+
+    When prompt_override is set, its content replaces the bank's
+    prompt_source for live evaluation. Static prompt-mapping checks that
+    assume the bundled preset are skipped for the override; schema,
+    coverage, and response assertions still apply.
+    """
     try:
         raw = bank_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -373,11 +385,24 @@ def load_and_validate_bank(bank_path: Path) -> Tuple[Dict[str, Any], Path, str]:
     if not isinstance(bank["cases"], list) or not bank["cases"]:
         raise BankValidationError("cases must be a non-empty list")
 
-    prompt_path = _resolve_prompt_source(bank_path, bank["prompt_source"])
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise BankValidationError("cannot read prompt_source: {}".format(exc)) from exc
+    if prompt_override is not None:
+        try:
+            prompt = prompt_override.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise BankValidationError(
+                "cannot read prompt override: {}".format(exc)
+            ) from exc
+        if not prompt.strip():
+            raise BankValidationError("prompt override is empty")
+        prompt_path = prompt_override
+    else:
+        prompt_path = _resolve_prompt_source(bank_path, bank["prompt_source"])
+        try:
+            prompt = prompt_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise BankValidationError(
+                "cannot read prompt_source: {}".format(exc)
+            ) from exc
 
     seen_ids = set()
     seen_contracts = set()
@@ -438,7 +463,8 @@ def load_and_validate_bank(bank_path: Path) -> Tuple[Dict[str, Any], Path, str]:
                 "case {!r}: attempts must be 1 or {}".format(case_id, MAX_ATTEMPTS)
             )
 
-        _validate_prompt_mapping(case, prompt)
+        if prompt_override is None:
+            _validate_prompt_mapping(case, prompt)
         seen_contracts.add(case["contract"])
         seen_languages.add(case["language"])
 
@@ -547,6 +573,36 @@ def _isolated_environment(root: Path) -> Dict[str, str]:
     environment["USERPROFILE"] = str(home)
     environment["CODEX_HOME"] = str(codex_home)
     return environment
+
+
+def _codex_provider_config(environment: Dict[str, str]) -> Tuple[str, ...]:
+    """Translate OPENAI_BASE_URL into isolated Codex -c overrides.
+
+    Live mode never reads ~/.codex/config.toml, and Codex itself ignores
+    OPENAI_BASE_URL under --ephemeral, so a compatible endpoint must be
+    injected as a temporary custom provider (same pattern as
+    scripts/run_scenario_bank.py).
+    """
+    raw = environment.get("OPENAI_BASE_URL")
+    if not _is_nonempty_string(raw):
+        return ()
+    base_url = raw.strip()
+    if not base_url:
+        return ()
+    return (
+        'model_provider="{}"'.format(COMPAT_PROVIDER_NAME),
+        'model_providers.{}.name="{}"'.format(
+            COMPAT_PROVIDER_NAME, COMPAT_PROVIDER_NAME
+        ),
+        'model_providers.{}.wire_api="{}"'.format(
+            COMPAT_PROVIDER_NAME, COMPAT_PROVIDER_WIRE_API
+        ),
+        'model_providers.{}.base_url="{}"'.format(
+            COMPAT_PROVIDER_NAME, base_url
+        ),
+        'model_providers.{}.env_key="OPENAI_API_KEY"'.format(COMPAT_PROVIDER_NAME),
+        "model_providers.{}.supports_websockets=false".format(COMPAT_PROVIDER_NAME),
+    )
 
 
 def _codex_version(
@@ -1093,6 +1149,7 @@ def run_live(
             root = Path(raw_root)
             environment = _isolated_environment(root)
             _, workspace = _write_isolated_config(root, prompt)
+            provider_config = _codex_provider_config(os.environ)
             version = _redact_text(
                 _codex_version(codex_bin, environment, workspace, secret_values),
                 secret_values,
@@ -1123,6 +1180,8 @@ def run_live(
                         str(response_path),
                     ]
                     command.extend(["--model", model])
+                    for config_override in provider_config:
+                        command.extend(["-c", config_override])
                     command.append("-")
 
                     started = time.monotonic()
@@ -1213,6 +1272,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="prompt-bank JSON file",
     )
     parser.add_argument(
+        "--prompt-file",
+        help=(
+            "override the prompt under test with an arbitrary Markdown file "
+            "(skips static prompt-mapping checks tied to the bundled presets)"
+        ),
+    )
+    parser.add_argument(
         "--report",
         help="JSONL output path; omit or use - for stdout",
     )
@@ -1236,8 +1302,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     bank_path = Path(args.cases).expanduser().resolve()
+    prompt_override: Optional[Path] = None
+    if args.prompt_file:
+        prompt_override = Path(args.prompt_file).expanduser().resolve()
+        if not prompt_override.is_file():
+            print(
+                "prompt-bank execution failed: --prompt-file does not name a "
+                "regular file: {}".format(prompt_override),
+                file=sys.stderr,
+            )
+            return 2
     try:
-        bank, prompt_path, prompt = load_and_validate_bank(bank_path)
+        bank, prompt_path, prompt = load_and_validate_bank(
+            bank_path, prompt_override=prompt_override
+        )
     except BankValidationError as exc:
         print("prompt-bank validation failed: {}".format(exc), file=sys.stderr)
         return 2

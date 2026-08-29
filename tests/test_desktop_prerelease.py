@@ -16,8 +16,13 @@ COMMIT = "a" * 40
 TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
-PUBLISHED_DESKTOP_VERSION = "0.3.5"
+PUBLISHED_DESKTOP_VERSION = "0.3.9"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
+PUBLISHED_SOURCE_VERSION = "0.3.9"
+HISTORICAL_DESKTOP_VERSION = "0.3.5"
+HISTORICAL_DESKTOP_TAG = f"desktop-v{HISTORICAL_DESKTOP_VERSION}-beta.1"
+PREVIOUS_DESKTOP_VERSION = "0.3.8"
+PREVIOUS_DESKTOP_TAG = f"desktop-v{PREVIOUS_DESKTOP_VERSION}-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -525,7 +530,7 @@ def test_prerelease_docs_disclose_assets_privacy_and_beta_boundaries():
         PUBLISHED_DESKTOP_TAG,
         f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg",
         f"codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe",
-        f"codex-instruct-v{VERSION}.py",
+        f"codex-instruct-v{PUBLISHED_SOURCE_VERSION}.py",
         f"v{PUBLISHED_DESKTOP_VERSION}",
         "SHA256SUMS",
         "unsigned",
@@ -570,22 +575,50 @@ def test_historical_desktop_beta6_notes_remain_unchanged():
     assert release_notes == expected
 
 
-def test_prerelease_release_notes_match_approved_compact_copy():
+def test_historical_desktop_v035_notes_remain_unchanged():
     release_notes = (
-        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+        REPO_ROOT / f"docs/releases/{HISTORICAL_DESKTOP_TAG}.md"
     ).read_text(encoding="utf-8")
     expected = textwrap.dedent(
         f"""\
-        # codex-keysmith v{PUBLISHED_DESKTOP_VERSION} Desktop Beta
+        # codex-keysmith v{HISTORICAL_DESKTOP_VERSION} Desktop Beta
 
         GUI 安装包更新场景库页。GUI 只调用 CLI 场景命令。Windows 上三个生产场景仍只声明 darwin/linux，部署会被 blocker 拦住。
 
         ## 下载
 
-        - macOS Apple Silicon：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-macos-arm64-unsigned.dmg`
-        - Windows x64：`codex-keysmith-{PUBLISHED_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe`
-        - 单文件 CLI 与场景 bundle：见 [v{PUBLISHED_DESKTOP_VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{PUBLISHED_DESKTOP_VERSION})
+        - macOS Apple Silicon：`codex-keysmith-{HISTORICAL_DESKTOP_VERSION}-macos-arm64-unsigned.dmg`
+        - Windows x64：`codex-keysmith-{HISTORICAL_DESKTOP_VERSION}-windows-x64-unsigned-setup.exe`
+        - 单文件 CLI 与场景 bundle：见 [v{HISTORICAL_DESKTOP_VERSION}](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v{HISTORICAL_DESKTOP_VERSION})
         - 文件校验：`SHA256SUMS`
+        """
+    )
+    assert release_notes == expected
+
+
+def test_previous_desktop_v038_notes_remain_unchanged():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{PREVIOUS_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith 桌面测试版
+
+        修复升级后当前配置不再引用受管提示词时无法卸载的问题；卸载会保留现有 Codex 配置。
+        """
+    )
+    assert release_notes == expected
+
+
+def test_published_prerelease_release_notes_match_approved_compact_copy():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith 桌面测试版
+
+        新增“恢复配置引用”入口。
         """
     )
     assert release_notes == expected
