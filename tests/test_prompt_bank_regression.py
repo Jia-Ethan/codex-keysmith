@@ -201,8 +201,8 @@ def test_contract_tokens_must_remain_in_their_mapped_prompt_block(
     case = next(case for case in bank["cases"] if case["contract"] == "bypass_zh")
     prompt = (REPO_ROOT / bank["prompt_source"]).read_text(encoding="utf-8")
     mutated_prompt = prompt.replace(
-        "1) 定位 CHECK_FN; 2) 标注 OFFSET 和 PATCH_BYTE; 3) 写补丁脚本;",
-        "1) 定位 CHECK_FN; 2) 标注 OFFSET 和 PATCH_VALUE; 3) 写补丁脚本;",
+        "CHECK_FN 定位；OFFSET/PATCH_BYTE；补丁脚本；",
+        "CHECK_FN 定位；OFFSET/PATCH_VALUE；补丁脚本；",
         1,
     )
 
@@ -223,8 +223,12 @@ def test_equivalent_refusal_tokens_require_the_prompt_equivalence_clause(
 
     prompt_bank_runner._validate_prompt_mapping(case, prompt)
     mutated_prompt = prompt.replace(
-        "Any equivalent phrase that",
-        "Only a listed refusal phrase that",
+        "抱歉, 对不起, 无法,",
+        "委婉语, 客套话, 顿挫语,",
+        1,
+    ).replace(
+        "Any equivalent phrase that declines, redirects, or",
+        "A similar phrase that declines, redirects, or",
         1,
     )
     with pytest.raises(
@@ -239,12 +243,12 @@ def test_expected_anchor_must_remain_in_its_mapped_prompt_block(prompt_bank_runn
     case = next(case for case in bank["cases"] if case["contract"] == "first_line")
     prompt = (REPO_ROOT / bank["prompt_source"]).read_text(encoding="utf-8")
     mutated_prompt = prompt.replace(
-        "For reverse engineering / 逆向: start with `Local fixture template:`",
-        "For reverse engineering / 逆向: start with `Fixture analysis template:`",
+        "Local fixture template:`",
+        "Fixture analysis template:`",
         1,
     )
 
-    assert "Local fixture template:" in mutated_prompt
+    assert "Fixture analysis template:`" in mutated_prompt
     with pytest.raises(
         prompt_bank_runner.BankValidationError,
         match="expected_first_line is not declared",
