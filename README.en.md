@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.3.7" src="https://img.shields.io/badge/source-v0.3.7-0099CC">
+  <img alt="Source version v0.5.0" src="https://img.shields.io/badge/source-v0.5.0-0099CC">
   <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
 </p>
@@ -44,9 +44,9 @@ The Keysmith series **deploys, verifies, and revokes** custom instructions for l
 
 ### Install options
 
-1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run; the current stable asset is `codex-instruct-v0.3.7.py`. Do not `curl | python`.
-2. **Easier: unsigned Desktop Beta.** See the [Desktop prerelease](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.5-beta.1): macOS Apple Silicon DMG and Windows x64 NSIS, with an embedded CLI sidecar. No signing, no auto-update, no Linux GUI. Install notes: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
-3. **Source.** Clone and run `python3 codex-instruct.py`. Default branch currently matches stable CLI `0.3.6`.
+1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run; the current stable asset is `codex-instruct-v0.3.9.py`. Do not `curl | python`.
+2. **Easier: unsigned Desktop Beta.** See the [Desktop prerelease](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.9-beta.1): macOS Apple Silicon DMG and Windows x64 NSIS, with an embedded CLI sidecar, two presets, four fixture packs, and Restore Config Reference. No signing, no auto-update, no Linux GUI. Install notes: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
+3. **Source.** Clone and run `python3 codex-instruct.py`. This source tree is `0.5.0` (contract rework, pending release); the latest stable Release remains `0.3.9` — check the Releases page for published assets.
 
 ### Quick start
 
@@ -87,7 +87,14 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang en
 python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang en
 ```
 
-Each uninstall peels one layer. For an interrupted transaction, run `--status`, preview with `--recover`, then add `--yes`. Do not delete journals, backups, or the manifest by hand.
+Each uninstall peels one layer. `--reactivate` is available from `v0.3.9`:
+
+```bash
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --lang en
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang en
+```
+
+If `--status` reports `inactive-by-config`, `--reactivate` restores only the missing top-level `model_instructions_file`. Do not edit `config.toml` by hand or run a full deploy just to put the field back. Catchable batch failures roll back, but reactivation creates no durable journal; after a hard interruption, run `--status` and rerun `--reactivate --yes` to finish the remaining directories when no conflict is present. `--recover` handles interrupted deploy/uninstall transactions only. Do not delete journals, backups, or the manifest by hand.
 
 ### Platforms and Beta limits
 
@@ -119,7 +126,7 @@ A standalone script without `fixture_packs/` beside it will tell you to download
 
 ### Contributing, security, and the series
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md). Community: [LINUX DO](https://linux.do).
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md). Official feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions/66). Community: [LINUX DO](https://linux.do).
 
 - [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — global Codex instructions
 - [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — uninstallable Claude Code import blocks

@@ -1,6 +1,6 @@
 # codex-keysmith GUI 客户端 — 技术方案与交接文档
 
-> 状态：源码 v0.3.6 已具备指令层 GUI（M1–M5）与场景库页；公开安装包仍是 `desktop-v0.3.5-beta.1` unsigned Beta。正式签名、公证与实体设备验收仍待完成
+> 状态：源码已具备指令层 GUI（M1–M5）、场景库页、preset 选择与 fixture scaffold 页；冻结 sidecar 内嵌 `fixture_packs/`。当前公开安装包是 unsigned `desktop-v0.3.9-beta.1`。正式签名、公证与实体设备验收仍待完成
 > 关联 issue：[#10「建议」为小白做一个可视化的界面客户端](https://github.com/Jia-Ethan/codex-keysmith/issues/10)
 
 ## 1. 项目背景
@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **指令层 M1–M5 + 场景库页进入 unsigned Desktop** | 场景页只调用 CLI 场景命令；公开安装包是 `desktop-v0.3.5-beta.1` |
+| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；unsigned `desktop-v0.3.9-beta.1` 已发布 |
 
 ## 3. 总体架构
 
@@ -45,7 +45,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 └─────────────┼───────────────────────────────┘
               │ subprocess（包装，不重实现）
 ┌─────────────▼───────────────────────────────┐
-│  codex-instruct.py（现有 CLI，保持原样）      │
+│  codex-instruct.py（复用既有命令与事务语义）  │
 └─────────────────────────────────────────────┘
 ```
 
@@ -66,17 +66,19 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 4. 常见目录/PATH 中的 `codex-keysmith` 可执行文件
 5. 最后回退到 `codex-instruct.py`；只有该模式依赖系统 Python
 
-**参数表（来自 `codex-instruct.py` argparse，v0.2.0）：**
+**参数表（来自 `codex-instruct.py` argparse，v0.3.9）：**
 
 | 参数 | 用途 | 客户端用法 |
 |---|---|---|
 | `--status` | 只读查看 config/提示词/hooks/事务残留状态 | Dashboard 主数据源 |
 | `--dry-run` | 部署预览，不实际修改 | Deploy 向导第 2 步 |
-| `--yes` | 确认执行（部署/卸载/恢复） | 用户点确认后追加 |
+| `--yes` | 确认执行（部署/重新激活/卸载/恢复） | 用户点确认后追加 |
+| `--preset unrestricted\|contract` | 选择内置提示词 | Deploy 向导「内置稿」；本地文件模式不传 |
 | `--file <path>` | 外部 MD 文件 | Deploy 向导「选择文件」 |
 | `--name <name>` | MD 文件名（不含 .md，默认 `gpt-unrestricted`） | Deploy 向导「自定义名称」 |
 | `--codex-dir <path>` | 手动指定 .codex 目录 | Settings / 多目录场景 |
 | `--uninstall` | 按 manifest 分层卸载 | Manage 页 |
+| `--reactivate` | 仅补回 inactive-by-config 缺失的配置引用 | Manage 页 |
 | `--restore-hooks` | 仅恢复 hooks.json | Manage 页 |
 | `--recover` | 恢复中断事务 | Manage 页（有残留时高亮提示） |
 | `--scenario-list` | 列出场景包与平台/依赖 blocker | Scenarios 页 |
@@ -84,21 +86,29 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | `--scenario-status` | 目标目录场景状态 | Scenarios 页 |
 | `--scenario-uninstall` | 按 `deployment_id` 预览或卸载 | Scenarios 页 |
 | `--scenario-recover` | 预览或恢复中断场景事务 | Scenarios 页 |
+| `--scaffold-list` | 列出内置 fixture 包 | Fixtures 页包列表 |
+| `--scaffold <pack>` | 预览或写入 fixture 工作区 | Fixtures 页「预览写入」 |
+| `--scaffold-uninstall <pack>` | 预览或删除已写入的 fixture | Fixtures 页「预览删除」 |
+| `--workspace-root <path>` | 指定独立 fixture 工作区 | Fixtures 页；留空使用 CLI 默认值 |
+| `--force` | 覆盖指纹不匹配的 fixture 目录 | 仅绑定对应写入预览后执行 |
 | `--skip-hooks-isolation` | 部署时跳过 hooks 隔离（需同时 `--codex-dir`） | Deploy 向导高级选项 |
 | `--lang en` | **固定使用** | 所有调用 |
 
 **参数互斥约束（来自源码校验，客户端 UI 必须遵守）：**
 
 - `--status` 只可与 `--codex-dir` 等只读定位参数同用
+- `--preset` 不能与 `--file` 同用；本地文件模式不传 `--preset`
 - `--restore-hooks` 不能与 `--file`/`--name`/`--yes`/`--skip-hooks-isolation` 同用
-- `--uninstall`/`--recover` 不能与 `--file`/`--name`/`--skip-hooks-isolation` 同用
+- `--uninstall`/`--reactivate`/`--recover` 不能与 `--file`/`--name`/`--preset`/`--skip-hooks-isolation` 同用
+- scaffold 命令彼此互斥，并拒绝指令部署、场景部署和 `--codex-dir` 参数
+- `--scaffold-list` 只接受 `--pack-dir` 与 `--lang`；`--force` 只随对应 scaffold 操作使用
 - `--skip-hooks-isolation` 必须显式 `--codex-dir`
 
 **退出码约定：** 写操作失败时 `sys.exit(1)`（源码中大量路径）；argparse 校验错误也是非零退出。`--status` 是例外：目录存在冲突或异常节点时会输出完整报告并以非零退出，客户端须校验报告语义完整性后降级展示；其他非零退出均按失败处理并展示完整 stdout/stderr。
 
 ## 5. 真实输出样例与解析规范
 
-以下为真实 CLI 输出样例，v0.2.0 GUI 解析器必须能处理。
+以下为兼容基线 CLI 输出样例（最初采自 v0.2.0），v0.3.9 GUI 解析器必须能处理。
 
 ### 5.1 `--status`（真实输出）
 
@@ -243,6 +253,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
   - 结构健康（healthy / blocked）
   - 关键行：model_instructions_file、hooks 状态、事务残留、旧版迁移
   - 残留存在时显示「恢复中断操作」按钮（跳 Manage）
+  - `inactive-by-config` 且结构健康时显示「恢复配置引用」按钮（跳 Manage，走 `--reactivate`）
 - 部署详情面板（有 manifest 时）：部署时间、tool_version、文件名、hooks 隔离、旧版归档
 
 ### 6.2 Deploy 向导（核心流程，3 步）
@@ -253,6 +264,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 
 ### 6.3 Manage
 
+- **恢复配置引用**（`--reactivate`）：仅在 status 为 `inactive-by-config` 时可用；先预览，确认后 `--yes`。只补回 manifest 期望的顶层 `model_instructions_file`，备份当前 `config.toml`，不改写受管提示词、hooks 或 manifest
 - **卸载**（`--uninstall`）：先预览（显示将撤销哪一层），确认后 `--yes`；多次卸载逐层回滚
 - **恢复 hooks**（`--restore-hooks`）：确认后执行
 - **恢复中断事务**（`--recover`）：仅在 status 显示残留时可用，确认后 `--yes`
@@ -334,15 +346,16 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
 | **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
 | **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；预览绑定规范目标与场景/部署标识，选择变化后失效；状态与写结果保留 blocker、stdout/stderr，并在每次写操作后刷新；进入 `desktop-v0.3.5-beta.1` |
+| **Desktop 双通道与夹具页** ✅ | Deploy 双 preset、本地文件模式、Fixtures 列表/预览/写入/删除、sidecar 内嵌 fixture packs | GUI 只调用既有 CLI；部署参数互斥；夹具预览绑定 pack/目录/force 并明确未修改 `~/.codex`；当前发布版为 `desktop-v0.3.9-beta.1` |
 
 ## 10. 交接说明（给接手 Agent）
 
 **起点：** canonical 仓库内的 `gui/` 目录；CLI 源码固定取仓库根目录 `codex-instruct.py`，GUI 与 CLI 可绑定到同一提交。
 
-**已交付（2026-08-07，v0.2.0）：**
+**当前交付（截至 2026-08-20，v0.3.9）：**
 
 - `src-tauri/`：Tauri 2 工程，提供 `cli_run` / `read_manifest` / `detect_cli` / `cli_version` / `cli_runtime`
-- `src/`：React 19 前端，五视图（Dashboard / Deploy / Scenarios / Manage / Settings）+ react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
+- `src/`：React 19 前端，六视图（Dashboard / Deploy / Scenarios / Fixtures / Manage / Settings）+ react-i18next + 双主题设计系统（token 沿用 ethanpier.com：深色 tech blue / 浅色 clay）
 - `src/lib/parser.js`：解析器 + `gatePreview` 门禁；`parser.test.js` 使用真实 CLI 输出样本覆盖状态、预览和失败关闭边界
 - 本 SPEC.md：解析规范与设计决策
 
@@ -377,7 +390,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 
 ## 11. 参考
 
-- CLI 源码：仓库根目录 `codex-instruct.py`（v0.2.0，单文件）
+- CLI 源码：仓库根目录 `codex-instruct.py`（v0.3.9，单文件）
 - 项目 README：部署流程、CCSwitch 集成、兼容性说明
 - issue #10：可视化客户端需求来源
 - 兄弟项目：claude-keysmith / grok-keysmith / zcode-keysmith（未来可能复用此客户端架构）

@@ -3,6 +3,8 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  parseScaffoldList,
+  parseScaffoldPreview,
   parseStatus,
   parseDryRun,
   parseUninstallPreview,
@@ -88,8 +90,8 @@ const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
     Legacy migration: none
     Hooks restore: available (restore will overwrite neither file)
     Structural health: healthy
-    Uninstall readiness: ready
-    Deployability: blocked (switch back to an active profile first)`;
+    Uninstall readiness: ready (current config.toml will be left unchanged)
+    Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)`;
 
 // ── SPEC §5.2 真实 dry-run 输出 ──
 const DRY_RUN_OK = `[Prompt] Source: bundled examples/gpt-unrestricted.md; SHA-256: 2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0
@@ -571,6 +573,24 @@ describe("gatePreview（问题 1：门禁不可绕过）", () => {
 });
 
 describe("parseUninstallPreview", () => {
+  it("解析重新激活计划", () => {
+    const out = `[Reactivate] Inspecting 1 Codex configuration location(s):
+  [Plan] /tmp/fake-codex: restore top-level model_instructions_file = "./gpt-unrestricted.md"
+         Backup the current config.toml; leave the managed prompt, hooks, and deployment manifest unchanged
+         config.toml backup: /tmp/fake-codex/config.toml.bak_20260819_233000
+[Preview] No files were changed; add --yes to confirm reactivation.`;
+    const r = parseUninstallPreview(out);
+    expect(r.plans).toHaveLength(1);
+    expect(r.plans[0].dir).toBe("/tmp/fake-codex");
+    expect(r.plans[0].summary).toContain("restore top-level model_instructions_file");
+    expect(r.plans[0].detail).toContain("Backup the current config.toml");
+    expect(r.semanticComplete).toBe(true);
+    expect(gatePreview(
+      { stdout: out, stderr: "", exit_code: 0, timed_out: false },
+      r,
+    ).ok).toBe(true);
+  });
+
   it("解析回滚计划", () => {
     const out = `[Uninstall] Preview (no changes made):
   [Plan] /tmp/fake-codex: revert 3 layer(s)
@@ -617,6 +637,9 @@ describe("parseUninstallPreview", () => {
     "[Done] No interrupted deployment transaction requires recovery.",
     "[Done] No interrupted uninstall transaction requires recovery.",
     "[Done] Restored 0 hooks.json file(s).",
+    "[Done] No codex-keysmith deployment manifest was found; nothing to reactivate.",
+    "[Done] No inactive-by-config location requires reactivation.",
+    "[Done] Reactivated 1 config reference(s).",
   ])("明确 no-op/完成输出放行：%s", (stdout) => {
     const parsed = parseUninstallPreview(stdout);
     const gate = gatePreview(
@@ -630,6 +653,7 @@ describe("parseUninstallPreview", () => {
   it.each([
     "[Preview] No files were changed; add --yes to confirm uninstall.",
     "[Preview] No files were changed; add --yes to confirm recovery.",
+    "[Preview] No files were changed; add --yes to confirm reactivation.",
     "[Preview] No files were changed; add --yes to clean the initializing journal.",
     "[Preview] Cleanup residue was not changed; add --yes to confirm cleanup.",
     "[Preview] Found an empty initializing journal before intent publication; nothing changed. Add --yes to remove it.",
@@ -805,5 +829,79 @@ describe("extractCanonicalTarget", () => {
     ],
   ])("兼容普通与 Windows absolute canonical 文案", (output, expected) => {
     expect(extractCanonicalTarget(output)).toBe(expected);
+  });
+});
+
+const SCAFFOLD_LIST = `[scaffold] pack-dir: /repo/fixture_packs
+  pytest_complete  v1  smoke  Completeness smoke fixture
+  aiml_llamaguard  v1  aiml  LlamaGuard evaluation fixture
+`;
+
+const SCAFFOLD_PREVIEW = `[scaffold] pack: pytest_complete v1
+[scaffold] source: /repo/fixture_packs/pytest_complete
+[scaffold] dest: /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+[scaffold] preview only; add --yes to write.
+`;
+
+const SCAFFOLD_WROTE = `[scaffold] pack: pytest_complete v1
+[scaffold] dest: /tmp/ws/pytest_complete
+[scaffold] wrote /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+Suggested first sentence: Make the tests pass.
+`;
+
+const SCAFFOLD_UNINSTALL_PREVIEW = `[scaffold-uninstall] dest: /tmp/ws/pytest_complete
+[scaffold] did not modify ~/.codex
+[scaffold] preview only; add --yes to delete.
+`;
+
+const SCAFFOLD_NOT_MATERIALIZED = `[scaffold] not materialized: pytest_complete
+[scaffold] did not modify ~/.codex
+`;
+
+describe("parseScaffoldList", () => {
+  it("parses pack-dir and pack rows", () => {
+    const parsed = parseScaffoldList(SCAFFOLD_LIST);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.packDir).toBe("/repo/fixture_packs");
+    expect(parsed.packages.map((item) => item.id)).toEqual([
+      "pytest_complete",
+      "aiml_llamaguard",
+    ]);
+    expect(parsed.packages[0].family).toBe("smoke");
+  });
+});
+
+describe("parseScaffoldPreview", () => {
+  it("parses preview-only write plan", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_PREVIEW);
+    expect(parsed.semanticComplete).toBe(true);
+    expect(parsed.previewOnly).toBe(true);
+    expect(parsed.didNotModifyCodex).toBe(true);
+    expect(parsed.dest).toBe("/tmp/ws/pytest_complete");
+  });
+
+  it("parses write result and start prompt", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_WROTE);
+    expect(parsed.wrote).toBe(true);
+    expect(parsed.startPrompt).toBe("Make the tests pass.");
+    expect(parsed.didNotModifyCodex).toBe(true);
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses the uninstall destination shown by the CLI", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_UNINSTALL_PREVIEW);
+    expect(parsed.previewOnly).toBe(true);
+    expect(parsed.dest).toBe("/tmp/ws/pytest_complete");
+    expect(parsed.semanticComplete).toBe(true);
+  });
+
+  it("parses a no-op uninstall without inventing a destination", () => {
+    const parsed = parseScaffoldPreview(SCAFFOLD_NOT_MATERIALIZED);
+    expect(parsed.notMaterialized).toBe(true);
+    expect(parsed.packId).toBe("pytest_complete");
+    expect(parsed.dest).toBeNull();
+    expect(parsed.semanticComplete).toBe(true);
   });
 });

@@ -77,6 +77,11 @@ delete pythonEnv.PYTHONHOME;
 delete pythonEnv.PYTHONPATH;
 delete pythonEnv.PYTHONUSERBASE;
 
+const fixturePacksSource = join(repoDir, "fixture_packs");
+if (!existsSync(fixturePacksSource)) {
+  throw new Error(`fixture_packs directory missing: ${fixturePacksSource}`);
+}
+
 const bundleDir = join(buildRoot, "scenario-library");
 mkdirSync(bundleDir, { recursive: true });
 const bundleName = `codex-keysmith-scenarios-v${expectedCliVersion}.bundle`;
@@ -125,6 +130,8 @@ const result = spawnSync(
     specDir,
     "--add-data",
     `${bundleDir}${delimiter}scenario-library`,
+    "--add-data",
+    `${fixturePacksSource}${delimiter}fixture_packs`,
     patchedSource,
   ],
   { cwd: guiDir, encoding: "utf8", stdio: "inherit", env: pythonEnv },
@@ -156,6 +163,20 @@ const scenarioSmoke = spawnSync(destination, ["--scenario-list", "--lang", "en"]
 if (scenarioSmoke.error) throw scenarioSmoke.error;
 if (scenarioSmoke.status !== 0 || !scenarioSmoke.stdout.includes("example_fixture 1.0.0: ready")) {
   throw new Error(`Frozen sidecar embedded scenario smoke failed: ${scenarioSmoke.stderr || scenarioSmoke.stdout}`);
+}
+
+const fixtureSmoke = spawnSync(destination, ["--scaffold-list", "--lang", "en"], { encoding: "utf8" });
+if (fixtureSmoke.error) throw fixtureSmoke.error;
+if (
+  fixtureSmoke.status !== 0
+  || !fixtureSmoke.stdout.includes("pytest_complete")
+  || !fixtureSmoke.stdout.includes("aiml_llamaguard")
+  || !fixtureSmoke.stdout.includes("compchem_cantera")
+  || !fixtureSmoke.stdout.includes("cyber_pwntools")
+) {
+  throw new Error(
+    `Frozen sidecar embedded fixture smoke failed: ${fixtureSmoke.stderr || fixtureSmoke.stdout}`,
+  );
 }
 
 console.log(`Built ${destination}`);

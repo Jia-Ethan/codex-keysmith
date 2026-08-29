@@ -158,15 +158,21 @@ manifest 始终拥有本轮 MD 生命周期；config 的长期所有权仅是顶
 
 `--uninstall` 默认预览；`--uninstall --yes` 撤销最新一层 manifest-owned 状态：
 
-1. 所有目标目录先验证 manifest schema、MD、config 顶层 `model_instructions_file` 所有权、必要备份和上一层 manifest；config 与 manifest after 字节相同时走原路径（mtime 单独变化不构成长期漂移）；字节漂移但目标字段不存在歧义或不支持结构且仍引用 `./<manifest md.path>` 时允许继续；只读 status 可把字段缺失分类为 `inactive-by-config`，但该状态不授权卸载，必须先切回 active config；内置零依赖扫描器不声称验证无关 TOML 值或跨表键冲突的完整语法；
+1. 所有目标目录先验证 manifest schema、MD、config 顶层 `model_instructions_file` 所有权、必要备份和上一层 manifest；config 与 manifest after 字节相同时走原路径（mtime 单独变化不构成长期漂移）；字节漂移但目标字段不存在歧义或不支持结构且仍引用 `./<manifest md.path>` 时允许继续；只读 status 可把字段缺失分类为 `inactive-by-config`，卸载保留当前 `config.toml` 且不走 schema-1 整文件备份回写，deploy 仍保持 blocked；`--reactivate` 只在 manifest/MD 指纹匹配时把缺失顶层字段补回当前 live config；内置零依赖扫描器不声称验证无关 TOML 值或跨表键冲突的完整语法；
 2. 只有 `hooks.isolated=true` 时才验证/恢复 active、disabled 和 hooks 备份；
 3. 只有 `legacy.action=archive` 时才验证/恢复 legacy 和归档；
 4. 任一目录有冲突时，全部目录在写入前停止；
 5. 在首次 mutation 前，为全部目录创建私有 `.codex-keysmith-transaction-<id>`、immutable intent、资源 before/after 定义和 before snapshots；
-6. 逐阶段恢复 config、MD 和实际受管理的 hooks/legacy，再把当前 manifest 归档到 journal 预先固定的精确路径并恢复上一层。对漂移的 config：`changed=true` 只从已验证备份恢复/移除部署前的目标语句并保留其他 live 内容；`changed=false` 不写 config；目标字段缺失、不同或 TOML 歧义则预检阻塞；
+6. 逐阶段恢复 config、MD 和实际受管理的 hooks/legacy，再把当前 manifest 归档到 journal 预先固定的精确路径并恢复上一层。对漂移的 config：`changed=true` 只从已验证备份恢复/移除部署前的目标语句并保留其他 live 内容；`changed=false` 不写 config；目标字段缺失时保留当前 `config.toml`；目标字段不同或 TOML 歧义则预检阻塞；
 7. 对全部参与目录的 post-state 执行 final sweep，持久化 `committed`，之后才以 cleanup claim/marker 可重入地删除 journal 和快照。合并 config 会产生新 mtime，因此 immutable intent 对它固定一个唯一 SHA-only after；journal 仍快照卸载开始时的完整 live config，反向恢复仍按完整 before snapshot 执行。其他资源的 after 验证不放宽。
 
 每次成功卸载只撤销一层。没有 manifest 是成功 no-op；v0.1.0 之前的无 manifest 状态不由工具猜测所有权。卸载硬中断留下的 durable journal、已登记 residue 或 cleanup marker 由 `--recover` 验证并恢复卸载前状态；用户并发漂移或证据篡改会 fail closed。
+
+### `--reactivate` 进程内批处理边界
+
+`--reactivate` 不是 durable journal operation。它会先锁定和预检全部目录，验证原子重命名能力与事务残留，再为全部 actionable 目录创建 `config.toml` 时间戳备份；只有这些步骤全部成功后才开始发布。每次发布后会立即验证，全部发布后还会对所有参与目录执行 final sweep。可捕获异常、`Ctrl-C` 或 `SystemExit` 会按反向顺序以发布指纹 CAS 恢复；若目录已被并发替换，工具不覆盖并发内容，并保留原始备份和明确 warning。
+
+该路径不写 `.codex-keysmith-transaction-*`，所以 `SIGKILL`、进程丢失或断电可能留下部分目录 active。`--recover` 只处理 durable deploy/uninstall，不处理 reactivate。硬中断后先运行 `--status`；没有冲突或异常 residue 时，重跑 `--reactivate --yes` 会跳过已 active 目录并 forward-complete 其余目录。需要承诺硬中断后自动恢复全局 before-state 时，必须新增独立的 durable `operation=reactivate`，不能复用或暗示现有 journal 已覆盖。
 
 ### 崩溃与持久化边界
 
@@ -187,7 +193,7 @@ manifest 始终拥有本轮 MD 生命周期；config 的长期所有权仅是顶
 
 The transaction layer exposes every target before writes, never follows symlinks, preserves concurrent nodes, persists rollback intent before the first deploy or uninstall mutation, and fails closed whenever ownership is uncertain. Only hooks actually isolated and legacy content actually archived enter manifest ownership. Deployment, interrupted-transaction recovery, and uninstall complete a full final fingerprint sweep before deleting their recovery evidence.
 
-Neither `--status` nor a `--skip-hooks-isolation` plan opens or parses `hooks.json` or `hooks.json.disabled`. Status may safely read config and manifest, but durable journal content is opened only by explicit `--recover`. With a valid manifest/Markdown and an absent top-level target field, status reports `inactive-by-config` without authorizing deploy or uninstall; a different target remains a conflict.
+Neither `--status` nor a `--skip-hooks-isolation` plan opens or parses `hooks.json` or `hooks.json.disabled`. Status may safely read config and manifest, but durable journal content is opened only by explicit `--recover`. With a valid manifest/Markdown and an absent top-level target field, status reports `inactive-by-config` without authorizing deploy. `--reactivate` may restore only that missing field after a config backup. Uninstall may proceed while leaving the current `config.toml` unchanged. A different target remains a conflict.
 
 ### Preflight and read-only status
 
@@ -243,11 +249,17 @@ Deploy recovery processes participants in reverse order and resources as `manife
 
 ### Manifest-based uninstall
 
-Uninstall validates manifest, Markdown, semantic top-level `model_instructions_file` ownership, required backups, and the previous manifest for every directory before writes. If live config bytes drift but the conservative scanner finds no target-field ambiguity or unsupported structure and the field still references `./<manifest md.path>`, unrelated rewrites are accepted. Read-only status may classify an absent target field as `inactive-by-config`, but that state does not authorize uninstall; an active config must be restored first. The zero-dependency scanner does not claim complete validation of unrelated TOML values or cross-table key conflicts. For `config.changed=true`, uninstall merges only the verified pre-deployment field statement into live content (or removes it if originally absent); for `changed=false`, it leaves config untouched. A different target field, target-field ambiguity/unsupported structure, or abnormal node fails closed. Hook paths are inspected only when `isolated=true`; legacy is inspected only for `action=archive`. Any blocker stops all directories.
+Uninstall validates manifest, Markdown, semantic top-level `model_instructions_file` ownership, required backups, and the previous manifest for every directory before writes. If live config bytes drift but the conservative scanner finds no target-field ambiguity or unsupported structure and the field still references `./<manifest md.path>`, unrelated rewrites are accepted. Read-only status may classify an absent target field as `inactive-by-config`. That state still blocks deploy. `--reactivate` restores only the missing top-level field when fingerprints still match. Uninstall leaves the current `config.toml` unchanged and does not take the schema-1 full-file backup restore path. The zero-dependency scanner does not claim complete validation of unrelated TOML values or cross-table key conflicts. For `config.changed=true`, uninstall merges only the verified pre-deployment field statement into live content (or removes it if originally absent); for `changed=false` or a missing target field, it leaves config untouched. A different target field, target-field ambiguity/unsupported structure, or abnormal node fails closed. Hook paths are inspected only when `isolated=true`; legacy is inspected only for `action=archive`. Any blocker stops all directories.
 
 Confirmed uninstall publishes an immutable multi-directory durable intent and private before-state snapshots before its first mutation. The journal snapshots the complete live config. A merged config after-state has one immutable SHA-only allowance because atomic publication creates a new mtime; other resources retain exact portable after-state rules. Config merge uses the existing atomic CAS write path, so a post-preflight race is rejected and reverse recovery restores the complete live-before snapshot. Uninstall then restores Markdown and only the actually managed hooks/legacy state, archives the current manifest at the exact journal-selected path, and restores the previous layer. It performs a complete final sweep across all participants, persists `committed`, and uses re-enterable cleanup before removing journal evidence. Each run removes one layer; absent manifest is a successful no-op, and pre-v0.1.0 unmanaged state is never guessed.
 
 A hard interruption during uninstall leaves a durable journal, registered residue, or cleanup marker that status blocks and preserves. `--recover` validates this evidence and restores the pre-uninstall state; concurrent user drift or tampered evidence fails closed.
+
+### In-process `--reactivate` batch boundary
+
+Reactivation is not a durable journal operation. It locks and preflights every directory, checks atomic-rename support and transaction residue, and creates every actionable config backup before the first publish. Each publish is verified immediately, followed by a participant-wide final sweep. Catchable errors, `Ctrl-C`, and `SystemExit` restore published participants in reverse order with a published-fingerprint CAS. A concurrent replacement is never overwritten; the replacement and timestamped backup are preserved with an explicit warning.
+
+No `.codex-keysmith-transaction-*` is written for reactivation. `SIGKILL`, process loss, or power loss may therefore leave a partially active batch, and `--recover` handles only durable deploy/uninstall operations. After a hard interruption, run status first. If there is no conflict or abnormal residue, rerunning `--reactivate --yes` skips already-active directories and forward-completes the rest. A promise to restore the global before-state after hard interruption would require a separate durable `operation=reactivate` rather than reusing or implying coverage from the current journal.
 
 ### Crash and durability boundary
 

@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.3.7"
-VERSION = "0.3.7"
+TAG = "v0.5.0"
+VERSION = "0.5.0"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -36,9 +36,10 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
     "docs/fixture-channel.md",
-    "docs/releases/v0.3.7.md",
+    "docs/releases/v0.5.0.md",
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
+    "examples/gpt-persona-contract.md",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",
@@ -125,7 +126,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.3.7"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.5.0"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -139,7 +140,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.3.7.md",
+    "docs/releases/v0.5.0.md",
 )
 
 
@@ -239,7 +240,8 @@ def test_repository_version_metadata_is_release_state_neutral():
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
     assert "## [{}] - 2026-08-29".format(VERSION) in changelog
-    assert "Source version v0.3.7" in readme
+    assert "Source version v0.5.0" in readme
+    assert "Source version v0.5.0" in english_readme
     assert "v0.3.7 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
@@ -251,6 +253,19 @@ def test_repository_version_metadata_is_release_state_neutral():
         assert "codex-instruct-v0.1.0.py" not in quick_start
         assert "--codex-dir ~/.codex --status" in quick_start
         assert "--codex-dir ~/.codex --dry-run" in quick_start
+
+
+def test_readmes_use_published_v039_reactivate_command():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    english_readme = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
+
+    assert "`--reactivate` 从 `v0.3.9` 开始提供" in readme
+    assert "python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate" in readme
+    assert "`--reactivate` is available from `v0.3.9`" in english_readme
+    assert "python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate" in english_readme
+    for quick_start in (readme, english_readme):
+        assert "v0.3.9` 正式发布前" not in quick_start
+        assert "Until `v0.3.9` is formally published" not in quick_start
 
 
 def test_cli_and_desktop_source_versions_match():
@@ -1310,6 +1325,9 @@ def test_ci_uses_full_tag_checkout_and_blocking_windows_matrix():
         in quality_job
     )
     assert "python scripts/run_scenario_bank.py --validate-only" in quality_job
+    assert "python scripts/bump_version.py check" in quality_job
+    assert "python scripts/validate_desktop_candidate.py config --root ." in quality_job
+    assert "scripts/bump_version.py" in quality_job.split("Run Ruff", 1)[0]
 
     release_workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"

@@ -3,6 +3,13 @@ import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
 import { FileText, Package, ShieldAlert, CheckCircle2 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { fetchDryRun, cliExecute } from "@/lib/api";
 import { useAppState } from "@/hooks/useAppState";
 import {
@@ -24,11 +31,33 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
+export function isInactiveConfigBlocker(detail) {
+  const text = String(detail || "");
+  return (
+    text.includes("model_instructions_file is missing")
+    || text.includes("model_instructions_file 当前缺失")
+  );
+}
+
+export function buildDeployArgs({ source, preset, filePath, name, codexDir, skipHooks }) {
+  const args = [];
+  if (source === "file") {
+    if (filePath) args.push("--file", filePath);
+  } else {
+    args.push("--preset", preset);
+  }
+  if (name.trim()) args.push("--name", name.trim());
+  if (codexDir.trim()) args.push("--codex-dir", codexDir.trim());
+  if (skipHooks) args.push("--skip-hooks-isolation");
+  return args;
+}
+
 export function Deploy() {
   const { t } = useTranslation();
   const { cliInfo, operationInProgress } = useAppState();
   const [step, setStep] = React.useState(1);
   const [source, setSource] = React.useState("bundled");
+  const [preset, setPreset] = React.useState("unrestricted");
   const [filePath, setFilePath] = React.useState("");
   const [name, setName] = React.useState("");
   const [codexDir, setCodexDir] = React.useState("");
@@ -42,14 +71,14 @@ export function Deploy() {
   const cliChecking = !cliInfo.checked;
   const cliUnavailable = cliInfo.checked && !cliInfo.path;
 
-  const buildArgs = () => {
-    const args = [];
-    if (source === "file" && filePath) args.push("--file", filePath);
-    if (name.trim()) args.push("--name", name.trim());
-    if (codexDir.trim()) args.push("--codex-dir", codexDir.trim());
-    if (skipHooks) args.push("--skip-hooks-isolation");
-    return args;
-  };
+  const buildArgs = () => buildDeployArgs({
+    source,
+    preset,
+    filePath,
+    name,
+    codexDir,
+    skipHooks,
+  });
 
   const canNext = (source === "bundled" || !!filePath) && (!skipHooks || !!codexDir.trim());
 
@@ -180,6 +209,8 @@ export function Deploy() {
                 t={t}
                 source={source}
                 setSource={setSource}
+                preset={preset}
+                setPreset={setPreset}
                 filePath={filePath}
                 setFilePath={setFilePath}
                 name={name}
@@ -235,7 +266,7 @@ export function Deploy() {
 
 // ── 步骤 1：选择内容 ─────────────────────────
 
-function Step1({ t, source, setSource, filePath, setFilePath, name, setName, codexDir, setCodexDir, skipHooks, setSkipHooks, canNext, onNext }) {
+function Step1({ t, source, setSource, preset, setPreset, filePath, setFilePath, name, setName, codexDir, setCodexDir, skipHooks, setSkipHooks, canNext, onNext }) {
   const pickFile = async () => {
     const picked = await open({
       filters: [{ name: "Markdown", extensions: ["md", "markdown", "txt"] }],
@@ -288,6 +319,24 @@ function Step1({ t, source, setSource, filePath, setFilePath, name, setName, cod
           </div>
         </fieldset>
 
+        {source === "bundled" && (
+          <div className="mt-5">
+            <label htmlFor="deploy-preset" className="text-sm font-medium">{t("deploy.preset")}</label>
+            <Select value={preset} onValueChange={setPreset}>
+              <SelectTrigger id="deploy-preset" className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unrestricted">{t("deploy.presetUnrestricted")}</SelectItem>
+                <SelectItem value="contract">{t("deploy.presetContract")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {preset === "contract" ? t("deploy.presetContractHint") : t("deploy.presetUnrestrictedHint")}
+            </p>
+          </div>
+        )}
+
         <div className="mt-5">
           <label htmlFor="deploy-name" className="text-sm font-medium">{t("deploy.name")}</label>
           <Input
@@ -295,7 +344,9 @@ function Step1({ t, source, setSource, filePath, setFilePath, name, setName, cod
             className="mt-1.5 font-mono"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={t("deploy.namePlaceholder")}
+            placeholder={source === "bundled" && preset === "contract"
+              ? t("deploy.namePlaceholderContract")
+              : t("deploy.namePlaceholder")}
           />
           <p className="mt-1 text-xs text-muted-foreground">{t("deploy.nameHint")}</p>
         </div>
@@ -431,6 +482,14 @@ function Step2({ t, preview, loading, onBack, onNext }) {
               <div className="text-sm font-semibold text-danger">{gateMessage}</div>
               {(gate.detail || preview.error || preview.stderr) && (
                 <pre className="log-block mt-2.5">{gate.detail || preview.error || preview.stderr}</pre>
+              )}
+              {isInactiveConfigBlocker(gate.detail || preview.error || preview.stderr) && (
+                <div className="mt-3">
+                  <p className="text-xs text-secondary-foreground">{t("deploy.reactivateInsteadHint")}</p>
+                  <Button className="mt-2.5" size="sm" onClick={() => setView("manage")}>
+                    {t("deploy.reactivateInstead")}
+                  </Button>
+                </div>
               )}
             </div>
           )}

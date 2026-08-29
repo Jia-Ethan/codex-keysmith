@@ -48,6 +48,7 @@ const VALID_DEPLOYABILITY = new Set(["ready", "blocked"]);
 const MANAGEMENT_PREVIEW_SENTINELS = new Set([
   "[Preview] No files were changed; add --yes to confirm uninstall.",
   "[Preview] No files were changed; add --yes to confirm recovery.",
+  "[Preview] No files were changed; add --yes to confirm reactivation.",
   "[Preview] No files were changed; add --yes to clean the initializing journal.",
   "[Preview] Cleanup residue was not changed; add --yes to confirm cleanup.",
   "[Preview] Found an empty initializing journal before intent publication; nothing changed. Add --yes to remove it.",
@@ -428,10 +429,13 @@ export function parseUninstallPreview(stdout) {
       result.blockers.push(trimmed.replace(/^\[(?:Error|Blocked)\]\s*/, ""));
     }
 
-    if (/^\[Done\] (?:No codex-keysmith deployment manifest was found; nothing to uninstall\.|No managed deployment was found; nothing to uninstall\.|No interrupted (?:deployment|uninstall) transaction requires recovery\.)$/.test(trimmed)) {
+    if (/^\[Done\] (?:No codex-keysmith deployment manifest was found; nothing to (?:uninstall|reactivate)\.|No managed deployment was found; nothing to uninstall\.|No inactive-by-config location requires reactivation\.|No interrupted (?:deployment|uninstall) transaction requires recovery\.)$/.test(trimmed)) {
       result.noOp = trimmed;
     }
     if (/^\[Done\] Restored \d+ hooks\.json file\(s\)\.$/.test(trimmed)) {
+      result.completion = trimmed;
+    }
+    if (/^\[Done\] Reactivated \d+ config reference\(s\)\.$/.test(trimmed)) {
       result.completion = trimmed;
     }
 
@@ -797,4 +801,133 @@ function firstToken(value) {
 function parseKnownToken(value, allowed) {
   const token = firstToken(value);
   return allowed.has(token) ? token : "unknown";
+}
+
+const SCAFFOLD_LIST_ITEM_RE =
+  /^ {2}([A-Za-z0-9._-]+)  v(\d+)  (\S+)  (.+)$/;
+
+/**
+ * 解析 --scaffold-list（只认 --lang en）
+ */
+export function parseScaffoldList(stdout) {
+  const result = {
+    packDir: null,
+    packages: [],
+    empty: false,
+    semanticComplete: false,
+    raw: stdout,
+  };
+  for (const line of splitCliLines(stdout)) {
+    const dirMatch = line.match(/^\[scaffold\] pack-dir: (.+)$/);
+    if (dirMatch) {
+      result.packDir = dirMatch[1];
+      continue;
+    }
+    if (line === "[scaffold] no packs found") {
+      result.empty = true;
+      continue;
+    }
+    const itemMatch = line.match(SCAFFOLD_LIST_ITEM_RE);
+    if (itemMatch) {
+      result.packages.push({
+        id: itemMatch[1],
+        version: Number(itemMatch[2]),
+        family: itemMatch[3],
+        title: itemMatch[4],
+      });
+    }
+  }
+  result.semanticComplete = result.packDir !== null
+    && (result.packages.length > 0 || result.empty);
+  return result;
+}
+
+/**
+ * 解析 --scaffold / --scaffold-uninstall 预览或写入结果（只认 --lang en）
+ */
+export function parseScaffoldPreview(stdout) {
+  const result = {
+    packId: null,
+    version: null,
+    source: null,
+    dest: null,
+    backup: null,
+    unchanged: false,
+    previewOnly: false,
+    wrote: false,
+    removed: false,
+    notMaterialized: false,
+    didNotModifyCodex: false,
+    startPrompt: null,
+    semanticComplete: false,
+    raw: stdout,
+  };
+  for (const line of splitCliLines(stdout)) {
+    const packMatch = line.match(/^\[scaffold\] pack: (\S+) v(\d+)$/);
+    if (packMatch) {
+      result.packId = packMatch[1];
+      result.version = Number(packMatch[2]);
+      continue;
+    }
+    const sourceMatch = line.match(/^\[scaffold\] source: (.+)$/);
+    if (sourceMatch) {
+      result.source = sourceMatch[1];
+      continue;
+    }
+    const destMatch = line.match(/^\[(?:scaffold|scaffold-uninstall)\] dest: (.+)$/);
+    if (destMatch) {
+      result.dest = destMatch[1];
+      continue;
+    }
+    const backupMatch = line.match(/^\[scaffold\] backup: (.+)$/);
+    if (backupMatch) {
+      result.backup = backupMatch[1];
+      continue;
+    }
+    const unchangedMatch = line.match(/^\[scaffold\] unchanged: (.+)$/);
+    if (unchangedMatch) {
+      result.unchanged = true;
+      result.dest = unchangedMatch[1];
+      continue;
+    }
+    const wroteMatch = line.match(/^\[scaffold\] wrote (.+)$/);
+    if (wroteMatch) {
+      result.wrote = true;
+      result.dest = wroteMatch[1];
+      continue;
+    }
+    const removedMatch = line.match(/^\[scaffold\] removed (.+)$/);
+    if (removedMatch) {
+      result.removed = true;
+      result.dest = removedMatch[1];
+      continue;
+    }
+    const missingMatch = line.match(/^\[scaffold\] not materialized: (.+)$/);
+    if (missingMatch) {
+      result.notMaterialized = true;
+      result.packId = missingMatch[1];
+      continue;
+    }
+    if (line === "[scaffold] did not modify ~/.codex") {
+      result.didNotModifyCodex = true;
+      continue;
+    }
+    if (line === "[scaffold] preview only; add --yes to write."
+      || line === "[scaffold] preview only; add --yes to delete.") {
+      result.previewOnly = true;
+      continue;
+    }
+    const promptMatch = line.match(/^Suggested first sentence: (.+)$/);
+    if (promptMatch) {
+      result.startPrompt = promptMatch[1];
+    }
+  }
+  result.semanticComplete = result.didNotModifyCodex && (
+    result.previewOnly
+    || result.wrote
+    || result.removed
+    || result.unchanged
+    || result.notMaterialized
+  );
+  return result;
 }

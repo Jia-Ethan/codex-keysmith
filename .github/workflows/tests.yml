@@ -177,8 +177,14 @@ jobs:
           python -m py_compile
           codex-instruct.py
           scripts/build_release.py
+          scripts/bump_version.py
           scripts/run_prompt_bank_regression.py
           scripts/run_scenario_bank.py
+
+      - name: Verify source version agreement
+        run: |
+          python scripts/bump_version.py check
+          python scripts/validate_desktop_candidate.py config --root .
 
       - name: Run Ruff
         run: python -m ruff check codex-instruct.py tests scripts
