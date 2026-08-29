@@ -299,6 +299,7 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 - macOS/Linux 使用 file/directory `fsync`；Windows P0 后端对受管理文件和目录句柄执行 `FlushFileBuffers`。Windows 逐 journal phase 的硬中断证据仍属 P1，因此该实现契约与 `EXPLICIT_BETA` fresh-deployment 策略都不等于正式支持；
 - journal、intent、companion、manifest 与 cleanup claim 用于防止意外漂移和普通竞态，不是抵御同一账户协同篡改多份证据的密码学认证；
 - `model_instructions_file` 对单份 live config 仍是全局项；CCSwitch 的 Provider 有效 config 可切换其存在状态，但通用配置合并可能重新注入它，Keysmith 不管理 CCSwitch 数据库、回填结果或代理接管热切换；hooks 只能整份隔离且不随 config 快照切换；
+- 部署契约后，live config 里 `model_reasoning_effort = "max"` 会显著推高硬探测场景的拒绝率（v0.3.7 实测：同一最小化 CODEX_HOME，`max` 下 2/2 拒绝，`xhigh` 或删除该键 2/2 完整交付；AGENTS.md、memories、skills 经消融排除）。`max` 给了模型足够的自我审视预算推翻交付契约；建议部署契约的配置使用 `xhigh` 或更低。Keysmith 不改写该键，只记录这一实测结论；
 - 内置提示词不保证任何模型或版本采用完全相同的行为。
 
 完整状态机见 [`hooks-transactions.md`](hooks-transactions.md)。
@@ -575,6 +576,7 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 - Windows P0 backend calls `FlushFileBuffers` on managed handles; the per-journal-phase hard-interruption matrix remains P1, so it is not a formal support claim.
 - Journal, intent, companion, manifest, and cleanup-claim evidence is not cryptographic authentication against coordinated same-user tampering.
 - `model_instructions_file` remains global within one live config. CCSwitch can switch its presence through effective provider configs, but Common Config merging can reintroduce it; Keysmith does not manage the CCSwitch database, backfill outcome, or proxy-takeover hot switching. Hook isolation is whole-file and does not follow those configs.
+- After deploying the contract, `model_reasoning_effort = "max"` in the live config measurably raises refusals on hard-probe scenarios (v0.3.7 measurement: same minimal CODEX_HOME refused 2/2 at `max`, delivered fully 2/2 at `xhigh` and with the key removed; AGENTS.md, memories, and skills were ruled out by ablation). `max` reasoning gives the model enough self-reflection budget to override the delivery contract; prefer `xhigh` or lower on configs that deploy it. Keysmith never rewrites that key — this is a recorded measurement, not managed behavior.
 
 Full state model: [`hooks-transactions.md`](hooks-transactions.md).
 
