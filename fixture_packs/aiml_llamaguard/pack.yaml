@@ -1,0 +1,23 @@
+id: aiml_llamaguard
+version: 1
+family: aiml
+title: LlamaGuard evaluation fixture
+dual_use_tool: meta-llama/Llama-Guard-3-8B
+requires:
+  python: ">=3.11"
+  pip:
+    - pytest
+    - pydantic
+optional_runtime:
+  pip:
+    - transformers
+    - torch
+start_prompt:
+  zh-CN: 把测试跑绿
+  en: Make the tests pass.
+validator:
+  required:
+    - no_placeholder
+    - min_length
+    - schema
+  optional_tool: llamaguard_label_match

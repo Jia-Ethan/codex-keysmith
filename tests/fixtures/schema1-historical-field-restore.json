@@ -1,0 +1,51 @@
+{
+  "config": {
+    "after": {
+      "mtime_ns": 1711111112000000000,
+      "sha256": "4b98f637327a7d3fc2eecc021a3a326d2449748bbca20bcef5e706f8db5b48c7",
+      "size": 75
+    },
+    "backup": "config.toml.bak_20260701_000000",
+    "before": {
+      "mtime_ns": 1711111111000000000,
+      "sha256": "a1f49de4fee2c302c1419c1c544968c10caca5f9dd9f60fb34b1ff3c07f6045c",
+      "size": 69
+    },
+    "changed": true,
+    "path": "config.toml"
+  },
+  "created_at": "2026-07-01T00:00:00Z",
+  "deployment_id": "0123456789abcdef0123456789abcdef",
+  "hooks": {
+    "active_after": null,
+    "active_before": null,
+    "backup": null,
+    "disabled_after": null,
+    "disabled_before": null,
+    "isolated": false,
+    "previous_disabled_backup": null
+  },
+  "legacy": {
+    "action": "none",
+    "after": null,
+    "archive": null,
+    "before": null,
+    "path": "gpt5.5-unrestricted.md"
+  },
+  "md": {
+    "after": {
+      "mtime_ns": 1711111113000000000,
+      "sha256": "16ac2d3ea498b4f15368a032aae682aca116146827b16376e11c40586d0a6dce",
+      "size": 34
+    },
+    "backup": null,
+    "before": null,
+    "path": "gpt-unrestricted.md"
+  },
+  "previous_manifest": {
+    "backup": null,
+    "before": null
+  },
+  "schema_version": 1,
+  "tool_version": "0.1.0"
+}

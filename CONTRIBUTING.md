@@ -1,0 +1,97 @@
+<!-- markdownlint-disable MD013 -->
+
+<!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
+
+# 贡献指南 / Contributing
+
+`codex-keysmith` 会直接处理本地 Codex 配置。提交改动时，请保持变更边界完整，覆盖真实成功、冲突和回滚路径，并让中英文文档与 CLI 行为一致。
+
+## 提交问题
+
+提交 Bug 前，请搜索已有 Issue 并使用仓库的 Bug 表单。报告应包含：
+
+- `python3 codex-instruct.py --version` 输出、Release tag 和 commit SHA；
+- 操作系统、Python 版本和 Codex CLI 版本；
+- 最小复现步骤、预期结果和实际结果；
+- 脱敏后的 `--status` / `--dry-run` 输出，以及是否涉及 deploy、recover、restore-hooks、uninstall 或 reactivate；如果存在 durable journal，只报告 transaction ID 和节点类型，不粘贴完整内容。
+
+公开内容必须删除 token、cookie、用户名、私人路径、完整配置和 Prompt Bank 响应。安全漏洞请按 [安全政策](SECURITY.md) 私密报告。
+
+## 提交改动
+
+1. 从当前默认分支创建短生命周期分支。
+2. 只修改与问题直接相关的文件；不要混入无关格式化、生成产物或本地 `.codex` 状态。
+3. 行为变更必须补充成功、错误、并发/所有权冲突和必要回滚测试。
+4. 提示词正文变更必须原子同步 `codex-instruct.py`、`examples/gpt-unrestricted.md`、契约测试和 README。
+5. CLI、durable journal/recover、manifest schema、备份、hooks、迁移、uninstall 或 Release 行为变化必须同步中英文文档和 CHANGELOG。
+6. 版本号变更必须用 `python3 scripts/bump_version.py set <x.y.z>` 一次改全全部 6 个来源文件；不要手工逐个编辑。`python3 scripts/bump_version.py check` 会在版本不一致时 fail closed，CI 的 Quality job 也会执行同一检查。
+7. Desktop / GUI 行为变化必须同步 `gui/README.md`、`gui/SPEC.md`、相关 Release 文档与 CHANGELOG，并补齐 Vitest、Rust 或原生候选门禁。
+8. 在干净工作树上运行完整检查：
+
+```bash
+python3 -m py_compile codex-instruct.py scripts/build_release.py scripts/bump_version.py scripts/run_prompt_bank_regression.py
+python3 scripts/bump_version.py check
+python3 scripts/validate_desktop_candidate.py config --root .
+python3 -m pytest -p no:cacheprovider -q tests
+python3 -m ruff check codex-instruct.py tests scripts
+python3 -m coverage erase
+python3 -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
+python3 -m coverage combine
+python3 -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
+python3 scripts/run_prompt_bank_regression.py --validate-only
+(
+  cd gui
+  npm ci
+  npm test
+  npm run build
+  cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+  cargo test --manifest-path src-tauri/Cargo.toml --locked
+  cargo check --manifest-path src-tauri/Cargo.toml --locked
+)
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+RELEASE_TAG="v$(tr -d '\r\n' < VERSION)"
+TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+if [ -n "$TAG_COMMIT" ] && [ "$TAG_COMMIT" != "$SOURCE_COMMIT" ]; then
+  if REFUSAL="$(python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate 2>&1)"; then exit 1; fi
+  printf '%s\n' "$REFUSAL" | grep -F "release tag $RELEASE_TAG already points to $TAG_COMMIT, not candidate $SOURCE_COMMIT"
+  test ! -e dist-candidate
+else
+  python3 scripts/build_release.py "$RELEASE_TAG" --source-commit "$SOURCE_COMMIT" --output-dir dist-candidate
+  (cd dist-candidate && sha256sum --check SHA256SUMS)
+fi
+git diff --check
+```
+
+当前完整测试集为 400+ 项；不要通过删除测试、缩小覆盖范围或降低合并后的 branch coverage 81% 门槛让 CI 通过。Release 验证必须使用完整、非 shallow 的 checkout 并取得全部 tags。候选构建必须使用完整 `--source-commit` 并精确匹配 HEAD，并能以非交互、有限超时方式验证每个已配置 remote 的同名 tag；remote 不可达、需要认证或与本地 tag/候选 commit 不一致时必须 fail closed。如果 `v$VERSION` 已存在于其他 commit，builder 必须拒绝且不得生成同版本资产。正式发布构建必须省略该参数，并要求版本 tag 已存在且精确指向 HEAD。Release 相关改动必须验证 ZIP、tar.gz、独立脚本、密封 `codex-keysmith-scenarios-v<VERSION>.bundle` 和 `SHA256SUMS` 可重复构建、内容完整且版本一致。不可变 tag 的恢复发布不得重写 tag 或沿用旧 run；必须从 `main` 输入完整 tag object/peeled commit，令同一 run 的所有阻断测试与 publish job checkout 该 tag，并按 numeric Release ID 操作 draft。
+
+Pull Request 需说明改动原因、用户可见影响、文件写入与恢复边界、验证结果和文档/CHANGELOG 影响。Windows fresh deployment 已按 `EXPLICIT_BETA` 开放；相关改动必须保留 preview/执行路径的 beta 警告，并确保 status、recover、uninstall、restore-hooks 与 reactivate 不误报。P0 原生后端与阻断式 recovery/lifecycle CI 不构成正式支持徽章或无边界兼容性声明。P1 仍需逐阶段硬中断、路径别名、长路径、本地化目录与 cleanup double-fault 证据，P2 正式支持边界仍未关闭。Live Prompt Bank 不属于 PR gate，不要在 PR 中加入 API 凭证或产生付费调用。
+
+---
+
+## English
+
+`codex-keysmith` directly manages local Codex configuration. Keep each change complete and focused, cover real success, conflict, and rollback paths, and keep Chinese and English documentation aligned with CLI behavior.
+
+Before opening a bug report, search existing issues and use the bug form. Include:
+
+- `python3 codex-instruct.py --version`, the Release tag, and commit SHA;
+- operating system, Python version, and Codex CLI version;
+- minimal reproduction steps, expected behavior, and actual behavior;
+- redacted `--status` / `--dry-run` output and whether deploy, recover, restore-hooks, uninstall, or reactivate is involved. If a durable journal exists, report only its transaction ID and node types, not complete content.
+
+Remove tokens, cookies, usernames, private paths, complete configuration, and prompt-bank responses from public content. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
+For a contribution:
+
+1. Create a short-lived branch from the current default branch.
+2. Keep the diff scoped; exclude unrelated formatting, generated assets, and local `.codex` state.
+3. Add tests for successful behavior, errors, concurrency/ownership conflicts, and required rollback paths.
+4. A bundled-prompt text change must atomically update `codex-instruct.py`, `examples/gpt-unrestricted.md`, contract tests, and README.
+5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
+6. A version change must go through `python3 scripts/bump_version.py set <x.y.z>`, which rewrites all six version sources in one verified step. Never edit them by hand. `python3 scripts/bump_version.py check` fails closed on any disagreement and runs in the Quality job.
+7. Desktop or GUI behavior changes must update `gui/README.md`, `gui/SPEC.md`, the relevant Release documentation, and CHANGELOG, with matching Vitest, Rust, or native-candidate coverage.
+8. Run the complete command block above from a clean worktree.
+
+The current full suite contains 400+ tests. Do not remove tests, narrow measured source, or lower the combined 81% branch-coverage gate to make CI pass. Release verification requires a complete, non-shallow checkout with all tags. Candidate builds must pass a full `--source-commit` that exactly matches HEAD and must verify the same tag on every configured remote with non-interactive access and a finite timeout. An unreachable or authentication-gated remote, or any disagreement with the local tag/candidate commit, must fail closed. If `v$VERSION` already exists at another commit, the builder must refuse without generating same-version assets. A formal build must omit that option and require the version tag to exist at HEAD. Release changes must verify reproducible ZIP, tar.gz, standalone-script, sealed `codex-keysmith-scenarios-v<VERSION>.bundle`, and `SHA256SUMS` assets with complete content and consistent versions. Recovery publication for an immutable tag must not rewrite the tag or reuse an older run; it must start from `main` with the full tag-object and peeled-commit SHAs, make every blocking and publish job check out that tag in the same run, and address the draft by numeric Release ID.
+
+A pull request must describe the reason, user-visible impact, file-write and recovery boundary, verification evidence, and documentation/CHANGELOG impact. Windows fresh deployment is open under `EXPLICIT_BETA`; related changes must preserve the beta warning on preview and execution without emitting it from status, recover, uninstall, restore-hooks, or reactivate. The native P0 backend and blocking recovery/lifecycle CI are not a formal support badge or an unbounded compatibility claim. P1 still requires per-phase hard interruption, path aliases, long paths, localized profiles, and cleanup double-fault evidence, while the P2 formal-support boundary remains open. Live prompt-bank calls are not a PR gate; never add API credentials or paid calls to a pull request.

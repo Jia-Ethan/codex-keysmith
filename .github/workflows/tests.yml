@@ -1,0 +1,255 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact ref to check out for a tag-release recovery run.
+        required: false
+        type: string
+      expected_commit:
+        description: Full commit SHA that every blocking job must execute.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  test:
+    name: ${{ format('{0} / Python {1}', matrix.os, matrix.python-version) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+        python-version:
+          - "3.9"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
+
+      - name: Install test dependency for Python 3.9
+        if: matrix.python-version == '3.9'
+        run: python -m pip install "pytest==8.3.5"
+
+      - name: Install test dependency for latest Python
+        if: matrix.python-version != '3.9'
+        run: python -m pip install "pytest==8.4.2"
+
+      - name: Compile Python source
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/run_scenario_bank.py
+
+      - name: Run tests
+        run: python -m pytest -p no:cacheprovider -q tests
+
+  windows:
+    name: Windows / Python ${{ matrix.python-version }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.12"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
+
+      - name: Install test dependency
+        run: python -m pip install "pytest==8.4.2"
+
+      - name: Compile Python source
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/run_scenario_bank.py
+
+      - name: Run blocking Windows lifecycle contracts
+        run: >-
+          python -m pytest -p no:cacheprovider -q
+          tests/test_windows_filesystem.py::test_issue_1_v010_initializing_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_inherited_acl_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_issue_1_v010_cpython_0700_acl_fixture_recovers_to_ready
+          tests/test_windows_filesystem.py::test_empty_private_initializing_journal_recovers_to_ready
+          tests/test_codex_instruct.py::test_deploy_yes_isolates_hooks
+          tests/test_codex_instruct.py::test_deploy_rolls_back_and_reraises_keyboard_interrupt
+          tests/test_codex_instruct.py::test_cli_restore_hooks_restores
+          tests/test_uninstall.py::test_uninstall_previews_then_restores_first_deployment
+          tests/test_recovery.py::test_recover_reenters_after_remove_claim_interruption
+          tests/test_uninstall_recovery.py::test_uninstall_initializing_cleanup_is_reentrant_after_empty_marker_publication
+          tests/test_scenario_cli.py::test_scenario_deploy_status_uninstall_lifecycle
+          tests/test_scenario_recovery.py::test_deploy_committed_cleanup_interruption_keeps_deployment
+          tests/test_scenario_recovery.py::test_uninstall_committed_phase_interruption_finishes_removal
+          tests/test_scenario_recovery.py::test_deploy_cleanup_member_interruption_keeps_deployment
+          tests/test_scenario_recovery.py::test_uninstall_cleanup_member_interruption_finishes_removal
+
+      - name: Run tests
+        run: python -m pytest -p no:cacheprovider -q tests
+
+  quality:
+    name: Quality / Python 3.14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Bind checked-out source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: >-
+          python -c "import os, subprocess;
+          actual = subprocess.check_output(['git', 'rev-parse', '--verify', 'HEAD^{commit}'], text=True).strip();
+          expected = os.environ['EXPECTED_COMMIT'];
+          assert actual.lower() == expected.lower(), f'checked-out HEAD {actual} does not match {expected}'"
+
+      - name: Install quality dependencies
+        run: python -m pip install -r requirements-quality.txt
+
+      - name: Compile Python sources
+        run: >-
+          python -m py_compile
+          codex-instruct.py
+          scripts/build_release.py
+          scripts/bump_version.py
+          scripts/run_prompt_bank_regression.py
+          scripts/run_scenario_bank.py
+
+      - name: Verify source version agreement
+        run: |
+          python scripts/bump_version.py check
+          python scripts/validate_desktop_candidate.py config --root .
+
+      - name: Run Ruff
+        run: python -m ruff check codex-instruct.py tests scripts
+
+      - name: Run branch coverage
+        run: |
+          python -m coverage erase
+          python -m coverage run --branch --parallel-mode -m pytest -p no:cacheprovider -q tests
+          python -m coverage combine
+          python -m coverage report --include=codex-instruct.py,scripts/run_prompt_bank_regression.py --fail-under=81
+          python -m coverage report --include=scripts/run_scenario_bank.py --fail-under=65
+
+      - name: Validate prompt bank contracts
+        run: python scripts/run_prompt_bank_regression.py --validate-only
+
+      - name: Validate scenario bank contracts
+        run: python scripts/run_scenario_bank.py --validate-only
+
+      - name: Build or reject release candidate assets
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit || github.sha }}
+        run: |
+          set -euo pipefail
+          release_tag="v$(tr -d '\r\n' < VERSION)"
+          source_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          shallow="$(git rev-parse --is-shallow-repository)"
+          if [ "$shallow" != "false" ]; then
+            echo "Release verification requires a complete checkout with tags." >&2
+            exit 1
+          fi
+          if [ "$source_commit" != "$EXPECTED_COMMIT" ]; then
+            echo "Checked-out HEAD does not match the requested source commit." >&2
+            exit 1
+          fi
+          tag_ref="refs/tags/${release_tag}"
+          if git show-ref --verify --quiet "$tag_ref"; then
+            tag_commit="$(git rev-parse --verify "${tag_ref}^{commit}")"
+            if [ "$tag_commit" != "$source_commit" ]; then
+              echo "${release_tag} is already bound to ${tag_commit}; verifying refusal for ${source_commit}."
+              if refusal="$(python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir dist 2>&1)"; then
+                echo "Release builder accepted a conflicting existing version tag." >&2
+                exit 1
+              fi
+              expected="release tag ${release_tag} already points to ${tag_commit}, not candidate ${source_commit}"
+              case "$refusal" in
+                *"$expected"*) ;;
+                *)
+                  echo "$refusal" >&2
+                  echo "Release builder failed for an unexpected reason." >&2
+                  exit 1
+                  ;;
+              esac
+              test ! -e dist
+              echo "Release builder correctly refused the conflicting candidate."
+              exit 0
+            fi
+          fi
+          echo "Candidate-only verification for ${release_tag} at ${source_commit}; no release is published."
+          first="${RUNNER_TEMP}/release-candidate-first"
+          second="${RUNNER_TEMP}/release-candidate-second"
+          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir "$first"
+          python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir "$second"
+          diff -u "$first/SHA256SUMS" "$second/SHA256SUMS"
+          while read -r checksum asset; do
+            test -n "$checksum"
+            cmp "$first/$asset" "$second/$asset"
+          done < "$first/SHA256SUMS"
+          (cd "$first" && sha256sum --check SHA256SUMS)

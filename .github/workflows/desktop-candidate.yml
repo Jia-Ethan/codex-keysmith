@@ -1,0 +1,1472 @@
+name: Desktop Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed annotated desktop beta tag to publish.
+        required: false
+        type: string
+      expected_commit:
+        description: Full main commit SHA expected for build and publication.
+        required: false
+        type: string
+      publish_desktop_prerelease:
+        description: Publish the current unsigned desktop line as desktop-v<VERSION>-beta.N.
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-candidate.yml"
+      - "VERSION"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "LICENSE"
+      - "README.md"
+      - "README.en.md"
+      - "SECURITY.md"
+      - "codex-instruct.py"
+      - "examples/**"
+      - "gui/**"
+      - "scenarios/**"
+      - "requirements-quality.txt"
+      - "CODE_SIGNING_POLICY.md"
+      - "PRIVACY.md"
+      - "docs/agent-install.md"
+      - "docs/assets/readme/**"
+      - "docs/hooks-transactions.md"
+      - "docs/reference.md"
+      - "docs/releases/desktop-v*.md"
+      - "docs/releases/v0.2.0.md"
+      - "scripts/build_release.py"
+      - "scripts/package_desktop_prerelease.py"
+      - "scripts/validate_desktop_candidate.py"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.14.0"
+  PYTHON_VERSION: "3.12.9"
+  PYINSTALLER_VERSION: "6.16.0"
+  RUST_VERSION: "1.88.0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  candidate:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CODEX_KEYSMITH_SOURCE_COMMIT: ${{ github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon macOS / DMG
+            os: macos-15
+            platform: macos
+            architecture: arm64
+            target: aarch64-apple-darwin
+            bundle: dmg
+            artifact: codex-keysmith-desktop-macos-arm64
+            sidecar_suffix: ""
+            icon: gui/src-tauri/icons/icon.icns
+          - label: Windows x64 / NSIS
+            os: windows-2025
+            platform: windows
+            architecture: x86_64
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+            artifact: codex-keysmith-desktop-windows-x64
+            sidecar_suffix: .exe
+            icon: gui/src-tauri/icons/icon.ico
+
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Set up pinned Rust toolchain
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target "$TARGET_TRIPLE"
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+
+      - name: Install pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-quality.txt -r gui/requirements-build.txt
+          npm --prefix gui ci
+
+      - name: Validate configuration and versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+          python scripts/validate_desktop_candidate.py config --root .
+          python -m py_compile codex-instruct.py scripts/validate_desktop_candidate.py
+          test "$(tr -d '\r\n' < VERSION)" = "$(python codex-instruct.py --version | awk '{print $NF}')"
+          test "$(node --version)" = "v$NODE_VERSION"
+          python -c "import platform; assert platform.python_version() == '$PYTHON_VERSION'"
+          python -c "import PyInstaller; assert PyInstaller.__version__ == '$PYINSTALLER_VERSION'"
+          test "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION"
+
+      - name: Run CLI tests
+        shell: bash
+        run: python -m pytest -p no:cacheprovider -q tests
+
+      - name: Run GUI tests and production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix gui test
+          npm --prefix gui run build
+
+      - name: Require Apple Silicon runner
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: test "$(uname -m)" = arm64
+
+      - name: Build pinned PyInstaller sidecar
+        id: sidecar
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+          SIDECAR_SUFFIX: ${{ matrix.sidecar_suffix }}
+        run: |
+          set -euo pipefail
+          npm --prefix gui run build:sidecar -- --target "$TARGET_TRIPLE"
+          source="gui/src-tauri/binaries/codex-keysmith-cli-${TARGET_TRIPLE}${SIDECAR_SUFFIX}"
+          test -f "$source"
+          chmod +x "$source"
+          "$source" --version
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+
+      - name: Run Rust tests
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: >-
+          cargo test
+          --manifest-path gui/src-tauri/Cargo.toml
+          --locked
+          --target "$TARGET_TRIPLE"
+
+      - name: Build DMG candidate
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: >-
+          npm --prefix gui run tauri -- build
+          --target "$TARGET_TRIPLE"
+          --bundles app,dmg
+
+      - name: Build NSIS candidate
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: >-
+          npm --prefix gui run tauri -- build
+          --target "$TARGET_TRIPLE"
+          --bundles nsis
+
+      - name: Validate and stage macOS candidate
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          SIDECAR_SOURCE: ${{ steps.sidecar.outputs.source }}
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          base="gui/src-tauri/target/$TARGET_TRIPLE/release/bundle"
+          app_count="$(find "$base/macos" -maxdepth 1 -type d -name '*.app' -print | wc -l)"
+          if [ "$app_count" -ne 1 ]; then
+            echo "Expected exactly one macOS app bundle." >&2
+            exit 1
+          fi
+          app="$(find "$base/macos" -maxdepth 1 -type d -name '*.app' -print)"
+          executable_count="$(
+            find "$app/Contents/MacOS" -maxdepth 1 -type f \
+              ! -name 'codex-keysmith-cli' -print | wc -l
+          )"
+          if [ "$executable_count" -ne 1 ]; then
+            echo "Expected exactly one macOS GUI executable." >&2
+            exit 1
+          fi
+          app_executable="$(
+            find "$app/Contents/MacOS" -maxdepth 1 -type f \
+              ! -name 'codex-keysmith-cli' -print
+          )"
+          bundle_count="$(find "$base/dmg" -maxdepth 1 -type f -name '*.dmg' -print | wc -l)"
+          if [ "$bundle_count" -ne 1 ]; then
+            echo "Expected exactly one DMG candidate." >&2
+            exit 1
+          fi
+          bundle="$(find "$base/dmg" -maxdepth 1 -type f -name '*.dmg' -print)"
+          python scripts/validate_desktop_candidate.py candidate \
+            --root . \
+            --platform macos \
+            --architecture arm64 \
+            --target-triple "$TARGET_TRIPLE" \
+            --bundle-format dmg \
+            --bundle "$bundle" \
+            --app-bundle "$app" \
+            --app-executable "$app_executable" \
+            --sidecar "$SIDECAR_SOURCE" \
+            --packaged-sidecar "$app/Contents/MacOS/codex-keysmith-cli" \
+            --icon gui/src-tauri/icons/icon.icns \
+            --source-commit "$GITHUB_SHA" \
+            --node-version "$NODE_VERSION" \
+            --python-version "$PYTHON_VERSION" \
+            --pyinstaller-version "$PYINSTALLER_VERSION" \
+            --rust-version "$RUST_VERSION" \
+            --signing-mode unsigned \
+            --output-dir "$RUNNER_TEMP/desktop-candidate"
+
+      - name: Validate and stage Windows candidate
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          SIDECAR_SOURCE: ${{ steps.sidecar.outputs.source }}
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class KeysmithWindowProbe {
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(IntPtr window, int command);
+
+              [DllImport("user32.dll")]
+              public static extern bool IsIconic(IntPtr window);
+
+              [DllImport("user32.dll")]
+              public static extern bool IsWindowVisible(IntPtr window);
+
+              [DllImport("user32.dll")]
+              public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $base = "gui/src-tauri/target/$env:TARGET_TRIPLE/release"
+          $bundles = @(Get-ChildItem -LiteralPath "$base/bundle/nsis" -Filter "*.exe" -File)
+          if ($bundles.Count -ne 1) { throw "Expected exactly one NSIS candidate." }
+          $installDir = Join-Path $env:RUNNER_TEMP "desktop-candidate-install"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "desktop-sidecar-smoke"
+          $installed = $false
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          try {
+            $installer = Start-Process -FilePath $bundles[0].FullName `
+              -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+              throw "NSIS candidate installation failed with exit code $($installer.ExitCode)."
+            }
+            $installed = $true
+            $installedApps = @(
+              Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith*.exe" -File |
+                Where-Object { $_.Name -notin @("codex-keysmith-cli.exe") -and $_.Name -notlike "uninstall*" }
+            )
+            $installedSidecars = @(Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith-cli.exe" -File)
+            if ($installedApps.Count -ne 1 -or $installedSidecars.Count -ne 1) {
+              throw "Installed NSIS payload does not contain exactly one app and sidecar executable."
+            }
+            $profileRoot = Join-Path $smokeRoot "profile"
+            $codexDir = Join-Path $profileRoot ".codex"
+            $localAppData = Join-Path $profileRoot "AppData\Local"
+            $runtimeDir = Join-Path $localAppData "OpenAI\Codex"
+            New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+            foreach ($name in @("bin", "runtimes", "sessions")) {
+              New-Item -ItemType Directory -Force -Path (Join-Path $runtimeDir $name) | Out-Null
+            }
+            Set-Content -LiteralPath (Join-Path $codexDir "config.toml") `
+              -Value 'model = "gpt-5.5"' -Encoding UTF8
+            function Get-SmokeSnapshot([string]$Root) {
+              @(
+                Get-ChildItem -LiteralPath $Root -Recurse -Force |
+                  ForEach-Object {
+                    $relative = $_.FullName.Substring($Root.Length)
+                    if ($_.PSIsContainer) {
+                      "D|$relative"
+                    }
+                    else {
+                      "F|$relative|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+                    }
+                  } |
+                  Sort-Object
+              )
+            }
+            $beforeCodex = Get-SmokeSnapshot $codexDir
+            $beforeRuntime = Get-SmokeSnapshot $runtimeDir
+            $rustupHome = (& rustup show home | Out-String).Trim()
+            if (-not $rustupHome -or -not (Test-Path -LiteralPath $rustupHome -PathType Container)) {
+              throw "Pinned Rust toolchain home is unavailable before the isolated Windows smoke."
+            }
+            $environmentBackup = @{}
+            foreach ($name in @("USERPROFILE", "HOME", "LOCALAPPDATA", "CODEX_HOME", "RUSTUP_HOME")) {
+              $environmentBackup[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+            }
+            try {
+              [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
+              [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
+              [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
+              [Environment]::SetEnvironmentVariable("CODEX_HOME", $null, "Process")
+              [Environment]::SetEnvironmentVariable("RUSTUP_HOME", $rustupHome, "Process")
+              $automaticStatusOutput = & $installedSidecars[0].FullName --status --lang en 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                throw "Frozen sidecar automatic status smoke failed: $automaticStatusOutput"
+              }
+              $automaticStatusText = $automaticStatusOutput | Out-String
+              if ($automaticStatusText -notmatch "Found 1 Codex configuration location") {
+                throw "Automatic discovery did not report exactly one Codex configuration directory: $automaticStatusText"
+              }
+              if ($automaticStatusText -notmatch [Regex]::Escape($codexDir)) {
+                throw "Automatic discovery did not report the user Codex directory: $automaticStatusText"
+              }
+              if ($automaticStatusText -match [Regex]::Escape($runtimeDir)) {
+                throw "Automatic discovery reported the Windows runtime directory: $automaticStatusText"
+              }
+
+              # Exercise close while a sidecar process tree is still active. Without the
+              # frontend process lease, Tauri drops only the direct child and this helper
+              # never reaches its completion marker.
+              $slowSidecarSource = Join-Path $smokeRoot "slow-sidecar.rs"
+              $slowSidecarBinary = Join-Path $smokeRoot "slow-sidecar.exe"
+              $realSidecarBackup = Join-Path $smokeRoot "codex-keysmith-cli.real.exe"
+              $slowMarker = Join-Path $smokeRoot "slow-sidecar.marker"
+              @'
+          use std::env;
+          use std::fs::OpenOptions;
+          use std::io::Write;
+          use std::process::Command;
+          use std::thread;
+          use std::time::Duration;
+
+          fn mark(value: &str) {
+              let marker = env::var("CODEX_KEYSMITH_SLOW_MARKER").expect("marker path");
+              let mut file = OpenOptions::new()
+                  .create(true)
+                  .append(true)
+                  .open(marker)
+                  .expect("open marker");
+              writeln!(file, "{value}").expect("write marker");
+          }
+
+          fn main() {
+              if env::args().any(|arg| arg == "--slow-child") {
+                  thread::sleep(Duration::from_secs(6));
+                  mark("child-complete");
+                  return;
+              }
+
+              let executable = env::current_exe().expect("current executable");
+              let mut child = Command::new(executable)
+                  .arg("--slow-child")
+                  .spawn()
+                  .expect("spawn child");
+              mark("started");
+              assert!(child.wait().expect("wait for child").success());
+              mark("complete");
+              println!("codex-keysmith 0.2.0");
+          }
+          '@ | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
+              & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
+                throw "Failed to build the slow sidecar lifecycle fixture."
+              }
+              Copy-Item -LiteralPath $installedSidecars[0].FullName -Destination $realSidecarBackup
+              $slowAppProcess = $null
+              $slowMarkerEnvBackup = [Environment]::GetEnvironmentVariable(
+                "CODEX_KEYSMITH_SLOW_MARKER",
+                "Process"
+              )
+              try {
+                Copy-Item -LiteralPath $slowSidecarBinary -Destination $installedSidecars[0].FullName -Force
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_SLOW_MARKER",
+                  $slowMarker,
+                  "Process"
+                )
+                $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+                $slowWindowDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  Start-Sleep -Milliseconds 250
+                  $slowAppProcess.Refresh()
+                } while (
+                  -not $slowAppProcess.HasExited -and
+                  $slowAppProcess.MainWindowHandle -eq 0 -and
+                  [DateTime]::UtcNow -lt $slowWindowDeadline
+                )
+                if ($slowAppProcess.HasExited -or $slowAppProcess.MainWindowHandle -eq 0) {
+                  throw "Slow-sidecar GUI did not expose its main window."
+                }
+                $slowMarkerDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  $slowMarkerText = if (Test-Path -LiteralPath $slowMarker) {
+                    Get-Content -LiteralPath $slowMarker -Raw
+                  }
+                  else {
+                    ""
+                  }
+                  if ($slowMarkerText -match "(?m)^started\r?$") { break }
+                  Start-Sleep -Milliseconds 250
+                } while ([DateTime]::UtcNow -lt $slowMarkerDeadline)
+                if ($slowMarkerText -notmatch "(?m)^started\r?$") {
+                  throw "Slow sidecar did not start within 30 seconds."
+                }
+                Start-Sleep -Seconds 1
+                if (-not $slowAppProcess.CloseMainWindow()) {
+                  throw "Slow-sidecar GUI rejected the native close request."
+                }
+                if (-not $slowAppProcess.WaitForExit(20000)) {
+                  throw "Slow-sidecar GUI did not exit after the active process tree completed."
+                }
+                $slowMarkerText = Get-Content -LiteralPath $slowMarker -Raw
+                if (
+                  $slowMarkerText -notmatch "(?m)^child-complete\r?$" -or
+                  $slowMarkerText -notmatch "(?m)^complete\r?$"
+                ) {
+                  throw "GUI closed before the active sidecar process tree completed."
+                }
+              }
+              finally {
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_SLOW_MARKER",
+                  $slowMarkerEnvBackup,
+                  "Process"
+                )
+                if ($null -ne $slowAppProcess) {
+                  $slowAppProcess.Refresh()
+                  if (-not $slowAppProcess.HasExited) {
+                    Stop-Process -Id $slowAppProcess.Id -Force -ErrorAction SilentlyContinue
+                    $slowAppProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+                $slowSidecarProcesses = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.Equals($installedSidecars[0].FullName, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                foreach ($process in $slowSidecarProcesses) {
+                  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                  try { $process.WaitForExit(5000) | Out-Null }
+                  catch {}
+                }
+                Copy-Item -LiteralPath $realSidecarBackup -Destination $installedSidecars[0].FullName -Force
+              }
+
+              $appProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+              $secondProcess = $null
+              try {
+                $windowDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                do {
+                  Start-Sleep -Milliseconds 250
+                  $appProcess.Refresh()
+                } while (
+                  -not $appProcess.HasExited -and
+                  $appProcess.MainWindowHandle -eq 0 -and
+                  [DateTime]::UtcNow -lt $windowDeadline
+                )
+                if ($appProcess.HasExited) {
+                  throw "Installed GUI exited before exposing its main window (exit $($appProcess.ExitCode))."
+                }
+                if ($appProcess.MainWindowHandle -eq 0) {
+                  throw "Installed GUI did not expose a main window within 30 seconds."
+                }
+                Start-Sleep -Seconds 2
+                $appProcess.Refresh()
+                if ($appProcess.HasExited) {
+                  throw "Installed GUI exited during startup before the native close request."
+                }
+                $primaryWindowHandle = [IntPtr]$appProcess.MainWindowHandle
+                [KeysmithWindowProbe]::ShowWindow($primaryWindowHandle, 6) | Out-Null
+                $minimizeDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                do {
+                  Start-Sleep -Milliseconds 100
+                } while (
+                  -not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle) -and
+                  [DateTime]::UtcNow -lt $minimizeDeadline
+                )
+                if (-not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle)) {
+                  throw "Primary GUI could not be minimized before the second-instance handoff."
+                }
+                $secondProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
+                if (-not $secondProcess.WaitForExit(15000)) {
+                  throw "Second GUI launch did not hand off to the existing instance."
+                }
+                if ($secondProcess.ExitCode -ne 0) {
+                  throw "Second GUI launch returned exit code $($secondProcess.ExitCode)."
+                }
+                $focusDeadline = [DateTime]::UtcNow.AddSeconds(15)
+                do {
+                  Start-Sleep -Milliseconds 100
+                  $appProcess.Refresh()
+                  $primaryWindowHandle = [IntPtr]$appProcess.MainWindowHandle
+                  $primaryRestored = -not [KeysmithWindowProbe]::IsIconic($primaryWindowHandle)
+                  $primaryVisible = [KeysmithWindowProbe]::IsWindowVisible($primaryWindowHandle)
+                  $primaryFocused = [KeysmithWindowProbe]::GetForegroundWindow() -eq $primaryWindowHandle
+                } while (
+                  -not $appProcess.HasExited -and
+                  (-not $primaryRestored -or -not $primaryVisible -or -not $primaryFocused) -and
+                  [DateTime]::UtcNow -lt $focusDeadline
+                )
+                if ($appProcess.HasExited -or $appProcess.MainWindowHandle -eq 0) {
+                  throw "Second GUI launch did not preserve the primary window."
+                }
+                if (-not $primaryRestored) {
+                  throw "Second GUI launch did not restore the minimized primary window."
+                }
+                if (-not $primaryVisible) {
+                  throw "Second GUI launch did not make the primary window visible."
+                }
+                if (-not $primaryFocused) {
+                  # Hosted runners can deny SetForegroundWindow even after a valid user-style handoff.
+                  Write-Warning "Second GUI launch restored the primary window but Windows did not make it foreground."
+                }
+                if (-not $appProcess.CloseMainWindow()) {
+                  throw "Installed GUI rejected the native close request."
+                }
+                if (-not $appProcess.WaitForExit(15000)) {
+                  throw "Installed GUI remained resident after its main window was closed."
+                }
+                if ($appProcess.ExitCode -ne 0) {
+                  throw "Installed GUI close lifecycle returned exit code $($appProcess.ExitCode)."
+                }
+              }
+              finally {
+                if ($null -ne $secondProcess) {
+                  $secondProcess.Refresh()
+                  if (-not $secondProcess.HasExited) {
+                    Stop-Process -Id $secondProcess.Id -Force -ErrorAction SilentlyContinue
+                    $secondProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+                if ($null -ne $appProcess) {
+                  $appProcess.Refresh()
+                  if (-not $appProcess.HasExited) {
+                    Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+                    $appProcess.WaitForExit(5000) | Out-Null
+                  }
+                }
+              }
+              $payloadProcessDeadline = [DateTime]::UtcNow.AddSeconds(15)
+              do {
+                $remainingPayloadProcesses = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                if ($remainingPayloadProcesses.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 250
+              } while ([DateTime]::UtcNow -lt $payloadProcessDeadline)
+              if ($remainingPayloadProcesses.Count -ne 0) {
+                throw "Installed GUI or sidecar processes remained after close: $($remainingPayloadProcesses.Id -join ', ')"
+              }
+            }
+            finally {
+              foreach ($name in $environmentBackup.Keys) {
+                [Environment]::SetEnvironmentVariable(
+                  $name,
+                  $environmentBackup[$name],
+                  "Process"
+                )
+              }
+            }
+            $statusOutput = & $installedSidecars[0].FullName `
+              --codex-dir $codexDir --status --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar status smoke failed: $statusOutput" }
+            $dryRunOutput = & $installedSidecars[0].FullName `
+              --codex-dir $codexDir --dry-run --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Frozen sidecar dry-run smoke failed: $dryRunOutput" }
+            $scenarioRoot = Join-Path $smokeRoot "scenario-lifecycle"
+            $scenarioTarget = Join-Path $scenarioRoot "target"
+            New-Item -ItemType Directory -Force -Path $scenarioTarget | Out-Null
+            Set-Content -LiteralPath (Join-Path $scenarioTarget "project.txt") `
+              -Value "keep" -Encoding UTF8
+            $scenarioListOutput = & $installedSidecars[0].FullName `
+              --scenario-list --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioListOutput | Out-String) -notmatch "example_fixture 1\.0\.0: ready"
+            ) {
+              throw "Frozen sidecar embedded scenario list failed: $scenarioListOutput"
+            }
+            $scenarioPreviewOutput = & $installedSidecars[0].FullName `
+              --deploy-scenario example_fixture `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioPreviewOutput | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario deploy preview failed: $scenarioPreviewOutput"
+            }
+            if (Test-Path -LiteralPath (Join-Path $scenarioTarget ".codex-keysmith")) {
+              throw "Frozen sidecar scenario deploy preview mutated its target."
+            }
+            $scenarioDeployOutput = & $installedSidecars[0].FullName `
+              --deploy-scenario example_fixture `
+              --target-dir $scenarioTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario deploy failed: $scenarioDeployOutput"
+            }
+            $scenarioManifestPath = Join-Path $scenarioTarget ".codex-keysmith\scenario-manifest.json"
+            if (-not (Test-Path -LiteralPath $scenarioManifestPath -PathType Leaf)) {
+              throw "Frozen sidecar scenario deploy did not write its manifest."
+            }
+            $scenarioManifest = Get-Content -LiteralPath $scenarioManifestPath -Raw | ConvertFrom-Json
+            $deploymentProperties = @($scenarioManifest.deployments.PSObject.Properties)
+            if ($deploymentProperties.Count -ne 1) {
+              throw "Frozen sidecar scenario deploy did not record exactly one deployment."
+            }
+            $deploymentId = $deploymentProperties[0].Name
+            $deployment = $deploymentProperties[0].Value
+            if ($deployment.scenario_id -ne "example_fixture") {
+              throw "Frozen sidecar scenario manifest recorded the wrong scenario."
+            }
+            $scenarioPayload = Join-Path $scenarioTarget ".codex-keysmith\$($deployment.root)"
+            $verifyOutput = & python (Join-Path $scenarioPayload "verify.py") 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($verifyOutput | Out-String) -notmatch "example_fixture verify passed"
+            ) {
+              throw "Frozen sidecar deployed fixture verification failed: $verifyOutput"
+            }
+            $scenarioStatusOutput = & $installedSidecars[0].FullName `
+              --scenario-status `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioStatusOutput | Out-String) -notmatch "state=active"
+            ) {
+              throw "Frozen sidecar scenario status failed: $scenarioStatusOutput"
+            }
+            $scenarioRecoverOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioRecoverOutput | Out-String) -notmatch "no recovery required"
+            ) {
+              throw "Frozen sidecar scenario recovery smoke failed: $scenarioRecoverOutput"
+            }
+            $scenarioUninstallPreview = & $installedSidecars[0].FullName `
+              --scenario-uninstall $deploymentId `
+              --target-dir $scenarioTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($scenarioUninstallPreview | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario uninstall preview failed: $scenarioUninstallPreview"
+            }
+            if (-not (Test-Path -LiteralPath $scenarioPayload -PathType Container)) {
+              throw "Frozen sidecar scenario uninstall preview removed its payload."
+            }
+            $scenarioUninstallOutput = & $installedSidecars[0].FullName `
+              --scenario-uninstall $deploymentId `
+              --target-dir $scenarioTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario uninstall failed: $scenarioUninstallOutput"
+            }
+            if (Test-Path -LiteralPath $scenarioPayload) {
+              throw "Frozen sidecar scenario uninstall left its payload behind."
+            }
+            if (Test-Path -LiteralPath $scenarioManifestPath -PathType Leaf) {
+              $remainingManifest = Get-Content -LiteralPath $scenarioManifestPath -Raw | ConvertFrom-Json
+              if (@($remainingManifest.deployments.PSObject.Properties).Count -ne 0) {
+                throw "Frozen sidecar scenario uninstall left a manifest entry behind."
+              }
+            }
+
+            # Leave a prepared transaction behind in a disposable target, then verify
+            # preview and confirmed recovery through the same frozen executable.
+            $recoveryTarget = Join-Path $scenarioRoot "recovery-target"
+            New-Item -ItemType Directory -Force -Path $recoveryTarget | Out-Null
+            Set-Content -LiteralPath (Join-Path $recoveryTarget "project.txt") `
+              -Value "keep" -Encoding UTF8
+            $recoveryFixture = Join-Path $scenarioRoot "prepare-recovery.py"
+            @'
+          import importlib.util
+          import os
+          import sys
+
+          module_path, scenario_root, target = sys.argv[1:]
+          spec = importlib.util.spec_from_file_location("scenario_recovery_fixture", module_path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          def checkpoint(name):
+              if name == "scenario-phase-prepared":
+                  os._exit(86)
+
+          module._FILESYSTEM_CHECKPOINT_HOOK = checkpoint
+          resolved_target = module.resolve_scenario_target(target)
+          package = module.load_scenario_package(
+              module.resolve_scenario_root(scenario_root),
+              "example_fixture",
+          )
+          module.deploy_scenario(resolved_target, package, True)
+          raise AssertionError("recovery checkpoint was not reached")
+          '@ | Set-Content -LiteralPath $recoveryFixture -Encoding UTF8
+            & python $recoveryFixture `
+              (Resolve-Path -LiteralPath codex-instruct.py).Path `
+              (Resolve-Path -LiteralPath scenarios).Path `
+              $recoveryTarget
+            if ($LASTEXITCODE -ne 86) {
+              throw "Failed to prepare frozen sidecar recovery fixture (exit $LASTEXITCODE)."
+            }
+            $recoverPreviewOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $recoveryTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($recoverPreviewOutput | Out-String) -notmatch "no files were changed"
+            ) {
+              throw "Frozen sidecar scenario recover preview failed: $recoverPreviewOutput"
+            }
+            $recoverConfirmOutput = & $installedSidecars[0].FullName `
+              --scenario-recover `
+              --target-dir $recoveryTarget `
+              --yes `
+              --lang en 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Frozen sidecar scenario recover confirmation failed: $recoverConfirmOutput"
+            }
+            $recoveredStatusOutput = & $installedSidecars[0].FullName `
+              --scenario-status `
+              --target-dir $recoveryTarget `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -ne 0 -or
+              ($recoveredStatusOutput | Out-String) -notmatch "not-installed"
+            ) {
+              throw "Frozen sidecar recovered scenario target is not clean: $recoveredStatusOutput"
+            }
+
+            # Repack a disposable bundle with member drift. This exercises validation
+            # through the real frozen executable without changing installed resources.
+            $driftRoot = Join-Path $smokeRoot "drifted-bundle"
+            $driftUnpacked = Join-Path $driftRoot "unpacked"
+            New-Item -ItemType Directory -Force -Path $driftUnpacked | Out-Null
+            $bundleName = "codex-keysmith-scenarios-v$((Get-Content -LiteralPath VERSION -Raw).Trim()).bundle"
+            $bundlePath = Join-Path $driftRoot $bundleName
+            python scripts/build_release.py `
+              --write-scenario-bundle $bundlePath `
+              --repo-root (Get-Location).Path
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+              throw "Disposable scenario bundle build failed."
+            }
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($bundlePath, $driftUnpacked)
+            Add-Content `
+              -LiteralPath (Join-Path $driftUnpacked "scenarios\example_fixture\task.md") `
+              -Value "drift"
+            $driftedBundle = Join-Path $driftRoot "drifted.bundle"
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+              $driftUnpacked,
+              $driftedBundle,
+              [System.IO.Compression.CompressionLevel]::Optimal,
+              $false
+            )
+            $driftOutput = & $installedSidecars[0].FullName `
+              --scenario-list `
+              --scenario-root $driftedBundle `
+              --lang en 2>&1
+            if (
+              $LASTEXITCODE -eq 0 -or
+              ($driftOutput | Out-String) -notmatch "checksum|source_digest|drift"
+            ) {
+              throw "Frozen sidecar bundle member drift did not fail closed: $driftOutput"
+            }
+            $afterCodex = Get-SmokeSnapshot $codexDir
+            if (Compare-Object -ReferenceObject $beforeCodex -DifferenceObject $afterCodex) {
+              throw "Frozen sidecar read-only smoke mutated the temporary Codex directory."
+            }
+            $afterRuntime = Get-SmokeSnapshot $runtimeDir
+            if (Compare-Object -ReferenceObject $beforeRuntime -DifferenceObject $afterRuntime) {
+              throw "Desktop smoke mutated the Codex runtime-only directory."
+            }
+            python scripts/validate_desktop_candidate.py candidate `
+              --root . `
+              --platform windows `
+              --architecture x86_64 `
+              --target-triple $env:TARGET_TRIPLE `
+              --bundle-format nsis `
+              --bundle $bundles[0].FullName `
+              --app-executable $installedApps[0].FullName `
+              --sidecar $env:SIDECAR_SOURCE `
+              --packaged-sidecar $installedSidecars[0].FullName `
+              --icon gui/src-tauri/icons/icon.ico `
+              --source-commit $env:GITHUB_SHA `
+              --node-version $env:NODE_VERSION `
+              --python-version $env:PYTHON_VERSION `
+              --pyinstaller-version $env:PYINSTALLER_VERSION `
+              --rust-version $env:RUST_VERSION `
+              --signing-mode unsigned `
+              --output-dir "$env:RUNNER_TEMP/desktop-candidate"
+          }
+          finally {
+            $cleanupError = $null
+            if ($installed) {
+              try {
+                $uninstallers = @(Get-ChildItem -LiteralPath $installDir -Recurse -Filter "uninstall*.exe" -File -ErrorAction SilentlyContinue)
+                if ($uninstallers.Count -ne 1) {
+                  throw "Installed NSIS candidate must contain exactly one uninstaller."
+                }
+                $uninstaller = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+                if ($uninstaller.ExitCode -ne 0) {
+                  throw "NSIS candidate uninstall failed with exit code $($uninstaller.ExitCode)."
+                }
+                $remainingPayload = @(
+                  Get-ChildItem -LiteralPath $installDir -Recurse -Filter "codex-keysmith*.exe" -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notlike "uninstall*" }
+                )
+                if ($remainingPayload.Count -ne 0) {
+                  throw "NSIS candidate uninstall left app or sidecar executables behind."
+                }
+              }
+              catch {
+                $cleanupError = $_.Exception.Message
+              }
+            }
+            Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if ($null -ne $cleanupError) { throw $cleanupError }
+          }
+
+      - name: Re-verify staged manifest
+        shell: bash
+        run: >-
+          python scripts/validate_desktop_candidate.py verify-manifest
+          "$RUNNER_TEMP/desktop-candidate/build-manifest.json"
+
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-candidate
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-desktop-prerelease:
+    name: Publish unsigned desktop prerelease
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' && inputs.publish_desktop_prerelease }}
+    needs:
+      - candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the complete main source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download this run's macOS candidate
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: codex-keysmith-desktop-macos-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/macos-candidate
+
+      - name: Download this run's Windows candidate
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: codex-keysmith-desktop-windows-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-candidate
+
+      - name: Bind main, signed beta tag, candidate, and release notes
+        id: source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ] \
+            || [ "$WORKFLOW_SHA" != "$GITHUB_SHA" ]; then
+            echo "Public desktop prereleases must run from the current main workflow commit." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+            || [ "$EXPECTED_COMMIT" != "$GITHUB_SHA" ]; then
+            echo "expected_commit must be the full current main commit SHA." >&2
+            exit 1
+          fi
+          version="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must be a dotted x.y.z source version." >&2
+            exit 1
+          fi
+          version_pattern="${version//./\\.}"
+          if [[ ! "$RELEASE_TAG" =~ ^desktop-v${version_pattern}-beta\.[1-9][0-9]*$ ]]; then
+            echo "release_tag must match desktop-v${version}-beta.N." >&2
+            exit 1
+          fi
+          source_tag="v${version}"
+          if [ "$(git cat-file -t "refs/tags/${source_tag}" 2>/dev/null || true)" != "tag" ]; then
+            echo "Desktop line requires annotated source tag ${source_tag}." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${source_tag}^{commit}" "$EXPECTED_COMMIT"; then
+            echo "Desktop commit must be a descendant of ${source_tag}." >&2
+            exit 1
+          fi
+          remote_main="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha
+          )"
+          if [ "$remote_main" != "$EXPECTED_COMMIT" ]; then
+            echo "Remote main moved away from expected_commit before publication." >&2
+            exit 1
+          fi
+          if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$EXPECTED_COMMIT" ]; then
+            echo "Checked-out main does not match expected_commit." >&2
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/${RELEASE_TAG}" 2>/dev/null || true)" != "tag" ]; then
+            echo "Public desktop prereleases require an existing signed annotated tag." >&2
+            exit 1
+          fi
+          tag_object="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}")"
+          tag_commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [ "$tag_commit" != "$EXPECTED_COMMIT" ]; then
+            echo "The desktop beta tag does not point to expected_commit." >&2
+            exit 1
+          fi
+          remote_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          if [ "$(printf '%s' "$remote_ref" | jq -r .object.type)" != "tag" ] \
+            || [ "$(printf '%s' "$remote_ref" | jq -r .object.sha)" != "$tag_object" ]; then
+            echo "Remote desktop beta ref does not identify the expected annotated tag." >&2
+            exit 1
+          fi
+          remote_tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}")"
+          if [ "$(printf '%s' "$remote_tag" | jq -r .tag)" != "$RELEASE_TAG" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .object.type)" != "commit" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .object.sha)" != "$EXPECTED_COMMIT" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .verification.verified)" != "true" ] \
+            || [ "$(printf '%s' "$remote_tag" | jq -r .verification.reason)" != "valid" ]; then
+            echo "Remote desktop beta tag signature or peeled commit verification failed." >&2
+            exit 1
+          fi
+          notes="docs/releases/${RELEASE_TAG}.md"
+          if [ ! -f "$notes" ]; then
+            echo "Missing desktop prerelease notes: ${notes}" >&2
+            exit 1
+          fi
+          notes_blob="${RUNNER_TEMP}/desktop-prerelease-notes.md"
+          git cat-file blob "${EXPECTED_COMMIT}:${notes}" > "$notes_blob"
+          cmp "$notes" "$notes_blob"
+          python scripts/validate_desktop_candidate.py verify-manifest-data \
+            "$RUNNER_TEMP/macos-candidate/build-manifest.json"
+          python scripts/validate_desktop_candidate.py verify-manifest-data \
+            "$RUNNER_TEMP/windows-candidate/build-manifest.json"
+          python scripts/package_desktop_prerelease.py assemble \
+            --macos-candidate-dir "$RUNNER_TEMP/macos-candidate" \
+            --windows-candidate-dir "$RUNNER_TEMP/windows-candidate" \
+            --output-dir "$RUNNER_TEMP/desktop-prerelease" \
+            --release-tag "$RELEASE_TAG" \
+            --expected-commit "$EXPECTED_COMMIT"
+          python scripts/package_desktop_prerelease.py verify \
+            "$RUNNER_TEMP/desktop-prerelease" \
+            --expected-commit "$EXPECTED_COMMIT"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          {
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'commit=%s\n' "$EXPECTED_COMMIT"
+            printf 'tag_object=%s\n' "$tag_object"
+            printf 'version=%s\n' "$version"
+            printf 'notes_path=%s\n' "$notes"
+            printf 'notes_blob=%s\n' "$notes_blob"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create, verify, and publish the immutable prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/desktop-prerelease"
+          tag="${{ steps.source.outputs.tag }}"
+          expected_commit="${{ steps.source.outputs.commit }}"
+          expected_tag_object="${{ steps.source.outputs.tag_object }}"
+          notes_path="${{ steps.source.outputs.notes_path }}"
+          notes_blob="${{ steps.source.outputs.notes_blob }}"
+          release_id=""
+          release_api=""
+          release_created=false
+          create_attempted=false
+          create_started_at=""
+          draft_name=""
+          release_author="github-actions[bot]"
+
+          verify_remote_main() {
+            remote_main="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha
+            )"
+            if [ "$GITHUB_REF" != "refs/heads/main" ] \
+              || [ "$WORKFLOW_SHA" != "$GITHUB_SHA" ] \
+              || [ "$remote_main" != "$expected_commit" ] \
+              || [ "$GITHUB_SHA" != "$expected_commit" ]; then
+              echo "Remote main or workflow source changed during prerelease publication." >&2
+              return 1
+            fi
+          }
+          verify_remote_tag() {
+            remote_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"
+            if [ "$(printf '%s' "$remote_ref" | jq -r .object.type)" != "tag" ] \
+              || [ "$(printf '%s' "$remote_ref" | jq -r .object.sha)" != "$expected_tag_object" ]; then
+              echo "Remote desktop beta tag changed during publication." >&2
+              return 1
+            fi
+            remote_tag="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${expected_tag_object}")"
+            if [ "$(printf '%s' "$remote_tag" | jq -r .tag)" != "$tag" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .object.type)" != "commit" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .object.sha)" != "$expected_commit" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .verification.verified)" != "true" ] \
+              || [ "$(printf '%s' "$remote_tag" | jq -r .verification.reason)" != "valid" ]; then
+              echo "Remote desktop beta tag signature or peeled commit changed." >&2
+              return 1
+            fi
+          }
+          get_latest_release_tag() {
+            local repo_owner="${GITHUB_REPOSITORY%%/*}"
+            local repo_name="${GITHUB_REPOSITORY#*/}"
+            gh api graphql \
+              -f query="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}" \
+              -F owner="$repo_owner" \
+              -F name="$repo_name" \
+              --jq '.data.repository.latestRelease.tagName // "__NO_LATEST_RELEASE__"'
+          }
+          owned_draft_validator="${RUNNER_TEMP}/validate-owned-desktop-draft.py"
+          cat > "$owned_draft_validator" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          source_path, output_path, notes_path, tag, commit, started_at, actor, draft_name = sys.argv[1:]
+          raw = json.loads(Path(source_path).read_text(encoding="utf-8"))
+          if isinstance(raw, dict):
+              releases = [raw]
+          elif isinstance(raw, list):
+              releases = []
+              for item in raw:
+                  if isinstance(item, dict):
+                      releases.append(item)
+                  elif isinstance(item, list) and all(isinstance(value, dict) for value in item):
+                      releases.extend(item)
+                  else:
+                      raise SystemExit("release recovery response has an unexpected shape")
+          else:
+              raise SystemExit("release recovery response has an unexpected shape")
+          expected_body = Path(notes_path).read_text(encoding="utf-8")
+          matches = [
+              release
+              for release in releases
+              if isinstance(release.get("id"), int)
+              and release.get("tag_name") == tag
+              and release.get("target_commitish") == commit
+              and release.get("name") == draft_name
+              and release.get("body") == expected_body
+              and release.get("draft") is True
+              and release.get("prerelease") is True
+              and release.get("assets") == []
+              and release.get("created_at", "") >= started_at
+              and release.get("author", {}).get("login") == actor
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  "expected exactly one owned empty draft after lost create response, got {}".format(
+                      len(matches)
+                  )
+              )
+          Path(output_path).write_text(
+              json.dumps(matches[0], ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          recover_owned_empty_draft() {
+            local output_path="$1"
+            local recovery_state="${RUNNER_TEMP}/desktop-prerelease-create-recovery.json"
+            for _attempt in {1..5}; do
+              if gh api --paginate --slurp \
+                "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$recovery_state" \
+                && python "$owned_draft_validator" \
+                  "$recovery_state" "$output_path" "$notes_blob" "$tag" \
+                  "$expected_commit" "$create_started_at" "$release_author" "$draft_name"; then
+                return 0
+              fi
+              sleep "$_attempt"
+            done
+            return 1
+          }
+          cleanup_failed_draft() {
+            primary_status=$?
+            trap - EXIT
+            if [ "$primary_status" -ne 0 ] && [ "$release_created" = true ]; then
+              set +e
+              draft="$(gh api "$release_api" --jq '.draft | tostring' 2>/dev/null)"
+              draft_status=$?
+              set -e
+              if [ "$draft_status" -ne 0 ]; then
+                echo "::warning::Could not read owned draft Release ${release_id}; primary failure preserved."
+              elif [ "$draft" = "true" ]; then
+                if ! gh api -X DELETE "$release_api" --silent; then
+                  echo "::warning::Failed to remove owned draft Release ${release_id}; primary failure preserved."
+                fi
+              else
+                echo "::warning::Owned Release ${release_id} is not a draft; cleanup skipped."
+              fi
+            elif [ "$primary_status" -ne 0 ] && [ "$create_attempted" = true ]; then
+              set +e
+              cleanup_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-recovery.json"
+              if recover_owned_empty_draft "$cleanup_state"; then
+                recovered_id="$(jq -r '.id // empty' "$cleanup_state")"
+                recovered_api="repos/${GITHUB_REPOSITORY}/releases/${recovered_id}"
+                current_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-current.json"
+                verified_state="${RUNNER_TEMP}/desktop-prerelease-cleanup-verified.json"
+                if [[ "$recovered_id" =~ ^[0-9]+$ ]] \
+                  && gh api "$recovered_api" > "$current_state" \
+                  && python "$owned_draft_validator" \
+                    "$current_state" "$verified_state" "$notes_blob" "$tag" \
+                    "$expected_commit" "$create_started_at" "$release_author" "$draft_name" \
+                  && [ "$(jq -r .id "$verified_state")" = "$recovered_id" ] \
+                  && gh api -X DELETE "$recovered_api" --silent; then
+                  echo "::warning::Removed the uniquely owned empty Draft after a lost create response."
+                else
+                  echo "::warning::Could not safely remove the uniquely owned Draft; primary failure preserved."
+                fi
+              else
+                echo "::warning::No unique owned empty Draft could be recovered for cleanup; primary failure preserved."
+              fi
+              set -e
+            fi
+            exit "$primary_status"
+          }
+          trap cleanup_failed_draft EXIT
+
+          existing_count="$(
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -r --arg tag "$tag" 'add | [.[] | select(.tag_name == $tag)] | length'
+          )"
+          if [ "$existing_count" != 0 ]; then
+            echo "Release ${tag} already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+          latest_before="$(get_latest_release_tag)"
+          version="$(tr -d '\r\n' < VERSION)"
+          draft_name="codex-keysmith ${version} Desktop Beta [run ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}]"
+          python scripts/package_desktop_prerelease.py verify "$release_dir" \
+            --expected-commit "$expected_commit"
+          verify_remote_main
+          verify_remote_tag
+          request="${RUNNER_TEMP}/desktop-prerelease-create.json"
+          python - "$tag" "$expected_commit" "$notes_blob" "$request" "$draft_name" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          tag, commit, notes_path, request_path, draft_name = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": draft_name,
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": True,
+              "prerelease": True,
+              "make_latest": "false",
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          created_state="${RUNNER_TEMP}/desktop-prerelease-created.json"
+          create_error="${RUNNER_TEMP}/desktop-prerelease-create-error.txt"
+          create_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          create_attempted=true
+          set +e
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+            --input "$request" > "$created_state" 2> "$create_error"
+          create_status=$?
+          set -e
+          release_id="$(jq -r '.id // empty' "$created_state" 2>/dev/null || true)"
+          if [ "$create_status" -ne 0 ] || [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            adopted_state="${RUNNER_TEMP}/desktop-prerelease-adopted.json"
+            if ! recover_owned_empty_draft "$adopted_state"; then
+              cat "$create_error" >&2
+              echo "Could not recover ownership after the create response was lost." >&2
+              exit 1
+            fi
+            cp "$adopted_state" "$created_state"
+            release_id="$(jq -r '.id // empty' "$created_state")"
+            echo "::warning::Recovered numeric-ID ownership after a lost create response."
+          fi
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Draft prerelease creation did not return a usable numeric ID." >&2
+            exit 1
+          fi
+          release_api="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          release_created=true
+          create_attempted=false
+          empty_state="${RUNNER_TEMP}/desktop-prerelease-empty.json"
+          gh api "$release_api" > "$empty_state"
+          python - "$created_state" "$empty_state" "$notes_blob" "$tag" \
+            "$expected_commit" "$release_id" "$GITHUB_REPOSITORY" "$draft_name" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          created_path, state_path, notes_path, tag, commit, release_id, repo, draft_name = sys.argv[1:]
+          expected_api = "https://api.github.com/repos/{}/releases/{}".format(repo, release_id)
+          expected_upload = (
+              "https://uploads.github.com/repos/{}/releases/{}/assets{{?name,label}}"
+          ).format(repo, release_id)
+          for path in (created_path, state_path):
+              candidate = json.loads(Path(path).read_text(encoding="utf-8"))
+              assert str(candidate["id"]) == release_id
+              assert candidate["url"] == expected_api
+              assert candidate["upload_url"] == expected_upload
+              assert candidate["tag_name"] == tag
+              assert candidate["target_commitish"] == commit
+              assert candidate["name"] == draft_name
+              assert candidate["draft"] is True
+              assert candidate["prerelease"] is True
+              assert candidate["body"].encode("utf-8") == Path(notes_path).read_bytes()
+              assert candidate["assets"] == []
+          PY
+          normalize_request="${RUNNER_TEMP}/desktop-prerelease-normalize.json"
+          python - "$normalize_request" "$notes_blob" "$tag" "$expected_commit" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          request_path, notes_path, tag, commit, version = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": "codex-keysmith {} Desktop Beta".format(version),
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": True,
+              "prerelease": True,
+              "make_latest": "false",
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          normalized_state="${RUNNER_TEMP}/desktop-prerelease-normalized.json"
+          gh api -X PATCH "$release_api" --input "$normalize_request" > "$normalized_state"
+          python - "$normalized_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          assert str(state["id"]) == release_id
+          assert state["tag_name"] == tag
+          assert state["target_commitish"] == commit
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
+          assert state["draft"] is True
+          assert state["prerelease"] is True
+          assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
+          assert state["assets"] == []
+          PY
+          upload_url="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets"
+          assets=(
+            "$release_dir/codex-keysmith-${version}-macos-arm64-unsigned.dmg"
+            "$release_dir/codex-keysmith-${version}-macos-arm64-unsigned-candidate.zip"
+            "$release_dir/codex-keysmith-${version}-windows-x64-unsigned-setup.exe"
+            "$release_dir/codex-keysmith-${version}-windows-x64-unsigned-candidate.zip"
+            "$release_dir/SHA256SUMS"
+          )
+          for asset_path in "${assets[@]}"; do
+            asset_name="$(basename "$asset_path")"
+            encoded_name="$(
+              python -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+                "$asset_name"
+            )"
+            gh api -X POST \
+              -H "Content-Type: application/octet-stream" \
+              --input "$asset_path" \
+              "${upload_url}?name=${encoded_name}" \
+              --silent
+          done
+
+          expected="${RUNNER_TEMP}/desktop-prerelease-assets-expected.txt"
+          actual="${RUNNER_TEMP}/desktop-prerelease-assets-actual.txt"
+          for asset_path in "${assets[@]}"; do
+            asset_name="$(basename "$asset_path")"
+            printf '%s\tsha256:%s\tuploaded\t%s\n' \
+              "$asset_name" \
+              "$(sha256sum "$asset_path" | cut -d' ' -f1)" \
+              "$(wc -c < "$asset_path" | tr -d ' ')"
+          done | sort > "$expected"
+          uploaded_state="${RUNNER_TEMP}/desktop-prerelease-uploaded.json"
+          gh api "$release_api" > "$uploaded_state"
+          python - "$uploaded_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          assert str(state["id"]) == release_id
+          assert state["tag_name"] == tag
+          assert state["target_commitish"] == commit
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
+          assert state["draft"] is True
+          assert state["prerelease"] is True
+          assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
+          assert len(state["assets"]) == 5
+          PY
+          jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
+            "$uploaded_state" | sort > "$actual"
+          diff -u "$expected" "$actual"
+
+          tagged_notes="${RUNNER_TEMP}/desktop-prerelease-notes-final.md"
+          git cat-file blob "${expected_commit}:${notes_path}" > "$tagged_notes"
+          cmp "$notes_blob" "$tagged_notes"
+          python scripts/package_desktop_prerelease.py verify "$release_dir" \
+            --expected-commit "$expected_commit"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          verify_remote_main
+          verify_remote_tag
+
+          publish_request="${RUNNER_TEMP}/desktop-prerelease-publish.json"
+          python - "$publish_request" "$notes_blob" "$tag" "$expected_commit" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          request_path, notes_path, tag, commit, version = sys.argv[1:]
+          request = {
+              "tag_name": tag,
+              "target_commitish": commit,
+              "name": "codex-keysmith {} Desktop Beta".format(version),
+              "body": Path(notes_path).read_text(encoding="utf-8"),
+              "draft": False,
+              "prerelease": True,
+              "make_latest": "false",
+          }
+          Path(request_path).write_text(
+              json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          publish_error="${RUNNER_TEMP}/desktop-prerelease-publish-error.txt"
+          set +e
+          published="$(
+            gh api -X PATCH "$release_api" --input "$publish_request" 2> "$publish_error"
+          )"
+          publish_status=$?
+          set -e
+          if [ "$publish_status" -ne 0 ]; then
+            published="$(gh api "$release_api" 2>/dev/null || true)"
+            if [ "$(printf '%s' "$published" | jq -r '.draft | tostring' 2>/dev/null || true)" != "false" ]; then
+              cat "$publish_error" >&2
+              exit "$publish_status"
+            fi
+            echo "::warning::Publish response was lost; numeric-ID verification confirms publication."
+          fi
+          if [ "$(printf '%s' "$published" | jq -r '.draft | tostring')" != "false" ] \
+            || [ "$(printf '%s' "$published" | jq -r '.prerelease | tostring')" != "true" ] \
+            || [ "$(printf '%s' "$published" | jq -r .tag_name)" != "$tag" ]; then
+            echo "Prerelease publication response did not confirm the expected state." >&2
+            exit 1
+          fi
+          release_created=false
+          published_state=""
+          for _attempt in {1..10}; do
+            published_state="$(gh api "$release_api" 2>/dev/null || true)"
+            if [ "$(printf '%s' "$published_state" | jq -r '.draft | tostring' 2>/dev/null)" = "false" ] \
+              && [ "$(printf '%s' "$published_state" | jq -r '.prerelease | tostring' 2>/dev/null)" = "true" ] \
+              && [ -n "$(printf '%s' "$published_state" | jq -r '.published_at // empty' 2>/dev/null)" ]; then
+              break
+            fi
+            sleep 1
+          done
+          final_state="${RUNNER_TEMP}/desktop-prerelease-published.json"
+          printf '%s' "$published_state" > "$final_state"
+          python - "$final_state" "$notes_blob" "$tag" "$expected_commit" "$release_id" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          state_path, notes_path, tag, commit, release_id, version = sys.argv[1:]
+          state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+          assert str(state["id"]) == release_id
+          assert state["tag_name"] == tag
+          assert state["target_commitish"] == commit
+          assert state["name"] == "codex-keysmith {} Desktop Beta".format(version)
+          assert state["draft"] is False
+          assert state["prerelease"] is True
+          assert state["published_at"]
+          assert state["body"].encode("utf-8") == Path(notes_path).read_bytes()
+          assert len(state["assets"]) == 5
+          PY
+          jq -r '.assets[] | [.name, .digest, .state, (.size | tostring)] | @tsv' \
+            "$final_state" | sort > "$actual"
+          diff -u "$expected" "$actual"
+          verify_remote_tag
+          latest_after="$(get_latest_release_tag)"
+          if [ "$latest_after" != "$latest_before" ]; then
+            echo "Unsigned prerelease unexpectedly changed the repository's Latest Release." >&2
+            exit 1
+          fi

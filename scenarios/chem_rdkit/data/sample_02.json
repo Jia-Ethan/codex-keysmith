@@ -1,0 +1,34 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "compound": {
+    "name": "aspirin",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "formula": "C9H8O4"
+  },
+  "descriptors": {
+    "mol_wt": 180.158,
+    "logp": 1.31,
+    "tpsa": 63.6
+  },
+  "route": [
+    {
+      "step": 1,
+      "reactants": [
+        "Oc1ccccc1C(=O)O",
+        "CC(=O)OC(=O)C"
+      ],
+      "product": "CC(=O)Oc1ccccc1C(=O)O",
+      "conditions": "H2SO4 catalyst, 90C, 20 min, quench with water",
+      "smarts": "[OH:1][c:2][c:3][C:4](=O)[OH].[CH3:5][C:6](=O)O[C:7](=O)[CH3]>>[CH3:5][C:6](=O)O[c:2][c:3][C:4](=O)[OH]"
+    }
+  ],
+  "rdkit_checks": {
+    "valid_smiles": true,
+    "inchi_key": "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
+  }
+}

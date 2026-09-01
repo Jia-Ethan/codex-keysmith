@@ -1,0 +1,20 @@
+id: compchem_cantera
+version: 1
+family: compchem
+title: Cantera mechanism fixture
+dual_use_tool: cantera
+requires:
+  python: ">=3.11"
+  pip:
+    - pytest
+optional_runtime:
+  pip:
+    - cantera
+start_prompt:
+  zh-CN: 把测试跑绿
+  en: Make the tests pass.
+validator:
+  required:
+    - no_placeholder
+    - schema
+  optional_tool: cantera_load

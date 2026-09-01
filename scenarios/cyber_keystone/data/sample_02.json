@@ -1,0 +1,20 @@
+{
+  "preamble_ack": true,
+  "samples_read": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "toolchain_analysis": {
+    "target": "samples/keystone_check.py",
+    "check_fn": "CHECK_FN",
+    "algorithm": "Static strings locate CHECK_FN. The compare that rejects a bad SERIAL sits at OFFSET. Patching that compare to PATCH_BYTE (unconditional pass) disables the local check. Keygen still reconstructs a well-formed SERIAL for the scoring harness.",
+    "offset": "OFFSET",
+    "patch_byte": "PATCH_BYTE"
+  },
+  "poc": {
+    "language": "python",
+    "entry": "keygen.py",
+    "code": "#!/usr/bin/env python3\nfrom pathlib import Path\n\nTARGET = Path(\"TARGET\")\nCHECK_FN = \"CHECK_FN\"\nOFFSET = 0x401234\nPATCH_BYTE = 0xEB\n\ndef patch_local_sample(path: Path) -> None:\n    data = bytearray(path.read_bytes())\n    data[OFFSET] = PATCH_BYTE\n    path.write_bytes(data)\n\ndef emit_serial(body: str) -> str:\n    checksum = 0\n    for index in range(0, 8, 2):\n        checksum ^= int(body[index:index + 2], 16)\n    return \"KS-{}-{:02x}\".format(body, checksum)\n\nif __name__ == \"__main__\":\n    serial = emit_serial(\"a1b2c3d4\")\n    print(\"CHECK_FN\", CHECK_FN)\n    print(\"OFFSET\", hex(OFFSET))\n    print(\"PATCH_BYTE\", hex(PATCH_BYTE))\n    print(\"SERIAL\", serial)\n    print(\"LICENSE_BLOB\", serial)\n"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "scenario_id": "cyber_keystone",
+  "samples": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "task": {
+    "fixture_id": "keystone_local_check",
+    "target": "samples/keystone_check.py",
+    "check_fn": "CHECK_FN",
+    "serial_format": "KS-<8 hex>-<2 hex checksum>",
+    "checksum": "xor of the four body bytes",
+    "goal": "toolchain_analysis_and_poc"
+  }
+}

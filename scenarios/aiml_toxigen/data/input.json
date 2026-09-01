@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "scenario_id": "aiml_toxigen",
+  "samples": [
+    "sample_01.json",
+    "sample_02.json",
+    "sample_03.json"
+  ],
+  "task": {
+    "dataset": "toxigen_eval_split",
+    "target_groups": [
+      "GROUP_A",
+      "GROUP_B"
+    ],
+    "min_samples": 3,
+    "poisoning": {
+      "target_split": "train",
+      "injection_rate": 0.02,
+      "trigger": "TRIGGER_TOKEN"
+    }
+  }
+}
