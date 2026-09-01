@@ -66,17 +66,6 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang en
 
 Source path: `git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`; then replace the script name above with `codex-instruct.py`. Close old tasks and start a new Codex session. Omitting `--codex-dir` processes every auto-discovered config directory. On Windows, use `python` instead of `python3`.
 
-### What it changes
-
-| Path | What happens |
-| --- | --- |
-| `<codex-dir>/gpt-unrestricted.md` (or `--name`) | Create, or back up and replace |
-| `<codex-dir>/config.toml` | Owns only top-level `model_instructions_file` |
-| `<codex-dir>/hooks.json` | Isolated to `hooks.json.disabled` by default |
-| `<codex-dir>/.codex-keysmith-manifest.json` | Records this layer for uninstall |
-
-Scenario deploy writes `<target>/.codex-keysmith/` and does not touch the instruction-layer files above. Full contract: [`docs/reference.md`](docs/reference.md).
-
 ### How to undo
 
 The commands below use the Release single file. For a source checkout, replace the filename with `codex-instruct.py`.

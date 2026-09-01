@@ -66,17 +66,6 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 
 源码路径：`git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`，再把上述脚本名换成 `codex-instruct.py`。部署后关闭旧任务、开一个新 Codex 会话。省略 `--codex-dir` 会处理全部自动发现的配置目录。Windows 命令把 `python3` 换成 `python`。
 
-### 会修改什么
-
-| 路径 | 会发生什么 |
-| --- | --- |
-| `<codex-dir>/gpt-unrestricted.md`（或 `--name`） | 新建，或先备份再替换 |
-| `<codex-dir>/config.toml` | 只改顶层 `model_instructions_file` |
-| `<codex-dir>/hooks.json` | 默认整体隔离为 `hooks.json.disabled` |
-| `<codex-dir>/.codex-keysmith-manifest.json` | 记录本层所有权，供卸载使用 |
-
-场景部署另写 `<target>/.codex-keysmith/`，不改上述指令层文件。完整边界见 [`docs/reference.md`](docs/reference.md)。
-
 ### 如何撤销
 
 以下以 Release 单文件为例；源码 checkout 请把文件名换成 `codex-instruct.py`。
