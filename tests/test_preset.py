@@ -15,6 +15,9 @@ EXPECTED_CONTRACT_SHA256 = (
 EXPECTED_PERSONA_CONTRACT_SHA256 = (
     "72063cc35a592ad2663a41199855350efa86708cd72108d896ef5968b0097cc8"
 )
+EXPECTED_LEAN_SHA256 = (
+    "82d8370f782d965b969a0025ea2fca314b2004b1309fd81fd76310a3e440da38"
+)
 spec = importlib.util.spec_from_file_location("codex_instruct_preset", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = codex_instruct
@@ -44,6 +47,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
     unrestricted = (root / "examples" / "gpt-unrestricted.md").read_bytes()
     contract = (root / "examples" / "gpt-contract.md").read_bytes()
     persona_contract = (root / "examples" / "gpt-persona-contract.md").read_bytes()
+    lean = (root / "examples" / "gpt-lean.md").read_bytes()
 
     assert (
         hashlib.sha256(unrestricted).hexdigest() == EXPECTED_UNRESTRICTED_SHA256
@@ -59,6 +63,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
         hashlib.sha256(persona_contract).hexdigest()
         == EXPECTED_PERSONA_CONTRACT_SHA256
     )
+    assert hashlib.sha256(lean).hexdigest() == EXPECTED_LEAN_SHA256
     assert (
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8") == unrestricted
     )
