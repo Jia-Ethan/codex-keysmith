@@ -38,6 +38,7 @@ ARCHIVE_FILES = (
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
     "examples/gpt-persona-contract.md",
+    "examples/gpt-lean.md",
     "scripts/run_scenario_bank.py",
 )
 

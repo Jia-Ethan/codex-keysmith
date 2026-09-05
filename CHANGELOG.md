@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-05
+
 ### Added
 
 - Instruction-channel `--preset lean` adds a fourth bundled prompt `examples/gpt-lean.md` (3.2KB, SHA-256 `82d8370f782d965b...`): a sol-optimized lean delivery contract for gpt-5.6-sol deployments where the upstream cyber classifier flags the heavier contract shapes. Deploy/uninstall/reactivate and `--status` preset classification work like the existing presets.
@@ -312,7 +314,8 @@ This entry records the source changes for v0.1.1. Formal release status is estab
 - Windows support and its CI jobs are experimental/non-blocking, Python 3.8 is legacy-only, and live prompt-bank model calls remain manual and non-blocking.
 - The bundled instruction cannot guarantee identical model behavior across Codex or model versions.
 
-[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Jia-Ethan/codex-keysmith/compare/v0.5.0...v0.5.1
 [0.3.9]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.9
 [0.3.8]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.8
 [0.3.7]: https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.3.7
