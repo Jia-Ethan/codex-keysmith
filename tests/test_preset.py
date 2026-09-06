@@ -18,6 +18,9 @@ EXPECTED_PERSONA_CONTRACT_SHA256 = (
 EXPECTED_LEAN_SHA256 = (
     "82d8370f782d965b969a0025ea2fca314b2004b1309fd81fd76310a3e440da38"
 )
+EXPECTED_ASTRA_SHA256 = (
+    "72063cc35a592ad2663a41199855350efa86708cd72108d896ef5968b0097cc8"
+)
 spec = importlib.util.spec_from_file_location("codex_instruct_preset", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = codex_instruct
@@ -48,6 +51,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
     contract = (root / "examples" / "gpt-contract.md").read_bytes()
     persona_contract = (root / "examples" / "gpt-persona-contract.md").read_bytes()
     lean = (root / "examples" / "gpt-lean.md").read_bytes()
+    astra = (root / "examples" / "gpt-astra.md").read_bytes()
 
     assert (
         hashlib.sha256(unrestricted).hexdigest() == EXPECTED_UNRESTRICTED_SHA256
@@ -64,6 +68,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
         == EXPECTED_PERSONA_CONTRACT_SHA256
     )
     assert hashlib.sha256(lean).hexdigest() == EXPECTED_LEAN_SHA256
+    assert hashlib.sha256(astra).hexdigest() == EXPECTED_ASTRA_SHA256
     assert (
         codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8") == unrestricted
     )
@@ -72,6 +77,7 @@ def test_builtin_prompts_match_example_bytes_and_frozen_unrestricted_sha256():
         codex_instruct.BUILTIN_GPT_PERSONA_CONTRACT_MD.encode("utf-8")
         == persona_contract
     )
+    assert codex_instruct.BUILTIN_GPT_ASTRA_MD.encode("utf-8") == astra
     assert 80 <= len(codex_instruct.BUILTIN_GPT_CONTRACT_MD.splitlines()) <= 120
     assert "BEGIN." in codex_instruct.BUILTIN_GPT_CONTRACT_MD
     assert "BEGIN." in codex_instruct.BUILTIN_GPT_PERSONA_CONTRACT_MD
@@ -336,6 +342,82 @@ def test_preset_persona_contract_name_override(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert str(codex_dir / "my-rules.md") in result.stdout
     assert 'model_instructions_file = "./my-rules.md"' in result.stdout
+
+
+def test_preset_astra_dry_run_targets_gpt_astra(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    expected_hash = hashlib.sha256(
+        codex_instruct.BUILTIN_GPT_ASTRA_MD.encode("utf-8")
+    ).hexdigest()
+
+    result = _run(
+        "--codex-dir", codex_dir, "--preset", "astra", "--dry-run"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "examples/gpt-astra.md" in result.stdout
+    assert expected_hash in result.stdout
+    assert str(codex_dir / "gpt-astra.md") in result.stdout
+    assert 'model_instructions_file = "./gpt-astra.md"' in result.stdout
+    assert not (codex_dir / "gpt-astra.md").exists()
+    assert (codex_dir / "config.toml").read_text(encoding="utf-8") == 'model = "gpt-5.6"\n'
+
+
+def test_preset_astra_name_override(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    result = _run(
+        "--codex-dir",
+        codex_dir,
+        "--preset",
+        "astra",
+        "--name",
+        "astra-rules",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert str(codex_dir / "astra-rules.md") in result.stdout
+    assert 'model_instructions_file = "./astra-rules.md"' in result.stdout
+
+
+def test_preset_astra_deploy_status_and_uninstall(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+
+    result = _run(
+        "--codex-dir", codex_dir, "--preset", "astra", "--yes"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    astra_path = codex_dir / "gpt-astra.md"
+    assert astra_path.is_file()
+    assert codex_instruct.BUILTIN_GPT_ASTRA_MD == astra_path.read_text(
+        encoding="utf-8"
+    )
+
+    status = _run("--codex-dir", codex_dir, "--status")
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "preset: astra" in status.stdout
+
+    uninstall = _run("--codex-dir", codex_dir, "--uninstall", "--yes")
+    assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
+    assert not astra_path.exists()
+    assert 'model = "gpt-5.6"\n' == (codex_dir / "config.toml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_preset_astra_conflicts_with_file(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    result = _run(
+        "--codex-dir",
+        codex_dir,
+        "--preset",
+        "astra",
+        "--file",
+        "some.md",
+        "--dry-run",
+    )
+    assert result.returncode == 2
 
 
 def test_status_rejects_preset_flag(tmp_path):

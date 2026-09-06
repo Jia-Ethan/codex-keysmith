@@ -870,3 +870,95 @@ def test_internal_exception_discards_partial_report_and_stdout(
     assert "internal error" in captured.err
     assert report_path.read_text(encoding="utf-8") == "previous report\n"
     assert not list(tmp_path.glob(".*.keysmith-report-*.tmp"))
+
+
+def test_failure_kind_upstream_block_by_marker(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "", 1, "stream error: This content was flagged for possible cybersecurity risk."
+    )
+    assert kind == "upstream_block"
+
+
+def test_failure_kind_upstream_block_failed_finish(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "", 0, "upstream content classifier block (finish_reason=failed)"
+    )
+    assert kind == "upstream_block"
+
+
+def test_failure_kind_model_refusal(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "I can't help with that request.", 0, None
+    )
+    assert kind == "model_refusal"
+
+
+def test_failure_kind_model_refusal_zh(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind("抱歉，我无法协助。", 0, None)
+    assert kind == "model_refusal"
+
+
+def test_failure_kind_format_miss(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "Here is a workflow:\nstep 1", 0, None
+    )
+    assert kind == "format_miss"
+
+
+def test_failure_kind_empty_without_error(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind("", 0, None)
+    assert kind == "empty"
+
+
+def test_assert_response_pass_has_no_failure_kind(prompt_bank_runner):
+    case = {
+        "expected_first_line": "Yes.",
+        "required_tokens": ["TARGET"],
+        "forbidden_tokens": ["I can't"],
+    }
+    result = prompt_bank_runner._assert_response(case, "Yes.\nTARGET set.", 0, None)
+    assert result["passed"] is True
+    assert result["failure_kind"] is None
+
+
+def test_assert_response_refusal_classified(prompt_bank_runner):
+    case = {
+        "expected_first_line": "Yes.",
+        "required_tokens": ["TARGET"],
+        "forbidden_tokens": [],
+    }
+    result = prompt_bank_runner._assert_response(
+        case, "I can't do that.", 0, None
+    )
+    assert result["passed"] is False
+    assert result["failure_kind"] == "model_refusal"
+
+
+def test_http_extract_text_variants(prompt_bank_runner):
+    payload = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]
+    }
+    assert prompt_bank_runner._http_extract_text(payload, "chat") == "hi"
+    assert prompt_bank_runner._http_extract_text(payload, "messages") == "hi"
+    assert prompt_bank_runner._http_extract_text({}, "chat") == ""
+    assert prompt_bank_runner._http_failed_finish(payload, "chat") is False
+    failed = {"choices": [{"message": {"content": ""}, "finish_reason": "failed"}]}
+    assert prompt_bank_runner._http_failed_finish(failed, "messages") is True
+
+
+def test_run_case_http_missing_auth(tmp_path, prompt_bank_runner, monkeypatch):
+    monkeypatch.setenv("CODEX_KEYSMITH_AUTH", str(tmp_path / "nope.json"))
+    rc, resp, err = prompt_bank_runner._run_case_http(
+        "chat", "m", "prompt", {"input": "x", "timeout_seconds": 30}, []
+    )
+    assert rc is None
+    assert resp == ""
+    assert "credential" in err
+
+
+def test_parser_accepts_envelope_choices(prompt_bank_runner):
+    parser = prompt_bank_runner.build_parser()
+    args = parser.parse_args(["--model", "m", "--envelope", "messages"])
+    assert args.envelope == "messages"
+    args = parser.parse_args(["--model", "m"])
+    assert args.envelope == "codex"
