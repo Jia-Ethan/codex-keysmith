@@ -171,7 +171,9 @@ def _item_text(item: Dict[str, Any]) -> str:
     raise EnvelopeError("input item content is not text")
 
 
-def translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
+def translate_request(
+    body: Dict[str, Any], thinking_passthrough: bool = False
+) -> Dict[str, Any]:
     """Map a Responses-API request onto the Anthropic messages shape.
 
     Two request shapes are accepted:
@@ -272,6 +274,20 @@ def translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
         system_parts.insert(0, instructions)
     if system_parts:
         out["system"] = "\n\n".join(p for p in system_parts if p)
+
+    # Reasoning passthrough (off by default). Measured on lgw.gru.ai 2026-09-07:
+    # the /messages arm hangs intermittently when a thinking block is present and
+    # never returns reasoning text on any arm (/responses returns encrypted_content
+    # only; summary="auto"/"detailed" hang it outright) — so codex shows
+    # "reasoning summaries: none" identically with or without this adapter, and
+    # passthrough buys nothing here while risking gateway hangs. Gateways that
+    # honor anthropic thinking can enable it with --thinking-passthrough.
+    reasoning = body.get("reasoning")
+    if thinking_passthrough and isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        budgets = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384}
+        if effort in budgets:
+            out["thinking"] = {"type": "enabled", "budget_tokens": budgets[effort]}
     for passthrough in ("temperature", "top_p"):
         value = body.get(passthrough)
         if isinstance(value, (int, float)):
@@ -453,6 +469,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
     upstream_base: str = ""
     secret_for_redaction: str = ""
     verbose: bool = False
+    thinking_passthrough: bool = False
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
         if self.verbose:
@@ -515,7 +532,9 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            translated = translate_request(request_body)
+            translated = translate_request(
+                request_body, thinking_passthrough=self.thinking_passthrough
+            )
         except EnvelopeError as exc:
             self._reject(400, {"error": {"code": "bad_request", "message": str(exc)[:300]}})
             return
@@ -575,6 +594,7 @@ def serve(
     upstream_base: str,
     auth_file: Path,
     verbose: bool,
+    thinking_passthrough: bool = False,
 ) -> None:
     key = load_upstream_key(auth_file)
     handler = type(
@@ -585,6 +605,7 @@ def serve(
             "upstream_base": upstream_base.rstrip("/"),
             "secret_for_redaction": key,
             "verbose": verbose,
+            "thinking_passthrough": thinking_passthrough,
         },
     )
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -620,6 +641,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="JSON file holding OPENAI_API_KEY (default ~/.codex/auth.json)",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--thinking-passthrough",
+        action="store_true",
+        help=(
+            "map codex reasoning.effort onto the anthropic thinking block "
+            "(experimental; measured to hang the lgw.gru.ai messages arm "
+            "intermittently, so it is off by default)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not (0 < args.port < 65536):
@@ -629,7 +659,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.error("--upstream must start with http:// or https://")
 
     try:
-        serve(args.port, upstream, Path(args.auth_file).expanduser(), args.verbose)
+        serve(
+            args.port,
+            upstream,
+            Path(args.auth_file).expanduser(),
+            args.verbose,
+            thinking_passthrough=args.thinking_passthrough,
+        )
     except EnvelopeError as exc:
         print(f"[ks-envelope] error: {exc}", file=sys.stderr)
         return 2
