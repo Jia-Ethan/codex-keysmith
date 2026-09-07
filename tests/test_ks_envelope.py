@@ -613,3 +613,38 @@ def test_tool_call_input_string_becomes_input_dict():
     assert ks_envelope._tool_call_input(item) == {"a": 1}
     item = {"arguments": {"a": 1}}
     assert ks_envelope._tool_call_input(item) == {"a": 1}
+
+
+def test_translate_request_reasoning_off_by_default():
+    body = {
+        "model": "m",
+        "reasoning": {"effort": "xhigh", "context": "all_turns"},
+        "input": [{"role": "user", "content": "x"}],
+    }
+    out = ks_envelope.translate_request(body)
+    assert "thinking" not in out
+
+
+def test_translate_request_reasoning_effort_maps_to_thinking():
+    body = {
+        "model": "m",
+        "reasoning": {"effort": "xhigh", "context": "all_turns"},
+        "input": [{"role": "user", "content": "x"}],
+    }
+    out = ks_envelope.translate_request(body, thinking_passthrough=True)
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 16384}
+
+
+def test_translate_request_unknown_effort_omits_thinking():
+    body = {
+        "model": "m",
+        "reasoning": {"effort": "absurd"},
+        "input": [{"role": "user", "content": "x"}],
+    }
+    out = ks_envelope.translate_request(body, thinking_passthrough=True)
+    assert "thinking" not in out
+
+
+def test_translate_request_no_reasoning_field():
+    out = ks_envelope.translate_request({"model": "m", "input": "x"}, thinking_passthrough=True)
+    assert "thinking" not in out
