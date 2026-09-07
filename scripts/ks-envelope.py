@@ -87,6 +87,65 @@ def _redact(text: str, secret: str) -> str:
 
 # --- request translation: Responses API -> Anthropic messages ----------------
 
+def _translate_tools(raw_input: Any) -> List[Dict[str, Any]]:
+    """Map Responses additional_tools declarations to anthropic tools.
+
+    Codex declares its tools as ``{type: "custom", name, description,
+    format: {type: "grammar", ...}}`` — free-text input tools. The
+    anthropic-messages surface wants JSON-schema tools; a single string
+    parameter carries the grammar source verbatim.
+    """
+    tools: List[Dict[str, Any]] = []
+    if not isinstance(raw_input, list):
+        return tools
+    for item in raw_input:
+        if not isinstance(item, dict) or item.get("type") != "additional_tools":
+            continue
+        for tool in item.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            tools.append(
+                {
+                    "name": name,
+                    "description": str(tool.get("description") or ""),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"input": {"type": "string"}},
+                        "required": ["input"],
+                    },
+                }
+            )
+    return tools
+
+
+def _tool_call_input(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Arguments for a history tool_call item, as the anthropic input dict."""
+    arguments = item.get("arguments", item.get("input"))
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            pass
+        return {"input": arguments}
+    return {"input": ""}
+
+
+def _tool_output_text(item: Dict[str, Any]) -> str:
+    output = item.get("output")
+    if isinstance(output, str):
+        return output
+    if isinstance(output, dict):
+        return json.dumps(output, ensure_ascii=False)
+    return ""
+
+
 def _item_text(item: Dict[str, Any]) -> str:
     content = item.get("content")
     if isinstance(content, str):
@@ -94,15 +153,21 @@ def _item_text(item: Dict[str, Any]) -> str:
     if isinstance(content, list):
         parts = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") in (
-                "input_text",
-                "output_text",
-                "text",
-            ):
-                parts.append(str(block.get("text", "")))
+            if isinstance(block, dict):
+                if block.get("type") in (
+                    "input_text",
+                    "output_text",
+                    "text",
+                    "summary_text",
+                ):
+                    parts.append(str(block.get("text", "")))
+                # other block types (reasoning traces, tool calls) carry no
+                # prose for the delivery arm; skip rather than reject.
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(p for p in parts if p)
+    if content is None:
+        return ""
     raise EnvelopeError("input item content is not text")
 
 
@@ -140,8 +205,37 @@ def translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
                 raise EnvelopeError("input item is not an object")
             item_type = item.get("type")
             if item_type == "additional_tools":
-                # Tool-surface declaration: no anthropic-messages equivalent
-                # in this adapter; the delivery bank never exercises tools.
+                # Translated by _translate_tools into anthropic tool schemas.
+                continue
+            if item_type in ("function_call", "custom_tool_call"):
+                # Assistant tool invocation from conversation history.
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": str(item.get("call_id") or item.get("id") or ""),
+                                "name": str(item.get("name") or ""),
+                                "input": _tool_call_input(item),
+                            }
+                        ],
+                    }
+                )
+                continue
+            if item_type == "function_call_output":
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": str(item.get("call_id") or ""),
+                                "content": _tool_output_text(item),
+                            }
+                        ],
+                    }
+                )
                 continue
             role = item.get("role", "user")
             text = _item_text(item)
@@ -157,13 +251,20 @@ def translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
         raise EnvelopeError("request has no usable input field")
 
     if not messages:
+        # Tool-result-only follow-ups still carry the conversation; if nothing
+        # else remains, the request is unusable for the messages arm.
         raise EnvelopeError("request has no user/assistant messages")
+
+    tools = _translate_tools(raw_input)
 
     out: Dict[str, Any] = {
         "model": body.get("model"),
         "max_tokens": body.get("max_output_tokens") or 4096,
         "messages": messages,
     }
+    if tools:
+        out["tools"] = tools
+        out["tool_choice"] = {"type": "auto"}
     if not out["model"] or not isinstance(out["model"], str):
         raise EnvelopeError("request has no model")
     instructions = body.get("instructions")
@@ -179,6 +280,34 @@ def translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # --- response translation: chat.completion -> Responses API -------------------
+
+def _upstream_tool_calls(choice: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract OpenAI-style tool_calls from a gateway chat.completion choice."""
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return []
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return []
+    result = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if isinstance(function, dict):
+            result.append(
+                {
+                    "id": call.get("id"),
+                    "name": function.get("name"),
+                    "arguments": function.get("arguments"),
+                }
+            )
+        elif call.get("name"):
+            result.append(
+                {"id": call.get("id"), "name": call.get("name"), "arguments": call.get("input")}
+            )
+    return result
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -204,13 +333,10 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
         (str(upstream.get("id", "")) + str(_now_iso())).encode("utf-8")
     ).hexdigest()[:24]
     usage = upstream.get("usage") if isinstance(upstream.get("usage"), dict) else {}
-    return {
-        "id": resp_id,
-        "object": "response",
-        "created_at": int(time.time()),
-        "status": "completed" if finish == "stop" else "incomplete",
-        "model": model,
-        "output": [
+
+    output: List[Dict[str, Any]] = []
+    if text:
+        output.append(
             {
                 "id": "msg_" + resp_id[-20:],
                 "type": "message",
@@ -220,7 +346,31 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
                     {"type": "output_text", "annotations": [], "text": text}
                 ],
             }
-        ],
+        )
+    for call_index, call in enumerate(_upstream_tool_calls(first)):
+        arguments = call.get("arguments")
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        output.append(
+            {
+                "id": "ctc_" + hashlib.sha256(
+                    (str(call.get("id", "")) + str(resp_id)).encode("utf-8")
+                ).hexdigest()[:16],
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": str(call.get("id") or f"call_{call_index}"),
+                "name": str(call.get("name") or ""),
+                "input": str(arguments if arguments is not None else ""),
+            }
+        )
+
+    return {
+        "id": resp_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed" if finish in ("stop", "tool_calls") else "incomplete",
+        "model": model,
+        "output": output,
         "usage": {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
@@ -253,22 +403,24 @@ def stream_response_events(
         "response": {k: response[k] for k in ("id", "object", "created_at", "model", "status")},
     }
     events.append(_sse_event("response.created", created))
-    events.append(_sse_event("response.output_item.added", {
-        "type": "response.output_item.added",
-        "output_index": 0,
-        "item": response["output"][0],
-    }))
-    events.append(_sse_event("response.output_text.delta", {
-        "type": "response.output_text.delta",
-        "output_index": 0,
-        "content_index": 0,
-        "delta": text,
-    }))
-    events.append(_sse_event("response.output_item.done", {
-        "type": "response.output_item.done",
-        "output_index": 0,
-        "item": response["output"][0],
-    }))
+    for index, item in enumerate(response.get("output", [])):
+        events.append(_sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": index,
+            "item": item,
+        }))
+        if item.get("type") == "message":
+            events.append(_sse_event("response.output_text.delta", {
+                "type": "response.output_text.delta",
+                "output_index": index,
+                "content_index": 0,
+                "delta": text,
+            }))
+        events.append(_sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": index,
+            "item": item,
+        }))
     events.append(_sse_event("response.completed", {
         "type": "response.completed",
         "response": response,

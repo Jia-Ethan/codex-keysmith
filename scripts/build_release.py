@@ -39,7 +39,10 @@ ARCHIVE_FILES = (
     "examples/gpt-contract.md",
     "examples/gpt-persona-contract.md",
     "examples/gpt-lean.md",
+    "examples/gpt-astra.md",
     "scripts/run_scenario_bank.py",
+    "scripts/run_prompt_bank_regression.py",
+    "scripts/ks-envelope.py",
 )
 
 SCENARIO_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -1133,7 +1136,11 @@ def _require_clean_repository(repo_root: Path, output_dir: Path) -> None:
 def _archive_mode(relative_path: str) -> int:
     return (
         0o755
-        if relative_path in {"codex-instruct.py", "scripts/run_scenario_bank.py"}
+        if relative_path in {
+        "codex-instruct.py",
+        "scripts/run_scenario_bank.py",
+        "scripts/ks-envelope.py",
+    }
         else 0o644
     )
 
