@@ -414,3 +414,202 @@ def test_main_rejects_bad_upstream_scheme(capsys):
     with pytest.raises(SystemExit) as exc_info:
         ks_envelope.main(["--upstream", "ftp://x"])
     assert exc_info.value.code == 2
+
+
+def test_translate_tools_from_additional_tools():
+    raw = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run code",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": "start: ..."},
+                }
+            ],
+        }
+    ]
+    tools = ks_envelope._translate_tools(raw)
+    assert len(tools) == 1
+    assert tools[0]["name"] == "exec"
+    assert tools[0]["description"] == "Run code"
+    assert tools[0]["input_schema"]["properties"]["input"]["type"] == "string"
+    assert tools[0]["input_schema"]["required"] == ["input"]
+
+
+def test_translate_tools_ignores_bad_entries():
+    raw = [
+        {"type": "additional_tools", "role": "developer", "tools": [{"type": "custom"}, "junk"]},
+        {"type": "message", "role": "user", "content": "x"},
+    ]
+    assert ks_envelope._translate_tools(raw) == []
+    assert ks_envelope._translate_tools("not-a-list") == []
+
+
+def test_translate_request_carries_tools():
+    body = {
+        "model": "m",
+        "tool_choice": "auto",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {"type": "custom", "name": "exec", "description": "run", "format": {}}
+                ],
+            },
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "run it"}]},
+        ],
+    }
+    out = ks_envelope.translate_request(body)
+    assert out["tools"][0]["name"] == "exec"
+    assert out["tool_choice"] == {"type": "auto"}
+
+
+def test_translate_request_function_call_history():
+    body = {
+        "model": "m",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "exec", "arguments": "{\"input\": \"echo hi\"}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "hi"},
+            {"type": "message", "role": "user", "content": "next"},
+        ],
+    }
+    out = ks_envelope.translate_request(body)
+    roles = [m["role"] for m in out["messages"]]
+    assert roles == ["assistant", "user", "user"]
+    tool_use = out["messages"][0]["content"][0]
+    assert tool_use["type"] == "tool_use"
+    assert tool_use["id"] == "call_1"
+    assert tool_use["name"] == "exec"
+    assert tool_use["input"] == {"input": "echo hi"}
+    tool_result = out["messages"][1]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "call_1"
+    assert tool_result["content"] == "hi"
+
+
+def test_translate_request_custom_tool_call_history():
+    body = {
+        "model": "m",
+        "input": [
+            {"type": "custom_tool_call", "call_id": "call_2", "name": "exec", "input": "await tools.exec_command({...})"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "done"},
+            {"type": "message", "role": "user", "content": "next"},
+        ],
+    }
+    out = ks_envelope.translate_request(body)
+    tool_use = out["messages"][0]["content"][0]
+    assert tool_use["input"] == {"input": "await tools.exec_command({...})"}
+
+
+def test_upstream_tool_calls_extraction():
+    choice = {
+        "message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{\"input\": \"echo x\"}"},
+                }
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }
+    calls = ks_envelope._upstream_tool_calls(choice)
+    assert calls == [{"id": "call_abc", "name": "exec", "arguments": "{\"input\": \"echo x\"}"}]
+    assert ks_envelope._upstream_tool_calls({}) == []
+    assert ks_envelope._upstream_tool_calls({"message": {}}) == []
+
+
+def test_translate_response_tool_call_output_item():
+    upstream = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": {"name": "exec", "arguments": "{\"input\": \"echo x\"}"},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+    }
+    out = ks_envelope.translate_response(upstream, "m")
+    assert out["status"] == "completed"
+    assert len(out["output"]) == 1
+    item = out["output"][0]
+    assert item["type"] == "custom_tool_call"
+    assert item["call_id"] == "call_abc"
+    assert item["name"] == "exec"
+    assert item["input"] == "{\"input\": \"echo x\"}"
+
+
+def test_translate_response_text_plus_tool_call():
+    upstream = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "I'll run that.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "exec", "arguments": "await tools.exec_command({command: 'ls'})"},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    out = ks_envelope.translate_response(upstream, "m")
+    kinds = [item["type"] for item in out["output"]]
+    assert kinds == ["message", "custom_tool_call"]
+
+
+def test_stream_events_include_tool_call_items():
+    response = {
+        "id": "resp_t",
+        "object": "response",
+        "created_at": 1,
+        "model": "m",
+        "status": "completed",
+        "output": [
+            {
+                "id": "ctc_1",
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": "call_1",
+                "name": "exec",
+                "input": "code",
+            }
+        ],
+        "usage": {},
+    }
+    frames = ks_envelope.stream_response_events(response)
+    joined = b"".join(frames).decode("utf-8")
+    assert "response.output_item.added" in joined
+    assert "response.completed" in joined
+    assert '"type": "custom_tool_call"' in joined
+
+
+def test_tool_call_input_string_becomes_input_dict():
+    item = {"arguments": "await tools.exec_command({command: 'ls'})"}
+    assert ks_envelope._tool_call_input(item) == {"input": "await tools.exec_command({command: 'ls'})"}
+    item = {"arguments": "{\"a\": 1}"}
+    assert ks_envelope._tool_call_input(item) == {"a": 1}
+    item = {"arguments": {"a": 1}}
+    assert ks_envelope._tool_call_input(item) == {"a": 1}
