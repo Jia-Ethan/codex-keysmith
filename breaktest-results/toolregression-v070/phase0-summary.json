@@ -67,6 +67,12 @@
           "raw-1.json: stock tool declaration capture (4 tools: exec/wait/request_user_input/collaboration)"
         ],
         "outcome": "exit=0; two rounds: assistant message + custom_tool_call -> tool executed -> custom_tool_call_output -> tool_result -> final answer 'The first line is: alpha 1'; no loop, no reconnect"
+      },
+      "probe_tool_execution_e2e": {
+        "result": "PASS (after unwrap fix)",
+        "finding": "the phase-0 e2e \"round trip\" converged messages but never executed a command: item.completed held only agent_messages. Live-gateway capture (20 requests) showed every custom_tool_call output \"SyntaxError: Unexpected token :\". Root cause: _translate_tools declares input_schema {input: string}, so the upstream emits tool_use input {\"input\": \"<raw js>\"}; the return path passed the JSON envelope through as custom_tool_call.input, but Codex grammars expect RAW source (JS for exec). Fixed by _unwrap_tool_input on the anthropic decode path plus a JSON-envelope unwrap on the chat.completion emission path.",
+        "outcome": "exit=0; one real command_execution (ls + sed) through envelope -> live gateway; final answer correct; single round, no loop",
+        "fix_tests": "tests/test_ks_envelope_tools.py (unwrap assertions + plain-string passthrough test)"
       }
     }
   },
@@ -75,7 +81,7 @@
     "usage_normalization": "usage decode now accepts both prompt_tokens/completion_tokens (chat) and input_tokens/output_tokens (anthropic)"
   },
   "conclusions": [
-    "The reported 'Codex does not call tools after install' has two independent transport-layer causes when the envelope path is active, both now fixed and pinned by tests; the direct-deployment path did not reproduce tool suppression on this gateway/day (both probes passed under the v0.6.0 contract), so the dominant real-world failure was the envelope return path.",
+    "The reported 'Codex does not call tools after install' has two independent transport-layer causes when the envelope path is active, both now fixed and pinned by tests; the direct-deployment path did not reproduce tool suppression on this gateway/day (both probes passed under the v0.6.0 contract), so the dominant real-world failure was the envelope return path. A third compounding cause (JSON-envelope vs raw-grammar mismatch) was found in live e2e and fixed with _unwrap_tool_input.",
     "Prompt-side tool-affirmation (Layer EXECUTE in the planned overlay preset) remains scheduled for Phase 1 as defense-in-depth; wire evidence shows Codex 0.144.6 declares its tools via additional_tools items and expects custom_tool_call/custom_tool_call_output round-trips.",
     "SSE is completed-frame full replay; incremental streaming remains Phase 2 work. Codex tolerates full replay (both e2e and live mock runs converged with stream:true)."
   ],

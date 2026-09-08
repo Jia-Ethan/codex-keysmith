@@ -553,7 +553,7 @@ def test_translate_response_tool_call_output_item():
     assert item["type"] == "custom_tool_call"
     assert item["call_id"] == "call_abc"
     assert item["name"] == "exec"
-    assert item["input"] == "{\"input\": \"echo x\"}"
+    assert item["input"] == "echo x"  # {"input":...} envelope unwrapped to raw grammar source
 
 
 def test_translate_response_text_plus_tool_call():
