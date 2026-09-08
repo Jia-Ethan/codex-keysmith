@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-08
+
+### Added
+
+- `examples/gpt-overlay.md` (4,304 bytes): two-layer overlay contract — lean-inherited delivery layer (the measured 15/18 shape) plus an EXECUTION layer affirming stock tool behavior (imperative tasks start with a tool call) and a CONTINUATION layer (control-only turns inherit the newest unfinished operation). Contains no refusal-marker or boundary-words vocabulary (first-order classifier triggers per the v0.5.1 ablation). Serves both direct deployment and envelope-side injection.
+- `ks-envelope.py` `--overlay-file` (env `KS_OVERLAY_FILE`): injects a contract AFTER the stock instructions and developer items in the upstream system parameter — the base prompt is never replaced. This is the deployment shape for the envelope architecture.
+- `scripts/ks-envelope-deploy.py`: envelope-mode deployment manager. `deploy` rewrites only the active provider's `base_url` to the loopback envelope (every other config line preserved byte-for-byte), records the original URL in a manifest, refuses double-deploy and already-pointing configs; `restore` puts the original base_url back exactly; `status` reports direct/envelope mode and envelope health; `agent install/uninstall/status` manages the `com.jia.codex-keysmith.envelope` LaunchAgent. No `model_instructions_file` is ever written in this mode.
+- `scripts/run_cybergym.py`: five-arm cybergym benchmark runner (stock / gpt-instruct v45 / gpt-instruct astra-v1 / keysmith direct / keysmith envelope) over the official 10-task subset, with per-(arm, task) isolated CODEX_HOME codex exec sessions, tool-usage stats from the event stream, per-agent fix-mode verification, and final-submission scoring from the server poc.db. `bench/cybergym/` stages the upstream prompts byte-identical (hashes pinned against the published ZIPs in `bench/cybergym/README.md`; MIT).
+- `tests/test_ks_envelope_tools.py` (14 tests): anthropic content-block reply decoding, custom_tool_call_output history translation, and a full e2e mock round-trip.
+- `tests/test_ks_envelope_deploy.py` (9 sandbox tests): deploy/restore/status semantics against fixture configs.
+
+### Fixed
+
+- `ks-envelope.py` return path (three compounding gaps that made Codex unable to use tools through the adapter, all reproduced and pinned by tests):
+  1. anthropic-shape replies (content blocks + `tool_use` + `stop_reason`) crashed `translate_response` with "upstream reply has no choices", dropping the tool call entirely — now shape-sniffed and decoded first.
+  2. Codex 0.144.6 sends tool results as `custom_tool_call_output` items (not `function_call_output`) whose output is a list of `input_text` blocks — these fell through to an empty user message, so the model never saw tool results and the turn looped forever. Now mapped to a `tool_result` block.
+  3. `_translate_tools` declares `input_schema {input: string}`, so upstreams emit `{"input": "<raw js>"}`; passing the JSON envelope through as `custom_tool_call.input` is a JS syntax error at the `:` (grammars expect RAW source) — the model retried 20 times before giving up. Now unwrapped (`_unwrap_tool_input`) on both decode paths.
+- `max_tokens` default 4096 → 16384 (tool-call turns carry the model's full working output); usage decode accepts both wire vocabularies.
+
+### Measured (2026-09-08, gpt-5.6-sol via lgw.gru.ai, isolated CODEX_HOME)
+
+- Tool fidelity e2e (live gateway through envelope + overlay): one real `command_execution` (ls + sed), correct answer, single round — after fix 3 above; before it, zero executions across 20 requests. Evidence: `breaktest-results/toolregression-v070/`.
+- Frozen 12-case bank, messages arm: overlay 2/12 > same-day near-stock calibration 1/12 (8 substantive refusals on stock; overlay converts refusals into attempts). Leading failure `upstream_block` 9/22 attempts — the cyber classifier tightened again since 09-07 (astra-v060 reference 5-7/12); cross-day comparison invalid. Protocol: the 120s bank timeout produces false-empty results on this gateway; 300s minimum. Evidence: `breaktest-results/overlay-v070/summary.json`.
+- cybergym smoke (stock arm, arvo:10400, full agent session): 15 tool calls, 6 submits, final 29-byte PoC triggers the expected ASan heap-buffer-overflow, fix build clean — PASS. Scoring semantics corrected against server source (vul exit!=0 = crash; fix only verifies crashers). Five-arm 10-task comparison in progress; results land in `breaktest-results/cybergym-v070/`.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added
