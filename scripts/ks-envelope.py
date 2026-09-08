@@ -143,6 +143,16 @@ def _tool_output_text(item: Dict[str, Any]) -> str:
         return output
     if isinstance(output, dict):
         return json.dumps(output, ensure_ascii=False)
+    if isinstance(output, list):
+        # Codex custom_tool_call_output carries a list of input_text blocks
+        # (phase 0 wire capture, breaktest-results/toolregression-v070).
+        parts = []
+        for block in output:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
     return ""
 
 
@@ -225,7 +235,7 @@ def translate_request(
                     }
                 )
                 continue
-            if item_type == "function_call_output":
+            if item_type in ("function_call_output", "custom_tool_call_output"):
                 messages.append(
                     {
                         "role": "user",
@@ -261,7 +271,11 @@ def translate_request(
 
     out: Dict[str, Any] = {
         "model": body.get("model"),
-        "max_tokens": body.get("max_output_tokens") or 4096,
+        # Tool-call turns carry the model's full working output; the previous
+        # 4096 floor truncated agentic sessions mid-tool-call on this gateway
+        # (Phase 0 finding). Map the client's max_output_tokens when present,
+        # else default high.
+        "max_tokens": body.get("max_output_tokens") or 16384,
         "messages": messages,
     }
     if tools:
@@ -325,12 +339,51 @@ def _upstream_tool_calls(choice: Dict[str, Any]) -> List[Dict[str, Any]]:
     return result
 
 
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def _anthropic_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], str]:
+    """Decode an anthropic-messages reply body.
+
+    Returns (text, tool_calls, stop_reason). Tool calls are normalized to
+    {id, name, arguments} where arguments is a JSON string (matching
+    _upstream_tool_calls' output contract). The anthropic reply shape is
+    ``content: [{type:"text"|"tool_use", ...}]`` at the top level with
+    ``stop_reason``; anything lacking both anthropic and chat.completion
+    markers returns a sentinel stop_reason so the caller can fall through.
+    """
+    blocks = upstream.get("content")
+    if not isinstance(blocks, list):
+        return "", [], ""
+    text_parts: List[str] = []
+    calls: List[Dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text_parts.append(str(block.get("text", "")))
+        elif block_type == "tool_use":
+            arguments = block.get("input")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            calls.append(
+                {
+                    "id": block.get("id"),
+                    "name": str(block.get("name") or ""),
+                    "arguments": (
+                        arguments if isinstance(arguments, str) else
+                        json.dumps(arguments, ensure_ascii=False)
+                        if arguments is not None else ""
+                    ),
+                }
+            )
+    return "\n".join(p for p in text_parts if p), calls, str(
+        upstream.get("stop_reason") or ""
+    )
 
 
-def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
-    """Map a gateway chat.completion object onto a Responses-API response."""
+def _chat_completion_output(
+    upstream: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, Any]], str, Dict[str, Any]]:
+    """Decode a chat.completion reply body into (text, tool_calls, finish, usage)."""
     choices = upstream.get("choices")
     if not isinstance(choices, list) or not choices:
         raise EnvelopeError("upstream reply has no choices")
@@ -344,11 +397,50 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
     text = content if isinstance(content, str) else json.dumps(
         content, ensure_ascii=False
     ) if content is not None else ""
-    finish = first.get("finish_reason")
+    usage = upstream.get("usage") if isinstance(upstream.get("usage"), dict) else {}
+    return text, _upstream_tool_calls(first), str(first.get("finish_reason") or ""), usage
+
+
+def _extract_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], str, Dict[str, Any]]:
+    """Shape-sniff the upstream reply: anthropic first, chat.completion second.
+
+    Phase 0 evidence (breaktest-results/toolregression-v070): a gateway
+    reply in anthropic content-block shape (tool_use block, stop_reason
+    "tool_use") crashed translate_response with "upstream reply has no
+    choices" — the tool call was silently dropped and Codex surfaced the
+    failure as a reconnect loop. Anthropic shape is now decoded first.
+    """
+    if isinstance(upstream.get("content"), list) or upstream.get("stop_reason") is not None:
+        text, calls, stop = _anthropic_output(upstream)
+        usage = upstream.get("usage") if isinstance(upstream.get("usage"), dict) else {}
+        return text, calls, stop, usage
+    return _chat_completion_output(upstream)
+
+
+def _usage_fields(usage: Dict[str, Any]) -> Dict[str, int]:
+    """Normalize usage across shapes (prompt_tokens | input_tokens ...)."""
+    return {
+        "input_tokens": usage.get(
+            "input_tokens", usage.get("prompt_tokens", 0)
+        ) or 0,
+        "output_tokens": usage.get(
+            "output_tokens", usage.get("completion_tokens", 0)
+        ) or 0,
+        "total_tokens": usage.get("total_tokens", 0) or 0,
+    }
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Map a gateway reply (anthropic or chat.completion shape) onto a
+    Responses-API response."""
+    text, calls, finish, usage = _extract_output(upstream)
     resp_id = "resp_" + hashlib.sha256(
         (str(upstream.get("id", "")) + str(_now_iso())).encode("utf-8")
     ).hexdigest()[:24]
-    usage = upstream.get("usage") if isinstance(upstream.get("usage"), dict) else {}
 
     output: List[Dict[str, Any]] = []
     if text:
@@ -363,7 +455,7 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
                 ],
             }
         )
-    for call_index, call in enumerate(_upstream_tool_calls(first)):
+    for call_index, call in enumerate(calls):
         arguments = call.get("arguments")
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments, ensure_ascii=False)
@@ -384,16 +476,14 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
         "id": resp_id,
         "object": "response",
         "created_at": int(time.time()),
-        "status": "completed" if finish in ("stop", "tool_calls") else "incomplete",
+        "status": "completed" if finish in (
+            "stop", "tool_calls", "end_turn", "tool_use"
+        ) else "incomplete",
         "model": model,
         "output": output,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
-        },
+        "usage": _usage_fields(usage),
         "incomplete_details": (
-            {"reason": finish} if finish and finish != "stop" else None
+            {"reason": finish} if finish and finish not in ("stop", "end_turn") else None
         ),
     }
 
