@@ -368,23 +368,40 @@ def _anthropic_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any
         if block_type == "text":
             text_parts.append(str(block.get("text", "")))
         elif block_type == "tool_use":
-            arguments = block.get("input")
-            if isinstance(arguments, dict):
-                arguments = json.dumps(arguments, ensure_ascii=False)
+            arguments = _unwrap_tool_input(block.get("input"))
             calls.append(
                 {
                     "id": block.get("id"),
                     "name": str(block.get("name") or ""),
-                    "arguments": (
-                        arguments if isinstance(arguments, str) else
-                        json.dumps(arguments, ensure_ascii=False)
-                        if arguments is not None else ""
-                    ),
+                    "arguments": arguments,
                 }
             )
     return "\n".join(p for p in text_parts if p), calls, str(
         upstream.get("stop_reason") or ""
     )
+
+
+def _unwrap_tool_input(arguments: Any) -> str:
+    """Normalize a tool_use input to the string the tool's grammar expects.
+
+    The request side declares every tool as ``input_schema: {input: string}``
+    (see _translate_tools), so a well-behaved upstream emits
+    ``{"input": "<raw grammar source>"}``. Codex's custom tools expect the
+    RAW grammar source (JS for the exec tool), not the JSON envelope — a
+    JSON-wrapped string is a JS syntax error at the ``:`` and the model
+    loops on it (e2e evidence: 20 requests, every custom_tool_call output
+    'SyntaxError: Unexpected token :'). Unwrap {"input": str} here;
+    anything else is passed through as-is.
+    """
+    if isinstance(arguments, dict):
+        if set(arguments.keys()) == {"input"} and isinstance(arguments["input"], str):
+            return arguments["input"]
+        return json.dumps(arguments, ensure_ascii=False)
+    if isinstance(arguments, str):
+        return arguments
+    if arguments is None:
+        return ""
+    return json.dumps(arguments, ensure_ascii=False)
 
 
 def _chat_completion_output(
@@ -466,6 +483,21 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
         arguments = call.get("arguments")
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments, ensure_ascii=False)
+        # _unwrap_tool_input already normalized the anthropic path to the
+        # raw grammar string; chat.completion tool_calls.arguments arrive as
+        # JSON strings that may carry the same {"input": ...} envelope —
+        # unwrap those too so Codex always receives raw grammar source.
+        if isinstance(arguments, str) and arguments.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(arguments)
+                if (
+                    isinstance(parsed, dict)
+                    and set(parsed.keys()) == {"input"}
+                    and isinstance(parsed["input"], str)
+                ):
+                    arguments = parsed["input"]
+            except ValueError:
+                pass
         output.append(
             {
                 "id": "ctc_" + hashlib.sha256(

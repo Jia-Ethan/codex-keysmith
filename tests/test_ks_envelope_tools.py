@@ -60,7 +60,28 @@ def test_anthropic_tool_use_reply_decodes_to_custom_tool_call():
     call = out["output"][1]
     assert call["call_id"] == "toolu_1"
     assert call["name"] == "exec"
-    assert json.loads(call["input"]) == {"input": "ls -la"}
+    # {"input": ...} envelope is unwrapped to the raw grammar source string.
+    assert call["input"] == "ls -la"
+
+
+def test_anthropic_tool_use_plain_string_input_passthrough():
+    reply = {
+        "id": "msg_m1",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_2",
+                "name": "exec",
+                "input": "await tools.exec_command({cmd: 'ls'})",
+            }
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    out = ks_envelope.translate_response(reply, "m")
+    call = out["output"][0]
+    assert call["type"] == "custom_tool_call"
+    assert call["input"] == "await tools.exec_command({cmd: 'ls'})"
 
 
 def test_anthropic_end_turn_text_reply():
