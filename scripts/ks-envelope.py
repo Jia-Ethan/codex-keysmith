@@ -182,7 +182,9 @@ def _item_text(item: Dict[str, Any]) -> str:
 
 
 def translate_request(
-    body: Dict[str, Any], thinking_passthrough: bool = False
+    body: Dict[str, Any],
+    thinking_passthrough: bool = False,
+    overlay_text: str = "",
 ) -> Dict[str, Any]:
     """Map a Responses-API request onto the Anthropic messages shape.
 
@@ -286,6 +288,11 @@ def translate_request(
     instructions = body.get("instructions")
     if isinstance(instructions, str) and instructions:
         system_parts.insert(0, instructions)
+    # Overlay contract: appended AFTER the stock instructions and developer
+    # items, never replacing them (recency position). This is the injection
+    # point for the keysmith overlay preset (--overlay-file).
+    if overlay_text:
+        system_parts.append(overlay_text)
     if system_parts:
         out["system"] = "\n\n".join(p for p in system_parts if p)
 
@@ -560,6 +567,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
     secret_for_redaction: str = ""
     verbose: bool = False
     thinking_passthrough: bool = False
+    overlay_text: str = ""
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
         if self.verbose:
@@ -623,7 +631,9 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
 
         try:
             translated = translate_request(
-                request_body, thinking_passthrough=self.thinking_passthrough
+                request_body,
+                thinking_passthrough=self.thinking_passthrough,
+                overlay_text=self.overlay_text,
             )
         except EnvelopeError as exc:
             self._reject(400, {"error": {"code": "bad_request", "message": str(exc)[:300]}})
@@ -685,8 +695,17 @@ def serve(
     auth_file: Path,
     verbose: bool,
     thinking_passthrough: bool = False,
+    overlay_file: Optional[Path] = None,
 ) -> None:
     key = load_upstream_key(auth_file)
+    overlay_text = ""
+    if overlay_file is not None:
+        try:
+            overlay_text = overlay_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise EnvelopeError(f"overlay file unreadable: {overlay_file}: {exc}") from exc
+        if not overlay_text.strip():
+            raise EnvelopeError(f"overlay file is empty: {overlay_file}")
     handler = type(
         "BoundEnvelopeHandler",
         (EnvelopeHandler,),
@@ -696,6 +715,7 @@ def serve(
             "secret_for_redaction": key,
             "verbose": verbose,
             "thinking_passthrough": thinking_passthrough,
+            "overlay_text": overlay_text,
         },
     )
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -740,6 +760,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             "intermittently, so it is off by default)"
         ),
     )
+    parser.add_argument(
+        "--overlay-file",
+        default=os.environ.get("KS_OVERLAY_FILE"),
+        help=(
+            "Markdown contract appended AFTER the stock instructions in the "
+            "upstream system parameter (never replaces the base prompt); "
+            "e.g. examples/gpt-overlay.md"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not (0 < args.port < 65536):
@@ -748,6 +777,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not upstream.startswith(("http://", "https://")):
         parser.error("--upstream must start with http:// or https://")
 
+    overlay_path: Optional[Path] = None
+    if args.overlay_file:
+        overlay_path = Path(args.overlay_file).expanduser()
+
     try:
         serve(
             args.port,
@@ -755,6 +788,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             Path(args.auth_file).expanduser(),
             args.verbose,
             thinking_passthrough=args.thinking_passthrough,
+            overlay_file=overlay_path,
         )
     except EnvelopeError as exc:
         print(f"[ks-envelope] error: {exc}", file=sys.stderr)
