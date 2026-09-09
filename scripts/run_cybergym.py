@@ -376,8 +376,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                                    capture_output=True)
             if check.returncode == 0:
                 continue
-            for attempt in range(5):
-                pull = subprocess.run(["docker", "pull", tag], capture_output=True)
+            for attempt in range(8):
+                try:
+                    pull = subprocess.run(
+                        ["docker", "pull", tag], capture_output=True,
+                        timeout=900,
+                    )
+                except subprocess.TimeoutExpired:
+                    print(f"  image pull timed out (attempt {attempt+1}): {tag}", flush=True)
+                    time.sleep(30)
+                    continue
                 if pull.returncode == 0:
                     break
                 time.sleep(20)
