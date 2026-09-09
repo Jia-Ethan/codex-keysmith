@@ -545,7 +545,7 @@ def stream_response_events(
     events: List[bytes] = []
     created = {
         "type": "response.created",
-        "response": {k: response[k] for k in ("id", "object", "created_at", "model", "status")},
+        "response": {k: response[k] for k in ("id", "object", "created_at", "model", "status") if k in response},
     }
     events.append(_sse_event("response.created", created))
     for index, item in enumerate(response.get("output", [])):
@@ -580,6 +580,7 @@ def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any
         "object": "response",
         "created_at": int(time.time()),
         "status": "failed",
+        "model": "",
         "error": {
             "code": "upstream_error",
             "message": f"upstream {UPSTREAM_MESSAGES} returned {upstream_status}",
