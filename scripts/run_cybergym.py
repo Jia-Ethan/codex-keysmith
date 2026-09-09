@@ -301,6 +301,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="five-arm cybergym runner")
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--tasks", default=",".join(SUBSET_TASKS))
+    parser.add_argument("--tasks-file", help="newline-separated task ids (overrides --tasks)")
     parser.add_argument("--cybergym-repo", default="/tmp/cybergym/cybergym")
     parser.add_argument("--data-dir", default="/tmp/cybergym/cybergym_data/data")
     parser.add_argument("--prompts-dir", default=str(KEYSMITH_ROOT / "bench" / "cybergym"))
@@ -322,7 +323,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     prompts_dir = Path(args.prompts_dir).expanduser()
     work_root = Path(args.work_root).expanduser()
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
-    tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    if args.tasks_file:
+        tasks = [t.strip() for t in Path(args.tasks_file).read_text().splitlines() if t.strip()]
+    else:
+        tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
 
     if args.validate_only:
         for arm in arms:
@@ -349,10 +353,54 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     work_root.mkdir(parents=True, exist_ok=True)
     sessions = []
-    for arm in arms:
-        prompt_text = load_arm_prompt(arm, prompts_dir)
-        codex_home = build_codex_home(work_root, arm, prompt_text, args.envelope_port)
-        for task in tasks:
+    skipped = []
+    api_key = os.environ.get("CYBERGYM_API_KEY", "")
+
+    # Task-major order with rolling image lifecycle: pull both images for one
+    # task, run all arms on it, verify its agents, then delete the images.
+    # Keeps peak disk at ~2 task images instead of the full 90-image set
+    # (a full set measured 630G and crashed the host on a 926G disk).
+    codex_homes = {
+        arm: build_codex_home(work_root, arm, load_arm_prompt(arm, prompts_dir),
+                              args.envelope_port)
+        for arm in arms
+    }
+
+    def pull_images(task: str) -> bool:
+        subset, tid = task.split(":")
+        repo = "n132/arvo" if subset == "arvo" else "cybergym/oss-fuzz"
+        ok = True
+        for mode in ("vul", "fix"):
+            tag = f"{repo}:{tid}-{mode}"
+            check = subprocess.run(["docker", "image", "inspect", tag],
+                                   capture_output=True)
+            if check.returncode == 0:
+                continue
+            for attempt in range(5):
+                pull = subprocess.run(["docker", "pull", tag], capture_output=True)
+                if pull.returncode == 0:
+                    break
+                time.sleep(20)
+            else:
+                print(f"  image pull failed: {tag}", flush=True)
+                ok = False
+        return ok
+
+    def drop_images(task: str) -> None:
+        subset, tid = task.split(":")
+        repo = "n132/arvo" if subset == "arvo" else "cybergym/oss-fuzz"
+        for mode in ("vul", "fix"):
+            subprocess.run(["docker", "rmi", f"{repo}:{tid}-{mode}"],
+                           capture_output=True)
+
+    for task in tasks:
+        task_agent_ids = []
+        if not pull_images(task):
+            for arm in arms:
+                skipped.append({"arm": arm, "task": task, "reason": "image_pull_failed"})
+            continue
+        for arm in arms:
+            codex_home = codex_homes[arm]
             agent_id = f"{arm}-{task.replace(':', '-')}-{uuid.uuid4().hex[:8]}"
             task_dir = work_root / "tasks" / agent_id
             task_dir.mkdir(parents=True, exist_ok=True)
@@ -371,20 +419,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "arm": arm, "task": task, "agent_id": agent_id,
                 "session": result, "tool_stats": stats,
             })
+            task_agent_ids.append(agent_id)
             print(f"  rc={result['returncode']} cmds={stats['command_executions']} "
                   f"submits={stats['submit_calls']}", flush=True)
-
-    # fix-mode verification for every completed session before scoring
-    api_key = os.environ.get("CYBERGYM_API_KEY", "")
-    for s_rec in sessions:
-        if "agent_id" in s_rec and "gen_error" not in s_rec:
-            print(f"verify {s_rec['agent_id']}", flush=True)
-            verify_agent(args.server, api_key, s_rec["agent_id"])
+        # verify while this task's images are still present, then free them
+        for agent_id in task_agent_ids:
+            print(f"verify {agent_id}", flush=True)
+            verify_agent(args.server, api_key, agent_id)
+        drop_images(task)
+        print(f"[task done] {task} (images dropped)", flush=True)
 
     report = {
         "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "server": args.server,
         "sessions": sessions,
+        "skipped": skipped,
         "scores": {arm: score_arm_from_db(Path(args.poc_db), arm) for arm in arms},
     }
     out = json.dumps(report, indent=2, ensure_ascii=False)
