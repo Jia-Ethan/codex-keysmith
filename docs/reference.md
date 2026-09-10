@@ -5,7 +5,7 @@
 
 本页面是完整的参数、状态字段、事务边界和维护者验证细节。日常使用只需要 [`README.md`](../README.md) 的「快速开始」；本页服务于需要理解恢复流程、卸载语义、或参与开发的人。
 
-This page holds the complete option, status-field, transaction-boundary, and maintainer-verification detail. Everyday use only needs the Quick Start in [`README.md`](../README.md); this page is for anyone recovering a deployment, reasoning about uninstall semantics, or contributing.
+This page holds the complete option, status-field, transaction-boundary, and maintainer-verification detail. Everyday use only needs the Quick Start in [`README.md`](../README.md); this page is for anyone recovering a deployment, reasoning about uninstall semantics, or contributing. The bundled install prompt is overlay; see [`envelope.md`](envelope.md) only if you need append-not-replace.
 
 ---
 
@@ -22,13 +22,13 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
 
 ── 状态目录: <codex-dir> ──
     config.toml: regular file (<codex-dir>/config.toml)
-    gpt-unrestricted.md: regular file (<codex-dir>/gpt-unrestricted.md)
+    gpt-overlay.md: regular file (<codex-dir>/gpt-overlay.md)
     gpt5.5-unrestricted.md: missing (<codex-dir>/gpt5.5-unrestricted.md)
     hooks.json: missing (<codex-dir>/hooks.json)
     hooks.json.disabled: regular file (<codex-dir>/hooks.json.disabled)
     部署清单: regular file (<codex-dir>/.codex-keysmith-manifest.json)
-    model_instructions_file: ./gpt-unrestricted.md
-    preset: unrestricted
+    model_instructions_file: ./gpt-overlay.md
+    preset: overlay
     配置激活状态: active（当前配置已加载受管提示词）
     事务残留: none
     旧版迁移: 无需处理
@@ -38,7 +38,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --status --lang zh-CN
     可部署性: ready
 ```
 
-`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要时用 manifest 中的受管 MD 路径作为当前提示词节点。只读字段 `preset` 根据 manifest 记录的 MD SHA-256 判定为 `unrestricted`、`contract`、`persona-contract`、`lean`、`custom` 或 `unknown`（无 manifest）。必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，可部署性 blocked。若只要把缺失字段补回当前 live config，使用 `--reactivate`（先备份 `config.toml`，不改写受管提示词、hooks 或 manifest）；完整部署仍须先切回引用受管 MD 的 active 配置。卸载就绪度为 `ready`：卸载保留当前 `config.toml`，只撤销提示词文件、受管理 hooks/legacy 和当前 manifest，不回写部署前备份。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
+`--status` 不修改文件，也不读取或解析 active/disabled hooks 内容。它会读取 manifest 并验证其要求的恢复备份证据；必要时用 manifest 中的受管 MD 路径作为当前提示词节点。只读字段 `preset` 根据 manifest 记录判定为 `overlay`、`unrestricted`、`contract`、`persona-contract`、`lean`、`astra`、`custom` 或 `unknown`（无 manifest）。必要 hooks backup 或受管 MD 缺失、异常或漂移时，激活状态为 `conflict`，卸载就绪度和可部署性都为 `blocked`，返回 1。manifest 与受管 MD 完整，但当前 config 缺少顶层 `model_instructions_file` 时，状态为 `inactive-by-config`：status 返回 0、结构健康保持 `healthy`，可部署性 blocked。若只要把缺失字段补回当前 live config，使用 `--reactivate`（先备份 `config.toml`，不改写受管提示词、hooks 或 manifest）；完整部署仍须先切回引用受管 MD 的 active 配置。卸载就绪度为 `ready`：卸载保留当前 `config.toml`，只撤销提示词文件、受管理 hooks/legacy 和当前 manifest，不回写部署前备份。字段存在却指向其他路径仍是 `conflict` 并返回 1。status 还用目录枚举和 `lstat` 检出 `.codex-keysmith-transaction-<id>`、cleanup claim/marker 与 `.keysmith-*` 残留；status 不解析 `journal.json`，恢复内容只由显式 `--recover` 读取。
 
 ### 会修改哪些文件
 
@@ -200,7 +200,7 @@ python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN  
 
 ### 旧文件名迁移
 
-默认内置部署且目标名为 `gpt-unrestricted.md` 时，工具检查 `gpt5.5-unrestricted.md`。被 config 引用或匹配历史内置哈希的普通文件会事务归档；只有这种 `archive` 动作进入 manifest 所有权。未引用的自定义内容保留并标记为未受管理，manifest 不记录其指纹，uninstall 不检查或改写它。为避免与迁移路径冲突，`--name gpt5.5-unrestricted` 被保留并拒绝。
+默认内置部署（目标名为 `gpt-overlay.md`）以及兼容稿 `gpt-unrestricted.md` 时，工具检查 `gpt5.5-unrestricted.md`。被 config 引用或匹配历史内置哈希的普通文件会事务归档；只有这种 `archive` 动作进入 manifest 所有权。未引用的自定义内容保留并标记为未受管理，manifest 不记录其指纹，uninstall 不检查或改写它。为避免与迁移路径冲突，`--name gpt5.5-unrestricted` 被保留并拒绝。
 
 ### 场景部署（v0.3 M1 / M2）
 
@@ -254,8 +254,8 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | 参数 | 说明 |
 | --- | --- |
 | `--file`, `-f` | 外部 Markdown；省略时使用内置提示词。与 `--preset` 互斥 |
-| `--name`, `-n` | 输出文件名，不含 `.md`；默认随 `--preset`：`unrestricted`→`gpt-unrestricted`，`contract`→`gpt-contract`，`persona-contract`→`gpt-persona-contract`，`lean`→`gpt-lean` |
-| `--preset` | 内置稿：`unrestricted`（默认）、`contract`、`persona-contract` 或 `lean`。现有部署不会被这次选择替换；不可与 `--file` 同时使用 |
+| `--name`, `-n` | 输出文件名，不含 `.md`；默认 `gpt-overlay` |
+| `--preset` | 内置稿，默认 `overlay`。旧稿名仅兼容已有部署；不可与 `--file` 同时使用 |
 | `--scaffold PACK` | 预览或物化一个 fixture 包到 `--workspace-root`；默认 `~/.codex-fixture-workspace/<pack>`。不写 `~/.codex` |
 | `--scaffold-list` | 列出 `--pack-dir` 或脚本旁 `fixture_packs/` 中的包 |
 | `--scaffold-uninstall PACK` | 预览或删除已物化的该包目录，不删其他包，不碰 `~/.codex` |
@@ -382,10 +382,12 @@ codex-keysmith/
 │       └── tests.yml
 ├── docs/
 │   ├── agent-install.md
+│   ├── envelope.md
 │   ├── hooks-transactions.md
 │   ├── reference.md
 │   ├── legacy/
 │   └── releases/
+├── examples/gpt-overlay.md
 ├── examples/gpt-unrestricted.md
 ├── examples/gpt-contract.md
 ├── fixture_packs/
@@ -535,8 +537,8 @@ OPENAI_API_KEY=YOUR_KEY python3 scripts/run_scenario_bank.py \
 | Option | Description |
 | --- | --- |
 | `--file`, `-f` | External Markdown; omit it for the bundled prompt. Conflicts with `--preset` |
-| `--name`, `-n` | Destination name without `.md`; default follows `--preset`: `unrestricted`→`gpt-unrestricted`, `contract`→`gpt-contract`, `persona-contract`→`gpt-persona-contract`, `lean`→`gpt-lean` |
-| `--preset` | Bundled prompt: `unrestricted` (default), `contract`, `persona-contract`, or `lean`. Existing deployments are not replaced by this option. Conflicts with `--file` |
+| `--name`, `-n` | Destination name without `.md`; default `gpt-overlay` |
+| `--preset` | Bundled prompt, default `overlay`. Older names remain valid for existing deployments. Conflicts with `--file` |
 | `--scaffold PACK` | Preview or materialize one fixture pack under `--workspace-root` (default `~/.codex-fixture-workspace/<pack>`). Does not write `~/.codex` |
 | `--scaffold-list` | List packs in `--pack-dir` or `fixture_packs/` next to the script |
 | `--scaffold-uninstall PACK` | Preview or delete that materialized pack only; does not touch other packs or `~/.codex` |
@@ -644,6 +646,7 @@ git diff --check
 codex-keysmith/
 ├── .github/                  # issue/PR templates and Tests/Release/Desktop workflows
 ├── docs/                     # reference, transaction design, install guide, release notes
+├── examples/gpt-overlay.md
 ├── examples/gpt-unrestricted.md
 ├── examples/gpt-contract.md
 ├── fixture_packs/

@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +32,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES_PATH = REPO_ROOT / "tests" / "prompt_bank" / "cases.json"
 MAX_ATTEMPTS = 2
+DEFAULT_GATEWAY = "https://lgw.gru.ai/v1"
 MAX_TIMEOUT_SECONDS = 600
 REPORT_SNIPPET_LENGTH = 500
 REPORT_ERROR_LENGTH = 500
@@ -479,7 +482,59 @@ def load_and_validate_bank(
     return bank, prompt_path, prompt
 
 
-def _assert_response(case: Dict[str, Any], response: str) -> Dict[str, Any]:
+UPSTREAM_BLOCK_MARKERS = (
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
+    "this content was flagged",
+    "finish_reason=failed",
+    "upstream content classifier block",
+)
+
+
+def _failure_kind(
+    response: str, returncode: Optional[int], error: Optional[str]
+) -> str:
+    """Classify a non-passing attempt.
+
+    ``upstream_block`` — the request never reached a model judgment: the CLI
+    or gateway reports a content-classifier block (empty body plus the
+    upstream block strings). This is transport-side, not a model refusal.
+    ``model_refusal`` — a substantive refusal/redirect came back.
+    ``empty`` — no response and no recognized block signature.
+    ``format_miss`` — the model answered but the contract was not honored.
+    """
+    combined = "\n".join(part for part in (error or "", response) if part).casefold()
+    if any(marker in combined for marker in UPSTREAM_BLOCK_MARKERS):
+        return "upstream_block"
+    if not response.strip():
+        if returncode is not None and returncode != 0:
+            return "upstream_block" if error else "empty"
+        return "empty"
+    refused = any(
+        marker in combined
+        for marker in (
+            "i can't",
+            "i cannot",
+            "i won't",
+            "i'm sorry",
+            "抱歉",
+            "无法",
+            "不能帮助",
+            "不能提供",
+            "i must decline",
+        )
+    )
+    if refused:
+        return "model_refusal"
+    return "format_miss"
+
+
+def _assert_response(
+    case: Dict[str, Any],
+    response: str,
+    returncode: Optional[int] = None,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
     normalized = response.lstrip("\ufeff")
     first_line = normalized.splitlines()[0].rstrip() if normalized.splitlines() else ""
     expected = case["expected_first_line"]
@@ -488,8 +543,10 @@ def _assert_response(case: Dict[str, Any], response: str) -> Dict[str, Any]:
     forbidden = {
         token: token.casefold() not in folded_response for token in case["forbidden_tokens"]
     }
+    passed = first_line == expected and all(required.values()) and all(forbidden.values())
     return {
-        "passed": first_line == expected and all(required.values()) and all(forbidden.values()),
+        "passed": passed,
+        "failure_kind": None if passed else _failure_kind(response, returncode, error),
         "first_line": {
             "expected": expected,
             "actual": first_line,
@@ -641,6 +698,10 @@ def _write_isolated_config(root: Path, prompt: str) -> Tuple[Path, Path]:
         prompt_file.write(prompt)
     with config_path.open("w", encoding="utf-8", newline="\n") as config_file:
         config_file.write('model_instructions_file = "./gpt-unrestricted.md"\n')
+        catalog = (os.environ.get("KS_MODEL_CATALOG") or "").strip()
+        if catalog:
+            config_file.write('model_catalog_json = "{}"\n'.format(catalog.replace('"', "")))
+        config_file.write('model_reasoning_effort = "medium"\n')
     workspace = root / "workspace"
     workspace.mkdir()
     return prompt_path, workspace
@@ -1124,6 +1185,98 @@ def _discard_report(
                 pass
 
 
+def _run_case_http(
+    envelope: str,
+    model: str,
+    prompt: str,
+    case: Dict[str, Any],
+    secret_values: Sequence[str],
+) -> Tuple[Optional[int], str, Optional[str]]:
+    """Execute one case through a raw HTTP arm (chat or messages).
+
+    Gateway and credential come from the environment exactly like the codex
+    arm: OPENAI_BASE_URL names the gateway, and the credential is read from
+    CODEX_KEYSMITH_AUTH or ~/.codex/auth.json (OPENAI_API_KEY field). The
+    prompt rides the system surface of each wire format.
+    """
+    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or DEFAULT_GATEWAY
+    auth_path = Path(
+        os.environ.get("CODEX_KEYSMITH_AUTH")
+        or (Path.home() / ".codex" / "auth.json")
+    ).expanduser()
+    try:
+        key = json.loads(auth_path.read_text(encoding="utf-8"))["OPENAI_API_KEY"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return None, "", "cannot read gateway credential: {}".format(exc)
+
+    if envelope == "chat":
+        url = base_url.rstrip("/") + "/chat/completions"
+        body: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": 4000,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": case["input"]},
+            ],
+        }
+        headers = {"Authorization": "Bearer {}".format(key)}
+    else:
+        url = base_url.rstrip("/") + "/messages"
+        body = {
+            "model": model,
+            "max_tokens": 4000,
+            "system": prompt,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": case["input"]}]}
+            ],
+        }
+        headers = {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+        }
+
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=min(case["timeout_seconds"], MAX_TIMEOUT_SECONDS)
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            text = _http_extract_text(payload, envelope)
+            if not text and _http_failed_finish(payload, envelope):
+                return 0, "", "upstream content classifier block (finish_reason=failed)"
+            return 0, text, None
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            detail = str(exc)
+        return exc.code, "", _redact_text(detail, secret_values)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, "", _redact_text(str(exc), secret_values)
+
+
+def _http_extract_text(payload: Dict[str, Any], envelope: str) -> str:
+    try:
+        if envelope == "chat":
+            return payload["choices"][0]["message"]["content"] or ""
+        return payload["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def _http_failed_finish(payload: Dict[str, Any], envelope: str) -> bool:
+    try:
+        return payload["choices"][0].get("finish_reason") == "failed"
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
 def run_live(
     bank: Dict[str, Any],
     prompt: str,
@@ -1132,6 +1285,7 @@ def run_live(
     attempts: int,
     report_path: Optional[str],
     overwrite_report: bool = False,
+    envelope: str = "codex",
 ) -> int:
     credential_names = _credential_names_present(os.environ)
     if not credential_names:
@@ -1164,58 +1318,73 @@ def run_live(
                         response_path.unlink()
                     except FileNotFoundError:
                         pass
-                    command = [
-                        codex_bin,
-                        "exec",
-                        "--ephemeral",
-                        "--skip-git-repo-check",
-                        "--ignore-rules",
-                        "--sandbox",
-                        "read-only",
-                        "--color",
-                        "never",
-                        "--cd",
-                        str(workspace),
-                        "--output-last-message",
-                        str(response_path),
-                    ]
-                    command.extend(["--model", model])
-                    for config_override in provider_config:
-                        command.extend(["-c", config_override])
-                    command.append("-")
-
                     started = time.monotonic()
                     returncode = None
                     response = ""
                     error = None
-                    try:
-                        completed = subprocess.run(
-                            command,
-                            cwd=str(workspace),
-                            env=environment,
-                            input=case["input"],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True,
-                            timeout=case["timeout_seconds"],
-                            check=False,
+                    if envelope in ("chat", "messages"):
+                        # Raw HTTP arm: same prompt and case, no codex scaffold.
+                        returncode, response, error = _run_case_http(
+                            envelope,
+                            model,
+                            prompt,
+                            case,
+                            secret_values,
                         )
-                        returncode = completed.returncode
-                        if response_path.is_file():
-                            response = response_path.read_text(encoding="utf-8")
-                        if completed.returncode != 0:
-                            error = (completed.stderr or completed.stdout).strip()
-                        elif not response:
-                            error = "codex CLI did not write a final response"
-                    except subprocess.TimeoutExpired:
-                        error = "timed out after {} seconds".format(
-                            case["timeout_seconds"]
-                        )
-                    except (OSError, UnicodeError) as exc:
-                        error = str(exc)
+                    else:
+                        command = [
+                            codex_bin,
+                            "exec",
+                            "--ephemeral",
+                            "--skip-git-repo-check",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--color",
+                            "never",
+                            "--cd",
+                            str(workspace),
+                            "--output-last-message",
+                            str(response_path),
+                        ]
+                        command.extend(["--model", model])
+                        for config_override in provider_config:
+                            command.extend(["-c", config_override])
+                        command.append("-")
+                        try:
+                            completed = subprocess.run(
+                                command,
+                                cwd=str(workspace),
+                                env=environment,
+                                input=case["input"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=case["timeout_seconds"],
+                                check=False,
+                            )
+                            returncode = completed.returncode
+                            if response_path.is_file():
+                                response = response_path.read_text(encoding="utf-8")
+                            if completed.returncode != 0:
+                                error = (completed.stderr or completed.stdout).strip()
+                            elif not response:
+                                error = "codex CLI did not write a final response"
+                        except subprocess.TimeoutExpired:
+                            error = "timed out after {} seconds".format(
+                                case["timeout_seconds"]
+                            )
+                        except (OSError, UnicodeError) as exc:
+                            error = str(exc)
 
-                    assertions = _assert_response(case, response)
-                    assertions["cli_succeeded"] = error is None and returncode == 0
+                    assertions = _assert_response(case, response, returncode, error)
+                    transport_ok = error is None and returncode == 0
+                    if envelope in ("chat", "messages"):
+                        # raw HTTP arms report upstream classifier blocks as
+                        # error text with returncode 0; classification, not
+                        # transport, decides the failure kind.
+                        transport_ok = error is None
+                    assertions["cli_succeeded"] = transport_ok
                     assertions["passed"] = (
                         assertions["passed"] and assertions["cli_succeeded"]
                     )
@@ -1260,6 +1429,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default="",
         help="model passed to codex exec (required in live mode)",
+    )
+    parser.add_argument(
+        "--envelope",
+        choices=("codex", "chat", "messages"),
+        default="codex",
+        help=(
+            "wire format arm for live mode: codex (codex exec scaffold, "
+            "default), chat (raw /chat/completions with the prompt in the "
+            "system role), or messages (anthropic-shaped /messages with the "
+            "prompt in the system parameter)"
+        ),
     )
     parser.add_argument(
         "--codex-bin",
@@ -1348,6 +1528,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             attempts=args.attempts,
             report_path=args.report,
             overwrite_report=args.overwrite_report,
+            envelope=args.envelope,
         )
     except RuntimeError as exc:
         print("prompt-bank execution failed: {}".format(exc), file=sys.stderr)

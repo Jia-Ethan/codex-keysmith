@@ -14,12 +14,6 @@ English version:
 Install the latest codex-keysmith Release. Only download assets from the GitHub Releases page, verify SHA256SUMS first, and never pipe curl into python. Run --version, --status, and --dry-run; report the target .codex directory, bundled-prompt source and SHA-256, global behavior scope, the MD/config/hooks/legacy/manifest plan, and backup paths. If status finds a durable journal, only preview --recover and wait for my confirmation before adding --yes. Start a new Codex session to verify after deployment. Do not delete any backup or transaction journal, and do not modify the Codex binary, network, running processes, or credentials.
 ```
 
-可选：部署 contract（不要并进上面的默认安装）
-
-```text
-在完成默认 unrestricted 安装之后，如需薄合同，用同一脚本预览 `--preset contract --dry-run`，确认目标是 gpt-contract.md 后再加 `--yes`。不要改默认安装步骤，不要替换已有 unrestricted 稿的字节。
-```
-
 可选：生成 fixture 工作区（不要并进上面的默认安装）
 
 ```text

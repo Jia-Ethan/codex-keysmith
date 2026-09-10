@@ -1,0 +1,93 @@
+{
+  "measured_at": "2026-09-08T17:20:00+08:00",
+  "phase": "0",
+  "environment": {
+    "model": "gpt-5.6-sol",
+    "gateway": "https://lgw.gru.ai/v1 (live arms) + mock anthropic upstream (wire arms)",
+    "codex": "codex-cli 0.144.6",
+    "live_arms": "isolated CODEX_HOME (/tmp/ks-phase0/{codex-home,direct-home,toolhome}); live home untouched",
+    "wire_arms": "in-process envelope + ThreadingHTTPServer mock upstream returning anthropic content-block replies"
+  },
+  "goal": "Reproduce and attribute the reported symptom: after installing keysmith, Codex stops calling tools.",
+  "arms": {
+    "A_direct_contract": {
+      "deployment": "model_instructions_file = ./gpt-unrestricted.md (v0.6.0 unrestricted preset), direct lgw gateway",
+      "probe_list_and_read": {
+        "result": "PASS",
+        "command_executions": 1,
+        "note": "single-turn ls+read task: contract did not suppress tools here"
+      },
+      "probe_edit_and_verify": {
+        "result": "PASS",
+        "tool_items": 3,
+        "items": "1 command_execution (read+run), 1 file_change (apply_patch), 1 command_execution (verify)",
+        "note": "multi-turn edit-verify loop intact under contract on this gateway/day"
+      }
+    },
+    "C_stock_baseline": {
+      "deployment": "no instructions file, direct lgw gateway",
+      "probe_list_and_read": {
+        "result": "PASS",
+        "command_executions": 1
+      },
+      "probe_edit_and_verify": {
+        "result": "PASS",
+        "tool_items": 2,
+        "items": "1 command_execution (apply_patch via shell), 1 command_execution (verify)"
+      }
+    },
+    "B_envelope_pre_fix": {
+      "deployment": "base_url -> http://127.0.0.1:8765/v1 (ks-envelope), mock anthropic upstream",
+      "probe_list_and_read": {
+        "result": "FAIL",
+        "symptom": "turn.failed after reconnect loop; codex stderr: 'Reconnecting... unexpected status 502 Bad Gateway: upstream reply has no choices'",
+        "root_cause_1": {
+          "finding": "translate_response only decoded chat.completion shape (choices[].message.tool_calls). An anthropic-shape reply (content blocks + tool_use + stop_reason) raised EnvelopeError 'upstream reply has no choices' and the tool call was dropped entirely.",
+          "fix": "shape-sniffing _extract_output: anthropic content-block decode first (text blocks join to message; tool_use blocks become custom_tool_call items; stop_reason tool_use/end_turn map to completed), chat.completion decode retained as fallback",
+          "tests": "tests/test_ks_envelope_tools.py::test_anthropic_tool_use_reply_decodes_to_custom_tool_call and 4 more unit tests"
+        }
+      },
+      "probe_tool_roundtrip_after_fix_1": {
+        "result": "FAIL",
+        "symptom": "infinite loop: 4400+ identical item.completed agent_message events; codex stderr repeated 'unsupported custom tool call: shell'",
+        "root_cause_2": {
+          "finding": "two compounding wire mismatches: (a) the mock's hardcoded tool name 'shell' was not in Codex's declared tool set (declared: exec/custom, wait/function, request_user_input/function, collaboration/namespace) - codex router rejects unknown custom tool names; (b) after a correctly-named tool call executed, Codex sent its result as a custom_tool_call_output item (NOT function_call_output), which translate_request dropped through to an empty user text message - the model never saw the tool result and re-emitted the same assistant message forever.",
+          "fix": "(a) confirmed wire contract by echoing the declared tool name from the translated anthropic tools array; (b) translate_request now maps item type custom_tool_call_output to a user tool_result block, and _tool_output_text decodes the list-of-input_text-blocks output shape",
+          "tests": "tests/test_ks_envelope_tools.py::test_custom_tool_call_output_becomes_tool_result, test_custom_tool_call_output_string_output, test_e2e_codex_shaped_round_trip"
+        }
+      }
+    },
+    "B_envelope_post_fix": {
+      "deployment": "same as B, patched ks-envelope.py",
+      "probe_list_and_read": {
+        "result": "PASS",
+        "wire_evidence": [
+          "r2-1.json: round 1 raw Responses request (additional_tools + developer/user messages)",
+          "r2-2.json: round 2 raw Responses request carrying custom_tool_call + custom_tool_call_output history",
+          "raw-1.json: stock tool declaration capture (4 tools: exec/wait/request_user_input/collaboration)"
+        ],
+        "outcome": "exit=0; two rounds: assistant message + custom_tool_call -> tool executed -> custom_tool_call_output -> tool_result -> final answer 'The first line is: alpha 1'; no loop, no reconnect"
+      },
+      "probe_tool_execution_e2e": {
+        "result": "PASS (after unwrap fix)",
+        "finding": "the phase-0 e2e \"round trip\" converged messages but never executed a command: item.completed held only agent_messages. Live-gateway capture (20 requests) showed every custom_tool_call output \"SyntaxError: Unexpected token :\". Root cause: _translate_tools declares input_schema {input: string}, so the upstream emits tool_use input {\"input\": \"<raw js>\"}; the return path passed the JSON envelope through as custom_tool_call.input, but Codex grammars expect RAW source (JS for exec). Fixed by _unwrap_tool_input on the anthropic decode path plus a JSON-envelope unwrap on the chat.completion emission path.",
+        "outcome": "exit=0; one real command_execution (ls + sed) through envelope -> live gateway; final answer correct; single round, no loop",
+        "fix_tests": "tests/test_ks_envelope_tools.py (unwrap assertions + plain-string passthrough test)"
+      }
+    }
+  },
+  "secondary_fixes": {
+    "max_tokens": "translate_request default max_tokens 4096 -> 16384 (tool-call turns carry full working output; 4096 truncates agentic sessions mid-call)",
+    "usage_normalization": "usage decode now accepts both prompt_tokens/completion_tokens (chat) and input_tokens/output_tokens (anthropic)"
+  },
+  "conclusions": [
+    "The reported 'Codex does not call tools after install' has two independent transport-layer causes when the envelope path is active, both now fixed and pinned by tests; the direct-deployment path did not reproduce tool suppression on this gateway/day (both probes passed under the v0.6.0 contract), so the dominant real-world failure was the envelope return path. A third compounding cause (JSON-envelope vs raw-grammar mismatch) was found in live e2e and fixed with _unwrap_tool_input.",
+    "Prompt-side tool-affirmation (Layer EXECUTE in the planned overlay preset) remains scheduled for Phase 1 as defense-in-depth; wire evidence shows Codex 0.144.6 declares its tools via additional_tools items and expects custom_tool_call/custom_tool_call_output round-trips.",
+    "SSE is completed-frame full replay; incremental streaming remains Phase 2 work. Codex tolerates full replay (both e2e and live mock runs converged with stream:true)."
+  ],
+  "test_suites": {
+    "tests/test_ks_envelope_tools.py": "13 tests (anthropic reply decode, custom_tool_call_output history, e2e mock round-trip)",
+    "tests/test_ks_envelope.py": "39 tests, all still passing (regression clean)",
+    "full suite": "1108 passed, 25 skipped, 1 env-conditional Windows skip"
+  }
+}

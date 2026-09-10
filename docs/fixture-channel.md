@@ -20,10 +20,9 @@ target-local 场景部署是三条分开的路径。
 
 | 场景 | 建议 |
 | --- | --- |
-| 日常问答 | 只 deploy 默认 `unrestricted` |
-| 只要薄合同 | `--preset contract` |
-| 只要环境通道 | 只 scaffold，全局 preset 可仍是 unrestricted |
-| 薄合同 + 环境通道 | `contract` + scaffold。这是文档中的推荐组合，不是新默认 |
+| 日常问答 | 只 deploy 默认 `overlay` |
+| 只要环境通道 | 只 scaffold，全局 preset 可仍是 overlay |
+| overlay + 环境通道 | 默认 overlay + scaffold。这是文档中的推荐组合，不是新默认 |
 
 ## 工作区
 

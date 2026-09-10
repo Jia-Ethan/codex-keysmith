@@ -314,6 +314,7 @@ def test_multi_directory_successful_deployment(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,

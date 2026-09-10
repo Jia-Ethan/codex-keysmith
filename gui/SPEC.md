@@ -16,7 +16,7 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | 技术栈 | **Tauri 2**（Rust 后端 + Web 前端） | 打包体积小（几 MB）、原生感强、界面现代化 |
 | 平台范围 | **macOS Apple Silicon + Windows x64** | 每个平台原生冻结 Python 与构建 Tauri bundle，不做跨平台交叉打包；本轮不提供 Intel Mac 包 |
 | 与 CLI 的关系 | **包装现有 CLI**（subprocess 调用），不重实现逻辑 | 复用已测试的部署/回滚/恢复逻辑，CLI 升级客户端不用跟着改 |
-| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页可选 preset；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；unsigned `desktop-v0.3.9-beta.1` 已发布 |
+| 本轮交付 | **指令层 M1–M5 + 场景库 + 双通道 GUI** | 部署页内置稿固定 overlay；夹具页只调用 CLI scaffold；sidecar 内嵌 `fixture_packs/`；unsigned `desktop-v0.3.9-beta.1` 已发布 |
 
 ## 3. 总体架构
 
@@ -73,9 +73,9 @@ CLI 对熟练用户很好用，但对小白（issue #10 的目标用户）门槛
 | `--status` | 只读查看 config/提示词/hooks/事务残留状态 | Dashboard 主数据源 |
 | `--dry-run` | 部署预览，不实际修改 | Deploy 向导第 2 步 |
 | `--yes` | 确认执行（部署/重新激活/卸载/恢复） | 用户点确认后追加 |
-| `--preset unrestricted\|contract` | 选择内置提示词 | Deploy 向导「内置稿」；本地文件模式不传 |
+| `--preset overlay` | 唯一内置提示词 | Deploy 向导「内置稿」固定 overlay；本地文件模式不传 |
 | `--file <path>` | 外部 MD 文件 | Deploy 向导「选择文件」 |
-| `--name <name>` | MD 文件名（不含 .md，默认 `gpt-unrestricted`） | Deploy 向导「自定义名称」 |
+| `--name <name>` | MD 文件名（不含 .md，默认 `gpt-overlay`） | Deploy 向导「自定义名称」 |
 | `--codex-dir <path>` | 手动指定 .codex 目录 | Settings / 多目录场景 |
 | `--uninstall` | 按 manifest 分层卸载 | Manage 页 |
 | `--reactivate` | 仅补回 inactive-by-config 缺失的配置引用 | Manage 页 |
@@ -346,7 +346,7 @@ async fn cli_runtime(cli_path: Option<String>) -> Result<String, String>;
 | **M4 打包基础** ✅ | PyInstaller sidecar、统一图标、macOS app/dmg 配置 | 安装包内置冻结 CLI，不依赖系统 Python；签名/公证/Release CI 单独验收 |
 | **M5 Windows x64 打包基础** ✅ | 原生 sidecar + current-user NSIS + WebView2 bootstrapper | 可在 Windows x64 原生环境产出 `.exe`；CI 安装后验证配置/运行目录隔离、活动 sidecar 期间排队关闭、单实例交接、原生空闲关闭及无 GUI/sidecar 残留；正式发布前仍需 Authenticode 与实体设备验收 |
 | **场景 M4 场景库页** ✅ | 列表、详情、显式 `--target-dir`、preview 门禁、status、uninstall、recovery | GUI 只调用 CLI 场景命令；预览绑定规范目标与场景/部署标识，选择变化后失效；状态与写结果保留 blocker、stdout/stderr，并在每次写操作后刷新；进入 `desktop-v0.3.5-beta.1` |
-| **Desktop 双通道与夹具页** ✅ | Deploy 双 preset、本地文件模式、Fixtures 列表/预览/写入/删除、sidecar 内嵌 fixture packs | GUI 只调用既有 CLI；部署参数互斥；夹具预览绑定 pack/目录/force 并明确未修改 `~/.codex`；当前发布版为 `desktop-v0.3.9-beta.1` |
+| **Desktop 双通道与夹具页** ✅ | Deploy 内置稿固定 overlay、本地文件模式、Fixtures 列表/预览/写入/删除、sidecar 内嵌 fixture packs | GUI 只调用既有 CLI；部署参数互斥；夹具预览绑定 pack/目录/force 并明确未修改 `~/.codex`；当前发布版为 `desktop-v0.3.9-beta.1` |
 
 ## 10. 交接说明（给接手 Agent）
 
