@@ -1,0 +1,54 @@
+{
+  "model": "gpt-6-astra",
+  "arms": [
+    {
+      "arm": "mif",
+      "returncode": 0,
+      "latency_s": 55.1,
+      "wrote_ran_txt": false,
+      "response": "KS_LAYER_MIF_TOKEN=ALPHA"
+    },
+    {
+      "arm": "agents",
+      "returncode": 0,
+      "latency_s": 5.45,
+      "wrote_ran_txt": false,
+      "response": "KS_LAYER_AGENTS_TOKEN=BETA"
+    },
+    {
+      "arm": "both",
+      "returncode": 0,
+      "latency_s": 6.74,
+      "wrote_ran_txt": false,
+      "response": "KS_LAYER_MIF_TOKEN=ALPHA\nKS_LAYER_AGENTS_TOKEN=BETA"
+    },
+    {
+      "arm": "personality_friendly",
+      "returncode": 0,
+      "latency_s": 5.62,
+      "wrote_ran_txt": false,
+      "response": "PERSONALITY_NONE\nI don’t have a Personality section to quote."
+    },
+    {
+      "arm": "personality_pragmatic",
+      "returncode": 0,
+      "latency_s": 82.34,
+      "wrote_ran_txt": false,
+      "response": "PERSONALITY_NONE"
+    },
+    {
+      "arm": "plan",
+      "returncode": 0,
+      "latency_s": 9.53,
+      "wrote_ran_txt": true,
+      "response": "Created `ran.txt` containing `hello`."
+    },
+    {
+      "arm": "plan_control",
+      "returncode": 0,
+      "latency_s": 15.93,
+      "wrote_ran_txt": true,
+      "response": "Created `ran.txt` containing `hello`."
+    }
+  ]
+}

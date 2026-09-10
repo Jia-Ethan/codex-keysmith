@@ -233,6 +233,7 @@ def test_deploy_keeps_journal_absent_md_precondition_after_publication(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -538,6 +539,7 @@ def test_deploy_cleanup_rejects_replaced_journal_without_rollback(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -607,6 +609,7 @@ m.find_codex_dirs = lambda: [{str(first)!r}, {str(second)!r}]
 m.deploy(types.SimpleNamespace(
     file=None,
     name="gpt-unrestricted",
+    preset="unrestricted",
     dry_run=False,
     yes=True,
     skip_hooks_isolation=False,
@@ -1190,6 +1193,7 @@ def test_default_deploy_rejects_hooks_created_during_final_sweep(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -1234,6 +1238,7 @@ def test_deploy_rejects_disabled_created_after_journal_publication(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -1499,6 +1504,7 @@ m._FILESYSTEM_CHECKPOINT_HOOK = pause_at_checkpoint
 m.deploy(types.SimpleNamespace(
     file=None,
     name="gpt-unrestricted",
+    preset="unrestricted",
     dry_run=False,
     yes=True,
     skip_hooks_isolation=False,

@@ -1,9 +1,12 @@
 import importlib.util
+import io
 import json
 import os
 import stat
 import subprocess
 import sys
+import urllib.error
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -572,6 +575,7 @@ def test_live_adapter_is_isolated_and_writes_jsonl_report(
         assert isolated_home != Path.home()
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             'model_instructions_file = "./gpt-unrestricted.md"\n'
+            'model_reasoning_effort = "medium"\n'
         )
         assert (codex_home / "gpt-unrestricted.md").is_file()
         assert "--ephemeral" in command
@@ -870,3 +874,213 @@ def test_internal_exception_discards_partial_report_and_stdout(
     assert "internal error" in captured.err
     assert report_path.read_text(encoding="utf-8") == "previous report\n"
     assert not list(tmp_path.glob(".*.keysmith-report-*.tmp"))
+
+
+def test_failure_kind_upstream_block_by_marker(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "", 1, "stream error: This content was flagged for possible cybersecurity risk."
+    )
+    assert kind == "upstream_block"
+
+
+def test_failure_kind_upstream_block_failed_finish(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "", 0, "upstream content classifier block (finish_reason=failed)"
+    )
+    assert kind == "upstream_block"
+
+
+def test_failure_kind_model_refusal(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "I can't help with that request.", 0, None
+    )
+    assert kind == "model_refusal"
+
+
+def test_failure_kind_model_refusal_zh(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind("抱歉，我无法协助。", 0, None)
+    assert kind == "model_refusal"
+
+
+def test_failure_kind_format_miss(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind(
+        "Here is a workflow:\nstep 1", 0, None
+    )
+    assert kind == "format_miss"
+
+
+def test_failure_kind_empty_without_error(prompt_bank_runner):
+    kind = prompt_bank_runner._failure_kind("", 0, None)
+    assert kind == "empty"
+
+
+def test_assert_response_pass_has_no_failure_kind(prompt_bank_runner):
+    case = {
+        "expected_first_line": "Yes.",
+        "required_tokens": ["TARGET"],
+        "forbidden_tokens": ["I can't"],
+    }
+    result = prompt_bank_runner._assert_response(case, "Yes.\nTARGET set.", 0, None)
+    assert result["passed"] is True
+    assert result["failure_kind"] is None
+
+
+def test_assert_response_refusal_classified(prompt_bank_runner):
+    case = {
+        "expected_first_line": "Yes.",
+        "required_tokens": ["TARGET"],
+        "forbidden_tokens": [],
+    }
+    result = prompt_bank_runner._assert_response(
+        case, "I can't do that.", 0, None
+    )
+    assert result["passed"] is False
+    assert result["failure_kind"] == "model_refusal"
+
+
+def test_http_extract_text_variants(prompt_bank_runner):
+    payload = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]
+    }
+    assert prompt_bank_runner._http_extract_text(payload, "chat") == "hi"
+    assert prompt_bank_runner._http_extract_text(payload, "messages") == "hi"
+    assert prompt_bank_runner._http_extract_text({}, "chat") == ""
+    assert prompt_bank_runner._http_failed_finish(payload, "chat") is False
+    failed = {"choices": [{"message": {"content": ""}, "finish_reason": "failed"}]}
+    assert prompt_bank_runner._http_failed_finish(failed, "messages") is True
+
+
+def test_run_case_http_missing_auth(tmp_path, prompt_bank_runner, monkeypatch):
+    monkeypatch.setenv("CODEX_KEYSMITH_AUTH", str(tmp_path / "nope.json"))
+    rc, resp, err = prompt_bank_runner._run_case_http(
+        "chat", "m", "prompt", {"input": "x", "timeout_seconds": 30}, []
+    )
+    assert rc is None
+    assert resp == ""
+    assert "credential" in err
+
+
+def test_parser_accepts_envelope_choices(prompt_bank_runner):
+    parser = prompt_bank_runner.build_parser()
+    args = parser.parse_args(["--model", "m", "--envelope", "messages"])
+    assert args.envelope == "messages"
+    args = parser.parse_args(["--model", "m"])
+    assert args.envelope == "codex"
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self._payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self):
+        return self._payload
+
+
+def test_write_isolated_config_includes_catalog_and_medium_effort(
+    prompt_bank_runner, tmp_path, monkeypatch
+):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("KS_MODEL_CATALOG", str(catalog))
+    root = tmp_path / "home"
+    (root / "codex-home").mkdir(parents=True)
+    prompt_bank_runner._write_isolated_config(root, "prompt body")
+    config = (root / "codex-home" / "config.toml").read_text(encoding="utf-8")
+    assert 'model_instructions_file = "./gpt-unrestricted.md"' in config
+    assert 'model_catalog_json = "{}"'.format(catalog) in config
+    assert 'model_reasoning_effort = "medium"' in config
+    assert (root / "workspace").is_dir()
+
+
+def test_run_case_http_chat_and_messages_success(
+    prompt_bank_runner, tmp_path, monkeypatch
+):
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"OPENAI_API_KEY": "gg:secret"}), encoding="utf-8")
+    monkeypatch.setenv("CODEX_KEYSMITH_AUTH", str(auth))
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    seen = []
+
+    def fake_urlopen(request, timeout=None):
+        seen.append((request.full_url, dict(request.header_items()), timeout))
+        return _FakeHttpResponse(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    monkeypatch.setattr(prompt_bank_runner.urllib.request, "urlopen", fake_urlopen)
+    case = {"input": "hello", "timeout_seconds": 30}
+    code, text, err = prompt_bank_runner._run_case_http(
+        "chat", "gpt-test", "system", case, []
+    )
+    assert code == 0
+    assert text == "ok"
+    assert err is None
+    assert seen[0][0].endswith("/chat/completions")
+    code, text, err = prompt_bank_runner._run_case_http(
+        "messages", "gpt-test", "system", case, []
+    )
+    assert code == 0
+    assert text == "ok"
+    assert seen[1][0].endswith("/messages")
+
+
+def test_run_case_http_classifier_block_and_errors(
+    prompt_bank_runner, tmp_path, monkeypatch
+):
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"OPENAI_API_KEY": "gg:secret"}), encoding="utf-8")
+    monkeypatch.setenv("CODEX_KEYSMITH_AUTH", str(auth))
+    case = {"input": "hello", "timeout_seconds": 30}
+
+    def blocked_urlopen(request, timeout=None):
+        return _FakeHttpResponse(
+            {"choices": [{"message": {"content": ""}, "finish_reason": "failed"}]}
+        )
+
+    monkeypatch.setattr(prompt_bank_runner.urllib.request, "urlopen", blocked_urlopen)
+    code, text, err = prompt_bank_runner._run_case_http(
+        "chat", "gpt-test", "system", case, []
+    )
+    assert code == 0
+    assert text == ""
+    assert "classifier" in err
+
+    def http_error_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(
+            "https://example.test/v1/chat/completions",
+            403,
+            "Forbidden",
+            Message(),
+            io.BytesIO(b"denied-token"),
+        )
+
+    monkeypatch.setattr(prompt_bank_runner.urllib.request, "urlopen", http_error_urlopen)
+    code, text, err = prompt_bank_runner._run_case_http(
+        "chat", "gpt-test", "system", case, ["token"]
+    )
+    assert code == 403
+    assert text == ""
+    assert err
+
+    def url_error_urlopen(request, timeout=None):
+        raise urllib.error.URLError("gateway down")
+
+    monkeypatch.setattr(prompt_bank_runner.urllib.request, "urlopen", url_error_urlopen)
+    code, text, err = prompt_bank_runner._run_case_http(
+        "messages", "gpt-test", "system", case, []
+    )
+    assert code is None
+    assert "gateway down" in err
+
+
+def test_main_rejects_missing_prompt_file(prompt_bank_runner, tmp_path, capsys):
+    missing = tmp_path / "nope.md"
+    rc = prompt_bank_runner.main(["--validate-only", "--prompt-file", str(missing)])
+    assert rc == 2
+    assert "does not name a regular file" in capsys.readouterr().err

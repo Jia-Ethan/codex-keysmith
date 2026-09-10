@@ -44,7 +44,14 @@ def _run(*args, check=False):
 
 
 def _deploy(codex_dir):
-    return _run("--codex-dir", codex_dir, "--yes", check=True)
+    return _run(
+        "--codex-dir",
+        codex_dir,
+        "--preset",
+        "unrestricted",
+        "--yes",
+        check=True,
+    )
 
 
 def _snapshot_files(codex_dir):
@@ -222,20 +229,20 @@ def test_output_stream_configuration_is_best_effort(monkeypatch):
 def test_dry_run_discloses_prompt_source_hash_and_global_behavior(tmp_path):
     codex_dir = _make_codex_dir(tmp_path)
     expected_hash = hashlib.sha256(
-        codex_instruct.BUILTIN_GPT_UNRESTRICTED_MD.encode("utf-8")
+        codex_instruct.BUILTIN_GPT_OVERLAY_MD.encode("utf-8")
     ).hexdigest()
 
     english = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "en")
     chinese = _run("--codex-dir", codex_dir, "--dry-run", "--lang", "zh-CN")
 
     assert english.returncode == 0
-    assert "[Prompt] Source: bundled examples/gpt-unrestricted.md" in english.stdout
+    assert "[Prompt] Source: bundled examples/gpt-overlay.md" in english.stdout
     assert expected_hash in english.stdout
     assert "[Behavior notice]" in english.stdout
     assert "global model_instructions_file" in english.stdout
     assert re.search(r"[\u3400-\u9fff]", english.stdout) is None
     assert chinese.returncode == 0
-    assert "[提示词] 来源: 内置 examples/gpt-unrestricted.md" in chinese.stdout
+    assert "[提示词] 来源: 内置 examples/gpt-overlay.md" in chinese.stdout
     assert "[显著行为]" in chinese.stdout
 
 
@@ -1613,6 +1620,8 @@ def test_uninstall_preserves_explicitly_skipped_hooks(tmp_path):
     deployed = _run(
         "--codex-dir",
         codex_dir,
+        "--preset",
+        "unrestricted",
         "--skip-hooks-isolation",
         "--yes",
     )

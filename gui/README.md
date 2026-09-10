@@ -68,7 +68,7 @@ cargo check --manifest-path src-tauri/Cargo.toml --locked
 ## 功能
 
 - **状态总览**：CLI 版本、运行时类型、激活状态、hooks/事务残留、结构健康和 manifest 详情；完整的非零状态报告继续显示目录卡片，并保留退出码、stderr 与完整 CLI 输出。
-- **部署向导**：内置稿可选 unrestricted / contract preset，本地文件模式不传 `--preset`；dry-run 预览后再确认执行，非零退出、超时、空输出和阻塞项全部阻断。
+- **部署向导**：内置稿只有 overlay；本地文件模式不传 `--preset`；dry-run 预览后再确认执行，非零退出、超时、空输出和阻塞项全部阻断。
 - **场景库**：列出 sidecar/源码场景包，选择显式目标目录后预览部署、查看 status、按 `deployment_id` 卸载、恢复中断事务。预览绑定当时的规范目标与场景/部署标识，选择变化后立即失效；写操作无论成功、失败或超时都会保留 stdout/stderr 并刷新目标状态。GUI 不写 `<target>/.codex-keysmith/`。
 - **夹具工作区**：从 sidecar/源码列出并预览四个 fixture pack，在独立工作区写入或删除；预览绑定 pack、目录和覆盖选项，结果明确显示未修改 `~/.codex`。GUI 只调用 CLI scaffold 命令。
 - **管理**：恢复配置引用（`--reactivate`，仅 inactive-by-config）、卸载、恢复 hooks、恢复中断事务，全部要求先预览再确认。

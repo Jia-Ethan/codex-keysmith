@@ -17,8 +17,8 @@ from scripts import package_desktop_prerelease as desktop_prerelease
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = REPO_ROOT / "scripts" / "build_release.py"
-TAG = "v0.5.1"
-VERSION = "0.5.1"
+TAG = "v0.6.0"
+VERSION = "0.6.0"
 REQUIRED_ARCHIVE_FILES = {
     "CHANGELOG.md",
     "CODE_SIGNING_POLICY.md",
@@ -36,11 +36,16 @@ REQUIRED_ARCHIVE_FILES = {
     "docs/reference.md",
     "docs/v0.3-scenario-deployment-design.md",
     "docs/fixture-channel.md",
-    "docs/releases/v0.5.1.md",
+    "docs/envelope.md",
+    "docs/releases/v0.6.0.md",
     "examples/gpt-unrestricted.md",
     "examples/gpt-contract.md",
     "examples/gpt-persona-contract.md",
     "examples/gpt-lean.md",
+    "examples/gpt-astra.md",
+    "examples/gpt-overlay.md",
+    "scripts/run_prompt_bank_regression.py",
+    "scripts/ks-envelope.py",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",
@@ -127,7 +132,7 @@ REQUIRED_SCENARIO_FILES = {
 }
 FIXTURE_GUI_FILES = {
     "gui/README.md": b"# GUI fixture\n",
-    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.5.1"}\n',
+    "gui/package.json": b'{"name":"codex-keysmith-gui","version":"0.6.0"}\n',
     "gui/scripts/build-sidecar.mjs": b"#!/usr/bin/env node\n",
     "gui/src-tauri/icons/Square44x44Logo.png": b"fixture PNG\n",
     "gui/src-tauri/icons/icon.ico": b"fixture ICO\n",
@@ -141,7 +146,7 @@ WINDOWS_POLICY_FILES = (
     "SECURITY.md",
     "docs/hooks-transactions.md",
     "docs/reference.md",
-    "docs/releases/v0.5.1.md",
+    "docs/releases/v0.6.0.md",
 )
 
 
@@ -240,9 +245,9 @@ def test_repository_version_metadata_is_release_state_neutral():
 
     assert version == VERSION
     assert '__version__ = "{}"'.format(VERSION) in script
-    assert "## [{}] - 2026-09-05".format(VERSION) in changelog
-    assert "Source version v0.5.1" in readme
-    assert "Source version v0.5.1" in english_readme
+    assert "## [{}] - 2026-09-07".format(VERSION) in changelog
+    assert "Source version v0.6.0" in readme
+    assert "Source version v0.6.0" in english_readme
     assert "v0.3.7 local candidate" not in readme
     assert "This candidate has no tag" not in readme
     for quick_start in (readme, english_readme):
