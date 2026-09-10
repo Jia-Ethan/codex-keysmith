@@ -52,6 +52,7 @@ REQUIRED_ARCHIVE_FILES = {
     "examples/gpt-overlay.md",
     "scripts/run_prompt_bank_regression.py",
     "scripts/ks-envelope.py",
+    "scripts/ks-envelope-deploy.py",
     "scripts/run_scenario_bank.py",
     "gui/README.md",
     "gui/package.json",

@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -42,6 +44,10 @@ LAUNCH_AGENT_LABEL = "com.jia.codex-keysmith.envelope"
 DEFAULT_PORT = 8091
 DEFAULT_UPSTREAM = "https://lgw.gru.ai/v1"
 SCRIPT_DIR = Path(__file__).resolve().parent
+RUNTIME_SCRIPT_NAME = ".codex-keysmith-channel.py"
+RUNTIME_PID_NAME = ".codex-keysmith-channel.pid"
+HELPER_SCRIPT_NAME = "ks-envelope.py"
+PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 
 ProviderConflict = build_error = ValueError  # alias for readability below
 
@@ -259,9 +265,235 @@ def probe_health(port: int) -> bool:
         return False
 
 
-# --- LaunchAgent ----------------------------------------------------------------
+def _python_for_helper() -> str:
+    if getattr(sys, "frozen", False):
+        return shutil.which("python3") or shutil.which("python") or "/usr/bin/python3"
+    return sys.executable or "/usr/bin/python3"
 
-PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+def resolve_helper_script() -> Optional[Path]:
+    roots: List[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass) / "scripts")
+            roots.append(Path(meipass))
+        roots.append(Path(sys.executable).resolve().parent / "scripts")
+        roots.append(Path(sys.executable).resolve().parent)
+    roots.append(SCRIPT_DIR)
+    roots.append(SCRIPT_DIR.parent)
+    for root in roots:
+        candidate = root / HELPER_SCRIPT_NAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def copy_runtime_script(codex_home: Path) -> Path:
+    src = resolve_helper_script()
+    if src is None:
+        raise DeployError("runtime helper is missing")
+    dest = codex_home / RUNTIME_SCRIPT_NAME
+    data = src.read_bytes()
+    if not dest.is_file() or dest.read_bytes() != data:
+        dest.write_bytes(data)
+        dest.chmod(0o700)
+    return dest
+
+
+def _spawn_helper(
+    script: Path,
+    port: int,
+    upstream: str,
+    auth_file: Optional[Path],
+    log_dir: Path,
+) -> Optional[int]:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    argv = [
+        _python_for_helper(),
+        str(script),
+        "--port",
+        str(port),
+        "--upstream",
+        upstream,
+    ]
+    if auth_file is not None:
+        argv.extend(["--auth-file", str(auth_file)])
+    out = (log_dir / "ks-envelope.out.log").open("ab")
+    err = (log_dir / "ks-envelope.err.log").open("ab")
+    kwargs: Dict[str, Any] = {
+        "stdout": out,
+        "stderr": err,
+        "cwd": str(script.parent),
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(argv, **kwargs)
+    finally:
+        out.close()
+        err.close()
+    return proc.pid
+
+
+def ensure_listener(
+    port: int,
+    upstream: str,
+    script: Path,
+    auth_file: Optional[Path],
+    log_dir: Path,
+) -> bool:
+    if os.environ.get("KEYSMITH_CHANNEL_SKIP_LISTEN") == "1":
+        return True
+    if probe_health(port):
+        return True
+    if sys.platform == "darwin":
+        try:
+            _install_launch_agent(port, upstream, script, auth_file, log_dir)
+        except Exception:
+            pass
+        time.sleep(0.5)
+        if probe_health(port):
+            return True
+    pid = _spawn_helper(script, port, upstream, auth_file, log_dir)
+    if pid:
+        pid_path = script.parent / RUNTIME_PID_NAME
+        pid_path.write_text(str(pid) + "\n", encoding="utf-8")
+        pid_path.chmod(0o600)
+    time.sleep(0.5)
+    return probe_health(port)
+
+
+def _stop_spawned_helper(codex_home: Path) -> None:
+    pid_path = codex_home / RUNTIME_PID_NAME
+    if not pid_path.is_file():
+        return
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pid_path.unlink(missing_ok=True)
+        return
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        pass
+    try:
+        pid_path.unlink()
+    except OSError:
+        pass
+
+
+def restore_provider_url(codex_home: Path) -> None:
+    config = codex_home / "config.toml"
+    manifest = read_manifest(codex_home)
+    if manifest is None or not config.is_file():
+        return
+    provider = manifest.get("provider")
+    original = manifest.get("original_base_url")
+    if not provider or not original:
+        return
+    lines = load_config_lines(config)
+    hit = find_provider_base_url(lines, provider)
+    if hit is None:
+        return
+    if hit[1] != original:
+        backup_config(config)
+        save_config_lines(config, set_provider_base_url(lines, provider, original))
+    try:
+        (codex_home / MANIFEST_NAME).unlink()
+    except OSError:
+        pass
+
+
+def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
+    """Point the active provider at the loopback helper if a base_url exists.
+
+    Returns True when the helper is listening. Missing provider tables are a
+    no-op so ChatGPT-login homes keep working. Listener failure rolls the
+    base_url back so Codex is not left pointing at a dead loopback.
+    """
+    codex_home = Path(codex_home)
+    config = codex_home / "config.toml"
+    if not config.is_file():
+        return False
+    lines = load_config_lines(config)
+    provider = find_active_provider(lines)
+    if not provider:
+        return False
+    hit = find_provider_base_url(lines, provider)
+    if hit is None:
+        return False
+    _, current_url = hit
+    envelope_url = f"http://127.0.0.1:{port}/v1"
+    manifest = read_manifest(codex_home)
+    already = current_url.startswith("http://127.0.0.1:")
+    if already:
+        upstream = str((manifest or {}).get("original_base_url") or DEFAULT_UPSTREAM)
+        original_url = upstream
+    else:
+        upstream = current_url
+        original_url = current_url
+    try:
+        script = copy_runtime_script(codex_home)
+    except (OSError, DeployError):
+        return False
+    auth_candidate = codex_home / "auth.json"
+    auth_file = auth_candidate if auth_candidate.is_file() else None
+    log_dir = Path.home() / ".codex" / "logs"
+    if not already:
+        bak = backup_config(config)
+        save_config_lines(
+            config, set_provider_base_url(list(lines), provider, envelope_url)
+        )
+        write_manifest(
+            codex_home,
+            {
+                "schema": 1,
+                "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "provider": provider,
+                "original_base_url": original_url,
+                "envelope_base_url": envelope_url,
+                "port": port,
+                "overlay": None,
+                "config_backup": str(bak),
+            },
+        )
+    if ensure_listener(port, upstream, script, auth_file, log_dir):
+        return True
+    if not already:
+        restore_provider_url(codex_home)
+    return False
+
+
+def _launch_agent_points_at(codex_home: Path) -> bool:
+    if not PLIST_PATH.is_file():
+        return False
+    try:
+        text = PLIST_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return str(codex_home / RUNTIME_SCRIPT_NAME) in text
+
+
+def sync_on_uninstall(codex_home: Path) -> None:
+    codex_home = Path(codex_home)
+    restore_provider_url(codex_home)
+    _stop_spawned_helper(codex_home)
+    if sys.platform == "darwin" and _launch_agent_points_at(codex_home):
+        subprocess.run(["launchctl", "unload", str(PLIST_PATH)], check=False)
+        try:
+            PLIST_PATH.unlink()
+        except OSError:
+            pass
+
+
+# --- LaunchAgent ----------------------------------------------------------------
 
 PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -276,7 +508,7 @@ PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <string>--port</string>
     <string>{port}</string>
     <string>--upstream</string>
-    <string>{upstream}</string>{overlay_args}
+    <string>{upstream}</string>{extra_args}
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -291,23 +523,63 @@ PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def agent_plist(port: int, upstream: str, overlay: Optional[Path]) -> str:
-    overlay_args = ""
+def agent_plist(
+    port: int,
+    upstream: str,
+    overlay: Optional[Path],
+    script: Optional[Path] = None,
+    auth_file: Optional[Path] = None,
+    python: Optional[str] = None,
+    log_dir: Optional[Path] = None,
+) -> str:
+    extra_args = ""
     if overlay is not None:
-        overlay_args = (
+        extra_args += (
             f"\n    <string>--overlay-file</string>"
             f"\n    <string>{overlay}</string>"
         )
-    log_dir = Path.home() / ".codex" / "logs"
+    if auth_file is not None:
+        extra_args += (
+            f"\n    <string>--auth-file</string>"
+            f"\n    <string>{auth_file}</string>"
+        )
+    if log_dir is None:
+        log_dir = Path.home() / ".codex" / "logs"
     return PLIST_TEMPLATE.format(
         label=LAUNCH_AGENT_LABEL,
-        python=sys.executable or "/usr/bin/python3",
-        envelope_script=SCRIPT_DIR / "ks-envelope.py",
+        python=python or sys.executable or "/usr/bin/python3",
+        envelope_script=script or (SCRIPT_DIR / HELPER_SCRIPT_NAME),
         port=port,
         upstream=upstream,
-        overlay_args=overlay_args,
+        extra_args=extra_args,
         log_dir=log_dir,
     )
+
+
+def _install_launch_agent(
+    port: int,
+    upstream: str,
+    script: Path,
+    auth_file: Optional[Path],
+    log_dir: Path,
+) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if PLIST_PATH.is_file():
+        subprocess.run(["launchctl", "unload", str(PLIST_PATH)], check=False)
+    PLIST_PATH.write_text(
+        agent_plist(
+            port,
+            upstream,
+            overlay=None,
+            script=script,
+            auth_file=auth_file,
+            python=_python_for_helper(),
+            log_dir=log_dir,
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(["launchctl", "load", str(PLIST_PATH)], check=False)
 
 
 def cmd_agent(args: argparse.Namespace) -> int:

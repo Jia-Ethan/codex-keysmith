@@ -6,6 +6,7 @@ manifest with the original URL, refuses double-deploy, and restore puts
 the original base_url back exactly.
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -168,5 +169,68 @@ def test_backup_created_on_deploy():
         baks = list(sb.home.glob("config.toml.bak_*_envelope"))
         assert len(baks) == 1
         assert baks[0].read_text() == FIXTURE
+    finally:
+        sb.cleanup()
+
+
+def _load_deploy_module():
+    spec = importlib.util.spec_from_file_location(
+        "ks_envelope_deploy_under_test", DEPLOY_SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sync_on_deploy_skips_homes_without_provider():
+    sb = Sandbox(fixture='model = "gpt-5.6"\n')
+    helper = _load_deploy_module()
+    try:
+        assert helper.sync_on_deploy(sb.home) is False
+        assert sb.config() == 'model = "gpt-5.6"\n'
+        assert sb.manifest() is None
+    finally:
+        sb.cleanup()
+
+
+def test_sync_on_deploy_rewrites_when_listener_ok(monkeypatch):
+    sb = Sandbox()
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "ensure_listener", lambda *args, **kwargs: True)
+    try:
+        assert helper.sync_on_deploy(sb.home, port=8099) is True
+        cfg = sb.config()
+        assert 'base_url = "http://127.0.0.1:8099/v1"' in cfg
+        assert "wire_api" in cfg
+        m = sb.manifest()
+        assert m["original_base_url"] == "https://lgw.gru.ai/v1"
+        assert m["port"] == 8099
+        assert (sb.home / helper.RUNTIME_SCRIPT_NAME).is_file()
+    finally:
+        sb.cleanup()
+
+
+def test_sync_on_deploy_restores_when_listener_fails(monkeypatch):
+    sb = Sandbox()
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "ensure_listener", lambda *args, **kwargs: False)
+    try:
+        assert helper.sync_on_deploy(sb.home, port=8099) is False
+        assert 'base_url = "https://lgw.gru.ai/v1"' in sb.config()
+        assert sb.manifest() is None
+    finally:
+        sb.cleanup()
+
+
+def test_sync_on_uninstall_restores_original_url(monkeypatch):
+    sb = Sandbox()
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "ensure_listener", lambda *args, **kwargs: True)
+    try:
+        assert helper.sync_on_deploy(sb.home, port=8099) is True
+        helper.sync_on_uninstall(sb.home)
+        assert 'base_url = "https://lgw.gru.ai/v1"' in sb.config()
+        assert sb.manifest() is None
     finally:
         sb.cleanup()
