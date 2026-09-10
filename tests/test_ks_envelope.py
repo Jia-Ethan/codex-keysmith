@@ -3,7 +3,7 @@ import json
 import sys
 import threading
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -283,13 +283,6 @@ def _servers(tmp_path_factory):
     upstream = HTTPServer(("127.0.0.1", 0), _MockUpstream)
     upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     upstream_thread.start()
-
-    # adapter on an ephemeral port
-    import subprocess, time as _time
-
-    adapter_port = 0
-    # run the adapter in-process on an ephemeral port
-    from http.server import ThreadingHTTPServer
 
     handler = type(
         "Bound",

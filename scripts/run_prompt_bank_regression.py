@@ -15,13 +15,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple
-import urllib.error
-import urllib.request
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 try:
