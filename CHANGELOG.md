@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- README 改成产品说明首页（hero、使用方式）。默认 overlay 稿同步更新。
 - Isolated prompt-bank `CODEX_HOME` now writes `model_reasoning_effort = "medium"` (the v0.5.0 finding that `max` flips hard cells to refusal). Optional `KS_MODEL_CATALOG` is copied into that isolated config so gpt-6-astra loads real model metadata instead of the CLI fallback.
 - Default install now exposes **one** bundled prompt: overlay (`examples/gpt-overlay.md`, SHA-256 `1762798a5eaba119…`, 4304 bytes). CLI `--preset` default, GUI Deploy, README, and agent-install no longer present unrestricted / contract / persona-contract / lean / astra as equal install choices. Those names remain valid `--preset` values for existing deployments and `--status` classification. Overlay bytes are unchanged. Envelope append remains an advanced path in [`docs/envelope.md`](docs/envelope.md), not a second default install prompt.
 

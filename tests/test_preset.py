@@ -22,7 +22,7 @@ EXPECTED_ASTRA_SHA256 = (
     "72063cc35a592ad2663a41199855350efa86708cd72108d896ef5968b0097cc8"
 )
 EXPECTED_OVERLAY_SHA256 = (
-    "1762798a5eaba1190dc1f36daed3f77ae18f57e586d54e1da341ddacbec08131"
+    "bac3307834c25e2861fbe746ce44b8d8e7186197c4fbee803fc91bb42007fffb"
 )
 spec = importlib.util.spec_from_file_location("codex_instruct_preset", MODULE_PATH)
 codex_instruct = importlib.util.module_from_spec(spec)
