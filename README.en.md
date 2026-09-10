@@ -12,6 +12,7 @@
 <p>
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/Jia-Ethan/codex-keysmith/stargazers"><img src="https://img.shields.io/github/stars/Jia-Ethan/codex-keysmith?style=flat-square&color=%232f81f7" alt="GitHub Stars" /></a>
+  <img alt="Source version v0.6.0" src="https://img.shields.io/badge/source-v0.6.0-0099CC">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/license-MIT-6DB33F?style=flat-square" alt="MIT License" />
 </p>
@@ -62,33 +63,50 @@ Keysmith installs instructions onto local AI coding tools: preview, apply, verif
 | [Grok Build](https://github.com/Jia-Ethan/grok-keysmith) | grok-keysmith | Stable package |
 | [ZCode](https://github.com/Jia-Ethan/zcode-keysmith) | zcode-keysmith | Source |
 
-One installer per tool. An unsigned desktop build is also available.
+One installer per tool. An unsigned desktop build is also available for Apple Silicon and Windows x64.
 
 ## Get started
 
-Codex must already be installed. Prefer the stable script from [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases/latest); the source path is:
+Codex must already be installed. The conservative path is the single-file script from the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) (published scripts include `codex-instruct-v0.5.1.py`). An unsigned desktop build is also available.
 
 ```bash
-git clone https://github.com/Jia-Ethan/codex-keysmith.git
-cd codex-keysmith
-python3 codex-instruct.py --dry-run
-python3 codex-instruct.py --yes
+# replace vX.Y.Z with the latest stable tag on the Releases page
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
+
+python3 codex-instruct-vX.Y.Z.py --version
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang zh-CN
+# confirm the target directory, prompt source, and write plan, then:
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
-Then close old tasks and open a new Codex session. You can also hand the [agent-install notes](docs/agent-install.md) to an AI assistant. Details live in the [guide](docs/reference.md).
+From source: `git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`, then use `codex-instruct.py`. Close old tasks and open a new Codex session. On Windows, use `python` instead of `python3`. You can also hand the [agent-install notes](docs/agent-install.md) to an AI assistant. Details live in the [guide](docs/reference.md).
 
 ## Undo
 
+The commands below use the Release single-file name; from a source checkout, use `codex-instruct.py`.
+
 ```bash
-python3 codex-instruct.py --uninstall
-python3 codex-instruct.py --uninstall --yes
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+```
+
+`--reactivate` is available from `v0.3.9`:
+
+```bash
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN
 ```
 
 Review the plan, then confirm.
 
 ## Platform
 
-macOS and Linux are the primary targets. Windows fresh deploy is still a test channel. Python 3.10+.
+macOS and Linux are the primary targets. Windows fresh deploy is still a test channel. Python 3.10+. This installer does not proactively collect or upload user data. The unsigned desktop build will hit Gatekeeper / SmartScreen and is not SignPath-signed; see the release notes for physical-device acceptance.
 
 ## Docs
 

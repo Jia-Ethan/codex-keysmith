@@ -12,6 +12,7 @@
 <p>
   <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/Jia-Ethan/codex-keysmith/stargazers"><img src="https://img.shields.io/github/stars/Jia-Ethan/codex-keysmith?style=flat-square&color=%232f81f7" alt="GitHub Stars" /></a>
+  <img alt="Source version v0.6.0" src="https://img.shields.io/badge/source-v0.6.0-0099CC">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/license-MIT-6DB33F?style=flat-square" alt="MIT License" />
 </p>
@@ -62,33 +63,50 @@ Keysmith 给本机的 AI 编程工具装指令：先预览，再写入，能验�
 | [Grok Build](https://github.com/Jia-Ethan/grok-keysmith) | grok-keysmith | 稳定版安装包 |
 | [ZCode](https://github.com/Jia-Ethan/zcode-keysmith) | zcode-keysmith | 源码 |
 
-每个工具一份安装器。也有桌面版（未签名）。
+每个工具一份安装器。也有未签名桌面版（Apple Silicon / Windows x64）。
 
 ## 开始使用
 
-本机需要已经装好 Codex。推荐从 [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) 下载稳定版脚本；源码路径如下。
+本机需要已经装好 Codex。稳妥路径是 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) 的单文件脚本（当前公开稳定脚本包括 `codex-instruct-v0.5.1.py`）。也有未签名桌面版。
 
 ```bash
-git clone https://github.com/Jia-Ethan/codex-keysmith.git
-cd codex-keysmith
-python3 codex-instruct.py --dry-run
-python3 codex-instruct.py --yes
+# 把 vX.Y.Z 换成 Releases 页的最新稳定 tag
+base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
+curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
+
+python3 codex-instruct-vX.Y.Z.py --version
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang zh-CN
+# 确认目标目录、提示词来源和写入计划后：
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang zh-CN
 ```
 
-装完后关掉旧任务，开一个新的 Codex 会话。也可以把 [代装说明](docs/agent-install.md) 交给你正在用的 AI 助手。细节见 [使用说明](docs/reference.md)。
+源码路径：`git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`，再把上述脚本名换成 `codex-instruct.py`。装完后关掉旧任务，开一个新 Codex 会话。Windows 把 `python3` 换成 `python`。也可以把 [代装说明](docs/agent-install.md) 交给你正在用的 AI 助手。细节见 [使用说明](docs/reference.md)。
 
 ## 怎么撤走
 
+以下以 Release 单文件为例；源码 checkout 请把文件名换成 `codex-instruct.py`。
+
 ```bash
-python3 codex-instruct.py --uninstall
-python3 codex-instruct.py --uninstall --yes
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang zh-CN
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN
+```
+
+`--reactivate` 从 `v0.3.9` 开始提供：
+
+```bash
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate
+python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN
 ```
 
 先看计划，确认后再恢复。
 
 ## 适用环境
 
-macOS 与 Linux 为主要支持。Windows 新鲜部署仍是测试通道。需要 Python 3.10+。
+macOS 与 Linux 为主要支持。Windows 新鲜部署仍是测试通道。需要 Python 3.10+。本安装器不主动收集或上传用户数据。未签名桌面版会碰到 Gatekeeper / SmartScreen，不是 SignPath Foundation 签名；实体机验收见发布说明（physical-device acceptance）。
 
 ## 文档
 
