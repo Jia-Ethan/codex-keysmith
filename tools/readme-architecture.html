@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>zcode-keysmith architecture</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #5c5c5c;
+      --line: #111111;
+      --panel: #ffffff;
+      --sage: #d8ead6;
+      --sage-fg: #1d3b28;
+      --lavender: #e4e0f2;
+      --lavender-fg: #2b2750;
+      --sand: #f1e6cf;
+      --sand-fg: #4a3514;
+      --ink: #1b1f24;
+      --soft: #f6f6f6;
+    }
+    html.dark {
+      --bg: #141618;
+      --fg: #f3f1ec;
+      --muted: #b4b0a8;
+      --line: #ece8df;
+      --panel: #1b1e22;
+      --sage: #24362c;
+      --sage-fg: #d7ead6;
+      --lavender: #2a2838;
+      --lavender-fg: #ddd7f2;
+      --sand: #3a2f22;
+      --sand-fg: #f0e2c4;
+      --ink: #ece8df;
+      --soft: #22262b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
+    }
+    body {
+      width: 2400px;
+      height: 988px;
+      padding: 48px 56px 40px;
+    }
+    h1 {
+      margin: 0 0 36px;
+      font-size: 54px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 36px;
+      height: 820px;
+    }
+    .panel {
+      border: 3px solid var(--line);
+      border-radius: 28px;
+      padding: 28px 28px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      background: var(--panel);
+    }
+    .head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 14px;
+      border-bottom: 3px solid var(--line);
+    }
+    .head .num {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .head .en {
+      font-size: 18px;
+      letter-spacing: 0.16em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .box {
+      border-radius: 16px;
+      padding: 22px 24px;
+      min-height: 118px;
+    }
+    .box h2 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .box p {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.45;
+      color: inherit;
+      opacity: 0.92;
+    }
+    .sage { background: var(--sage); color: var(--sage-fg); }
+    .lavender { background: var(--lavender); color: var(--lavender-fg); }
+    .sand { background: var(--sand); color: var(--sand-fg); }
+    .soft { background: var(--soft); color: var(--fg); }
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="title">使用方式</h1>
+  <div class="row">
+    <section class="panel">
+      <div class="head"><span class="num" id="h1">01 先看计划</span><span class="en" id="e1">PREVIEW</span></div>
+      <div class="stack">
+        <div class="box sage"><h2 id="a1t">看清将要发生的改变</h2><p id="a1d">装之前先给出一份计划，你可以完整看过再决定。</p></div>
+        <div class="box sage"><h2 id="a2t">确认前什么都不写入</h2><p id="a2d">默认只预览。没有你的确认，Codex 不会被改动。</p></div>
+        <div class="box sage"><h2 id="a3t">不满意可以停在这里</h2><p id="a3d">这一步可以反复看，不必继续。</p></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="head"><span class="num" id="h2">02 确认后装上</span><span class="en" id="e2">APPLY</span></div>
+      <div class="stack">
+        <div class="box lavender"><h2 id="b1t">把指令交给 Codex</h2><p id="b1d">确认之后，才把这一份指令装进本机 Codex。</p></div>
+        <div class="box lavender"><h2 id="b2t">不改软件本身</h2><p id="b2d">Codex 程序保持原样。</p></div>
+        <div class="box lavender"><h2 id="b3t">不碰账号和密钥</h2><p id="b3d">登录信息和密钥都不会被读取。</p></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="head"><span class="num" id="h3">03 新对话生效</span><span class="en" id="e3">LIVE</span></div>
+      <div class="stack">
+        <div class="box sand"><h2 id="c1t">重新打开，新开一轮</h2><p id="c1d">新开一轮 Codex 对话，才会用上这份指令。</p></div>
+        <div class="box sand"><h2 id="c2t">随时可以整份撤走</h2><p id="c2d">同样先看计划，确认后再恢复。</p></div>
+        <div class="box soft"><h2 id="c3t">撤走后回到原来</h2><p id="c3d">指令被拿掉，Codex 回到安装前的使用方式。</p></div>
+      </div>
+    </section>
+  </div>
+  <script>
+    const EN = {
+      title: "How it works",
+      h1: "01 Preview first", e1: "PREVIEW",
+      a1t: "See the plan", a1d: "Review exactly what will change before anything is written.",
+      a2t: "Nothing is written yet", a2d: "Preview is the default. Codex stays untouched until you confirm.",
+      a3t: "You can stop here", a3d: "Look as many times as you need. You do not have to continue.",
+      h2: "02 Apply when ready", e2: "APPLY",
+      b1t: "Hand the instruction to Codex", b1d: "Only after you confirm does the instruction get installed for Codex.",
+      b2t: "The app stays official", b2d: "Codex itself is not replaced.",
+      b3t: "Accounts stay private", b3d: "Logins and keys are never read.",
+      h3: "03 New chats pick it up", e3: "LIVE",
+      c1t: "Quit, reopen, start fresh", c1d: "Open a new Codex conversation for it to take effect.",
+      c2t: "Remove it whenever you want", c2d: "Review the removal plan first, then confirm.",
+      c3t: "Back to how it was", c3d: "The instruction is taken off. Codex works as it did before.",
+    };
+    const params = new URLSearchParams(location.search);
+    if (params.get("theme") === "dark") document.documentElement.classList.add("dark");
+    if (params.get("lang") === "en") {
+      document.documentElement.lang = "en";
+      for (const [id, text] of Object.entries(EN)) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+      }
+    }
+  </script>
+</body>
+</html>
