@@ -1,128 +1,106 @@
 <!-- markdownlint-disable MD013 MD033 MD041 -->
 <!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
 
-<p align="center">
-  <img src="docs/assets/readme/codex-keysmith-preview.png" alt="Illustrative codex-keysmith dry-run terminal preview; actual paths and output vary" width="100%">
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/codex-keysmith-hero-dark.webp" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/codex-keysmith-hero-light.webp" />
+  <img src="docs/assets/readme/codex-keysmith-hero-light.webp" alt="codex-keysmith" width="100%" />
+</picture>
+
+<p>
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/Jia-Ethan/codex-keysmith/stargazers"><img src="https://img.shields.io/github/stars/Jia-Ethan/codex-keysmith?style=flat-square&color=%232f81f7" alt="GitHub Stars" /></a>
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/license-MIT-6DB33F?style=flat-square" alt="MIT License" />
 </p>
-<p align="center"><em>Illustrative preview / 示意预览；actual paths and output follow the local dry-run.</em></p>
 
-<h1 align="center">codex-keysmith</h1>
-
-<p align="center">Preview-first Codex instruction deployment you can verify and undo.</p>
-
-<p align="center">
+<p>
   <a href="README.md">简体中文</a> ·
   <a href="#english">English</a> ·
-  <a href="docs/reference.md">Reference</a> ·
-  <a href="docs/agent-install.md">Agent install</a> ·
-  <a href="SECURITY.md">Security</a> ·
+  <a href="docs/reference.md">Guide</a> ·
   <a href="LICENSE">License</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml"><img alt="Blocking CI tests" src="https://github.com/Jia-Ethan/codex-keysmith/actions/workflows/tests.yml/badge.svg"></a>
-  <img alt="Source version v0.6.0" src="https://img.shields.io/badge/source-v0.6.0-0099CC">
-  <img alt="Python 3.10 to 3.14 recommended" src="https://img.shields.io/badge/Python-3.10--3.14-3776AB?logo=python&logoColor=white">
-  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-6DB33F">
-</p>
+<h1>codex-keysmith</h1>
+
+<p>Install a reversible instruction onto Codex. Preview first, write only after you confirm.</p>
+
+</div>
 
 ## English
 
-The Keysmith series **deploys, verifies, and revokes** custom instructions for local AI tools. `codex-keysmith` writes a Markdown file into a Codex config directory (usually `~/.codex`) so later new sessions load it.
+Keysmith installs instructions onto local AI coding tools: preview, apply, verify, and undo.
 
-> [!WARNING]
-> This changes **global behavior for that Codex configuration**, not a per-project switch: it writes `model_instructions_file` in `config.toml` and, by default, isolates the entire `hooks.json` as `hooks.json.disabled`. Deploy, uninstall, and interrupted-transaction recovery preview before `--yes`; `--restore-hooks` runs immediately and rejects `--yes`. Read [`examples/gpt-overlay.md`](examples/gpt-overlay.md) and [`SECURITY.md`](SECURITY.md) first.
+`codex-keysmith` is the installer for **Codex**. After it is on, new conversations follow the instruction. The app itself is not modified, and accounts and keys are never read. Default install ships one prompt.
 
-### Which Keysmith to use
+> [!IMPORTANT]
+> This changes **later new conversations** for that Codex configuration. Commands show the plan first and write only when you confirm. Start a new task after installing.
 
-| Project | Target | Surface | Conservative install | Desktop |
-| --- | --- | --- | --- | --- |
-| **[codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith)** | Codex | Global `~/.codex` instructions | Stable CLI Release | Unsigned Beta |
-| [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) | Claude Code | Project / user `CLAUDE.md` import | Source CLI | Unsigned Beta |
-| [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) | Grok Build | Global `~/.grok/rules` (does not edit `AGENTS.md`) | Stable CLI Release | Unsigned Beta |
-| [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) | ZCode App | User-dir system-role + wrapper | Source only | None |
+## How it works
 
-### Install options
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/project-architecture-en-dark.webp" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/project-architecture-en-light.webp" />
+    <img alt="Preview the plan, apply when ready, new chats pick it up, remove it whenever you want" src="docs/assets/readme/project-architecture-en-light.webp" width="100%" />
+  </picture>
+</p>
 
-1. **Conservative: stable CLI.** Open the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest), download `codex-instruct-v*.py` and `SHA256SUMS`, verify, then run; the current stable asset is `codex-instruct-v0.5.1.py`. Do not `curl | python`.
-2. **Easier: unsigned Desktop Beta.** See the [Desktop prerelease](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.9-beta.1): macOS Apple Silicon DMG and Windows x64 NSIS, with an embedded CLI sidecar, one bundled prompt, four fixture packs, and Restore Config Reference. No signing, no auto-update, no Linux GUI. Install notes: [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md).
-3. **Source.** Clone and run `python3 codex-instruct.py`. This source tree and the latest stable Release are both version `0.5.0`; check the Releases page for published assets.
+1. **Preview first.** Nothing is written until you confirm.
+2. **Apply when ready.** The instruction is installed locally. The app stays official.
+3. **Start a new conversation.** Close old tasks and open a new one.
+4. **Remove it whenever you want.** Review the plan, then restore how it was.
 
-### Quick start
+## Which Keysmith to use
 
-```bash
-# Replace vX.Y.Z with the latest stable tag on the Releases page
-base='https://github.com/Jia-Ethan/codex-keysmith/releases/download/vX.Y.Z'
-curl --fail --location --remote-name "$base/codex-instruct-vX.Y.Z.py"
-curl --fail --location --remote-name "$base/SHA256SUMS"
-awk '$2 == "codex-instruct-vX.Y.Z.py"' SHA256SUMS | shasum -a 256 -c -
+| You use | Installer | How to start |
+| --- | --- | --- |
+| **Codex** | **codex-keysmith** | Stable package |
+| [Claude Code](https://github.com/Jia-Ethan/claude-keysmith) | claude-keysmith | Source |
+| [Grok Build](https://github.com/Jia-Ethan/grok-keysmith) | grok-keysmith | Stable package |
+| [ZCode](https://github.com/Jia-Ethan/zcode-keysmith) | zcode-keysmith | Source |
 
-python3 codex-instruct-vX.Y.Z.py --version
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --status --lang en
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --dry-run --lang en
-# After reviewing the target, prompt source, and write plan:
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --yes --lang en
-```
+One installer per tool. An unsigned desktop build is also available.
 
-Source path: `git clone https://github.com/Jia-Ethan/codex-keysmith.git && cd codex-keysmith`; then replace the script name above with `codex-instruct.py`. Close old tasks and start a new Codex session. Omitting `--codex-dir` processes every auto-discovered config directory. On Windows, use `python` instead of `python3`.
+## Get started
 
-### How to undo
-
-The commands below use the Release single file. For a source checkout, replace the filename with `codex-instruct.py`.
+Codex must already be installed. Prefer the stable script from [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases/latest); the source path is:
 
 ```bash
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --restore-hooks --lang en
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --lang en
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --uninstall --yes --lang en
+git clone https://github.com/Jia-Ethan/codex-keysmith.git
+cd codex-keysmith
+python3 codex-instruct.py --dry-run
+python3 codex-instruct.py --yes
 ```
 
-Each uninstall peels one layer. `--reactivate` is available from `v0.3.9`:
+Then close old tasks and open a new Codex session. You can also hand the [agent-install notes](docs/agent-install.md) to an AI assistant. Details live in the [guide](docs/reference.md).
+
+## Undo
 
 ```bash
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --lang en
-python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang en
+python3 codex-instruct.py --uninstall
+python3 codex-instruct.py --uninstall --yes
 ```
 
-If `--status` reports `inactive-by-config`, `--reactivate` restores only the missing top-level `model_instructions_file`. Do not edit `config.toml` by hand or run a full deploy just to put the field back. Catchable batch failures roll back, but reactivation creates no durable journal; after a hard interruption, run `--status` and rerun `--reactivate --yes` to finish the remaining directories when no conflict is present. `--recover` handles interrupted deploy/uninstall transactions only. Do not delete journals, backups, or the manifest by hand.
+Review the plan, then confirm.
 
-### Platforms and Beta limits
+## Platform
 
-- CLI: macOS / Linux are the primary targets; Windows fresh deploy is `EXPLICIT_BETA`. Do not use published `v0.1.0`.
-- Desktop Beta: macOS Apple Silicon and Windows x64 only; unsigned / not notarized; Gatekeeper or SmartScreen may warn.
-- Normal CLI and Desktop operations do not proactively collect or upload user data. Current assets have no physical-device acceptance and are not SignPath-signed.
-- Recommended Python 3.10–3.14. No `pip install`, no auto-update.
-- Versions, asset names, and signing live on [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) and [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md), not in this page.
+macOS and Linux are the primary targets. Windows fresh deploy is still a test channel. Python 3.10+.
 
-### Bundled prompt
+## Docs
 
-Default install ships one prompt: [`examples/gpt-overlay.md`](examples/gpt-overlay.md). Do not pick among unrestricted / contract / persona-contract / lean / astra; omitting `--preset` is this file.
+- [Guide](docs/reference.md)
+- [Agent install](docs/agent-install.md)
+- [Security](SECURITY.md)
 
-Older preset names still work for `--status` / `--uninstall` on existing deployments. They are not a new-install menu.
+## Series
 
-`--scaffold` writes fixture workspaces under `~/.codex-fixture-workspace/<pack>` and **does not modify** `~/.codex`. Preset and scaffold can be stacked.
+- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — for Codex
+- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — for Claude Code
+- [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) — for Grok Build
+- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — for ZCode
 
-```bash
-python3 codex-instruct.py --scaffold-list
-python3 codex-instruct.py --scaffold pytest_complete --dry-run
-python3 codex-instruct.py --scaffold pytest_complete --yes
-```
-
-A standalone script without `fixture_packs/` beside it will tell you to download the Release bundle or pass `--pack-dir`.
-
-### Advanced docs
-
-- Scenario deploy / eval (M1 / M2 / M3): [`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
-- Append without replacing stock (advanced): [`docs/envelope.md`](docs/envelope.md)
-- Environment channel / fixture packs: [`docs/fixture-channel.md`](docs/fixture-channel.md)
-- CCSwitch: [`docs/ccswitch.md`](docs/ccswitch.md)
-- Transactions, journals, recovery: [`docs/hooks-transactions.md`](docs/hooks-transactions.md)
-- Desktop / agent install: [`gui/README.md`](gui/README.md) · [`docs/agent-install.md`](docs/agent-install.md)
-
-### Contributing, security, and the series
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change. Report vulnerabilities through the private channel in [`SECURITY.md`](SECURITY.md). Official feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions/66). Community: [LINUX DO](https://linux.do).
-
-- [codex-keysmith](https://github.com/Jia-Ethan/codex-keysmith) — global Codex instructions
-- [claude-keysmith](https://github.com/Jia-Ethan/claude-keysmith) — uninstallable Claude Code import blocks
-- [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) — Grok Build home rules (`~/.grok/rules/99-keysmith.md`; does not edit `AGENTS.md`)
-- [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — ZCode App system-role entrypoint (source only, no Desktop)
+Feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions) · Community: [LINUX DO](https://linux.do)
