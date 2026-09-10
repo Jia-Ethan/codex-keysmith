@@ -31,7 +31,7 @@
 Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指令。`codex-keysmith` 把一份 Markdown 部署到 Codex 配置目录（通常是 `~/.codex`），让之后的新会话加载它。
 
 > [!WARNING]
-> 这会改变**该 Codex 配置下的全局行为**，不是项目级开关：写入 `config.toml` 的 `model_instructions_file`，并默认把整份 `hooks.json` 隔离为 `hooks.json.disabled`。部署、卸载和中断恢复先预览，确认后加 `--yes`；`--restore-hooks` 会立即执行且不接受 `--yes`。先阅读 [`examples/gpt-unrestricted.md`](examples/gpt-unrestricted.md) 和 [`SECURITY.md`](SECURITY.md)。
+> 这会改变**该 Codex 配置下的全局行为**，不是项目级开关：写入 `config.toml` 的 `model_instructions_file`，并默认把整份 `hooks.json` 隔离为 `hooks.json.disabled`。部署、卸载和中断恢复先预览，确认后加 `--yes`；`--restore-hooks` 会立即执行且不接受 `--yes`。先阅读 [`examples/gpt-overlay.md`](examples/gpt-overlay.md) 和 [`SECURITY.md`](SECURITY.md)。
 
 ### 选择哪个 Keysmith
 
@@ -45,7 +45,7 @@ Keysmith 系列为本地 AI 工具**安全部署、验证和撤销**自定义指
 ### 安装方式
 
 1. **稳妥：稳定 CLI。** 打开 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest)，下载单文件 `codex-instruct-v*.py` 与 `SHA256SUMS`，校验后再运行；当前稳定资产名为 `codex-instruct-v0.5.1.py`。不要 `curl | python`。
-2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.9-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar、双 preset、四个 fixture 包与“恢复配置引用”入口。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
+2. **更易用：未签名 Desktop Beta。** 见 [Desktop 预发布](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/desktop-v0.3.9-beta.1)：macOS Apple Silicon DMG 与 Windows x64 NSIS，内嵌 CLI sidecar、一份内置稿、四个 fixture 包与“恢复配置引用”入口。无签名、无自动更新、无 Linux GUI。安装步骤见 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md)。
 3. **源码。** clone 后直接 `python3 codex-instruct.py`。此源码树与最新稳定 Release 同为 `0.5.0`，以 Releases 页为准。
 
 ### 快速开始
@@ -93,9 +93,13 @@ python3 codex-instruct-vX.Y.Z.py --codex-dir ~/.codex --reactivate --yes --lang 
 - 推荐 Python 3.10–3.14。没有 `pip install`，没有自动更新。
 - 版本、资产名和签名状态以 [Releases](https://github.com/Jia-Ethan/codex-keysmith/releases) 与 [`CODE_SIGNING_POLICY.md`](CODE_SIGNING_POLICY.md) 为准，不要以本页为版本源。
 
-### 两条通道
+### 内置提示词
 
-指令通道把 Markdown 部署到 `~/.codex`（默认 `--preset unrestricted`）。环境通道 `--scaffold` 把残缺 fixture 工作区写到 `~/.codex-fixture-workspace/<pack>`，**不修改** `~/.codex`。两通道可叠用，互不写对方目录。默认安装步骤不变；scaffold 不是必做步骤。
+默认安装只带一份稿：[`examples/gpt-overlay.md`](examples/gpt-overlay.md)。不要在 unrestricted / contract / persona-contract / lean / astra 之间挑选；无 `--preset` 时就是这一份。
+
+旧稿名仍可指定，只为已经部署过的目录做 `--status` / `--uninstall` 兼容，不是新安装菜单。
+
+环境通道 `--scaffold` 把残缺 fixture 工作区写到 `~/.codex-fixture-workspace/<pack>`，**不修改** `~/.codex`。preset 与 scaffold 可叠用，互不写对方目录。
 
 ```bash
 python3 codex-instruct.py --scaffold-list
@@ -108,6 +112,7 @@ python3 codex-instruct.py --scaffold pytest_complete --yes
 ### 进阶文档
 
 - 场景部署 / 评估（M1 / M2 / M3）：[`docs/reference.md`](docs/reference.md) · [`docs/v0.3-scenario-deployment-design.md`](docs/v0.3-scenario-deployment-design.md)
+- 追加而非替换 stock 提示（高级）：[`docs/envelope.md`](docs/envelope.md)
 - 环境通道 / fixture packs：[`docs/fixture-channel.md`](docs/fixture-channel.md)
 - CCSwitch：[`docs/ccswitch.md`](docs/ccswitch.md)
 - 事务、journal、恢复：[`docs/hooks-transactions.md`](docs/hooks-transactions.md)

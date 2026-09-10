@@ -1053,6 +1053,7 @@ def test_deploy_isolation_failure_does_not_write_md_or_config(tmp_path, monkeypa
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1079,6 +1080,7 @@ def test_deploy_rejects_unfinished_hooks_transaction(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1125,6 +1127,7 @@ def test_multi_directory_isolation_failure_rolls_back_first_directory(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1178,6 +1181,7 @@ def test_multi_directory_write_failure_rolls_back_all_directories(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1239,6 +1243,7 @@ def test_deployment_rollback_preserves_concurrent_config_and_md(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1340,6 +1345,7 @@ def test_deploy_rolls_back_and_reraises_keyboard_interrupt(tmp_path, monkeypatch
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
     )
@@ -1633,8 +1639,8 @@ def test_cli_yes_writes_to_explicit_codex_dir(tmp_path):
     )
 
     assert "[完成]" in result.stdout
-    assert 'model_instructions_file = "./gpt-unrestricted.md"' in config.read_text(encoding="utf-8")
-    assert (codex_dir / "gpt-unrestricted.md").exists()
+    assert 'model_instructions_file = "./gpt-overlay.md"' in config.read_text(encoding="utf-8")
+    assert (codex_dir / "gpt-overlay.md").exists()
 
 
 def test_deploy_yes_isolates_hooks(tmp_path):
@@ -1698,7 +1704,7 @@ def test_deploy_dry_run_shows_hooks_detection(tmp_path):
     assert hooks_path.read_text(encoding="utf-8") == hooks_content
     assert not (codex_dir / "hooks.json.disabled").exists()
     assert not list(codex_dir.glob("*.bak_*"))
-    assert not (codex_dir / "gpt-unrestricted.md").exists()
+    assert not (codex_dir / "gpt-overlay.md").exists()
 
 
 @pytest.mark.parametrize(
@@ -1734,6 +1740,7 @@ def test_windows_deploy_paths_show_explicit_beta_warning(
         types.SimpleNamespace(
             file=None,
             name="gpt-unrestricted",
+            preset="unrestricted",
             dry_run=dry_run,
             yes=yes,
             skip_hooks_isolation=False,
@@ -1744,7 +1751,7 @@ def test_windows_deploy_paths_show_explicit_beta_warning(
     assert "windows explicit beta" in output
     assert "not formal windows support" in output
     assert "p1/p2" in output
-    assert (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).exists() is yes
+    assert (codex_dir / "gpt-unrestricted.md").exists() is yes
 
 
 def test_windows_beta_warning_is_not_emitted_by_non_deploy_operations(
@@ -2167,7 +2174,7 @@ def test_cli_migrates_referenced_legacy_file_to_timestamped_archive(tmp_path):
     archives = list(codex_dir.glob("gpt5.5-unrestricted.md.bak_*"))
     assert len(archives) == 1
     assert archives[0].read_text(encoding="utf-8") == "custom but referenced legacy\n"
-    assert 'model_instructions_file = "./gpt-unrestricted.md"' in config.read_text(encoding="utf-8")
+    assert 'model_instructions_file = "./gpt-overlay.md"' in config.read_text(encoding="utf-8")
 
 
 def test_cli_preserves_unmanaged_legacy_file(tmp_path):
@@ -2209,6 +2216,7 @@ def test_deploy_rolls_back_legacy_archive_on_later_failure(tmp_path, monkeypatch
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -2257,6 +2265,7 @@ def test_deploy_final_sweep_detects_earlier_directory_race(tmp_path, monkeypatch
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -2374,6 +2383,7 @@ def test_dry_run_discloses_collision_aware_full_backup_paths(
         types.SimpleNamespace(
             file=None,
             name="gpt-unrestricted",
+            preset="unrestricted",
             dry_run=True,
             yes=False,
             skip_hooks_isolation=False,
@@ -2391,6 +2401,7 @@ def test_dry_run_discloses_collision_aware_full_backup_paths(
         types.SimpleNamespace(
             file=None,
             name="gpt-unrestricted",
+            preset="unrestricted",
             dry_run=False,
             yes=True,
             skip_hooks_isolation=False,
@@ -2408,7 +2419,13 @@ def test_current_unmanaged_takeover_preserves_prompt_and_uninstall_restores_stat
         "takeover-uninstall",
     )
 
-    deployed = _run_cli("--codex-dir", codex_dir, "--yes")
+    deployed = _run_cli(
+        "--codex-dir",
+        codex_dir,
+        "--preset",
+        "unrestricted",
+        "--yes",
+    )
 
     assert deployed.returncode == 0, deployed.stdout + deployed.stderr
     assert (codex_dir / codex_instruct.DEFAULT_MD_FILENAME).read_bytes() == prompt_bytes
@@ -2462,6 +2479,7 @@ m._publish_deployment_manifest = publish_then_interrupt
 m.deploy(types.SimpleNamespace(
     file=None,
     name="gpt-unrestricted",
+    preset="unrestricted",
     dry_run=False,
     yes=True,
     skip_hooks_isolation=False,
@@ -2532,6 +2550,7 @@ def test_legacy_replacement_after_plan_is_not_archived(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -2646,6 +2665,7 @@ def test_multi_directory_dry_run_reports_every_blocker(tmp_path, monkeypatch, ca
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=True,
         yes=False,
         skip_hooks_isolation=False,
@@ -2749,6 +2769,7 @@ def test_legacy_claim_rechecks_config_before_archive(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -2779,6 +2800,7 @@ def test_deploy_rechecks_residue_after_atomic_probe(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,

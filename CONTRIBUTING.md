@@ -22,7 +22,7 @@
 1. 从当前默认分支创建短生命周期分支。
 2. 只修改与问题直接相关的文件；不要混入无关格式化、生成产物或本地 `.codex` 状态。
 3. 行为变更必须补充成功、错误、并发/所有权冲突和必要回滚测试。
-4. 提示词正文变更必须原子同步 `codex-instruct.py`、`examples/gpt-unrestricted.md`、契约测试和 README。
+4. 提示词正文变更必须原子同步 `codex-instruct.py`、对应 `examples/*.md`（默认安装稿是 `examples/gpt-overlay.md`）、契约测试和 README。
 5. CLI、durable journal/recover、manifest schema、备份、hooks、迁移、uninstall 或 Release 行为变化必须同步中英文文档和 CHANGELOG。
 6. 版本号变更必须用 `python3 scripts/bump_version.py set <x.y.z>` 一次改全全部 6 个来源文件；不要手工逐个编辑。`python3 scripts/bump_version.py check` 会在版本不一致时 fail closed，CI 的 Quality job 也会执行同一检查。
 7. Desktop / GUI 行为变化必须同步 `gui/README.md`、`gui/SPEC.md`、相关 Release 文档与 CHANGELOG，并补齐 Vitest、Rust 或原生候选门禁。
@@ -86,7 +86,7 @@ For a contribution:
 1. Create a short-lived branch from the current default branch.
 2. Keep the diff scoped; exclude unrelated formatting, generated assets, and local `.codex` state.
 3. Add tests for successful behavior, errors, concurrency/ownership conflicts, and required rollback paths.
-4. A bundled-prompt text change must atomically update `codex-instruct.py`, `examples/gpt-unrestricted.md`, contract tests, and README.
+4. A bundled-prompt text change must atomically update `codex-instruct.py`, the matching `examples/*.md` (the advertised default is `examples/gpt-overlay.md`), contract tests, and README.
 5. Changes to CLI, durable journal/recover, manifest schema, backups, hooks, migration, uninstall, or Release behavior must update both documentation languages and CHANGELOG.
 6. A version change must go through `python3 scripts/bump_version.py set <x.y.z>`, which rewrites all six version sources in one verified step. Never edit them by hand. `python3 scripts/bump_version.py check` fails closed on any disagreement and runs in the Quality job.
 7. Desktop or GUI behavior changes must update `gui/README.md`, `gui/SPEC.md`, the relevant Release documentation, and CHANGELOG, with matching Vitest, Rust, or native-candidate coverage.
