@@ -224,7 +224,8 @@ jobs:
             tag_commit="$(git rev-parse --verify "${tag_ref}^{commit}")"
             if [ "$tag_commit" != "$source_commit" ]; then
               echo "${release_tag} is already bound to ${tag_commit}; verifying refusal for ${source_commit}."
-              if refusal="$(python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir dist 2>&1)"; then
+              refuse_dir="${RUNNER_TEMP}/release-refuse"
+              if refusal="$(python scripts/build_release.py "$release_tag" --source-commit "$source_commit" --output-dir "$refuse_dir" 2>&1)"; then
                 echo "Release builder accepted a conflicting existing version tag." >&2
                 exit 1
               fi
@@ -237,7 +238,7 @@ jobs:
                   exit 1
                   ;;
               esac
-              test ! -e dist
+              test ! -e "$refuse_dir"
               echo "Release builder correctly refused the conflicting candidate."
               exit 0
             fi
