@@ -454,6 +454,21 @@ def test_status_rejects_preset_flag(tmp_path):
     assert result.returncode == 2
 
 
+def test_overlay_sha_classifies_without_manifest_preset():
+    sha256 = hashlib.sha256(
+        codex_instruct.BUILTIN_GPT_OVERLAY_MD.encode("utf-8")
+    ).hexdigest()
+    assert codex_instruct.bundled_preset_for_sha256(sha256) == "overlay"
+    assert (
+        codex_instruct.default_name_for_preset(codex_instruct.PRESET_OVERLAY)
+        == "gpt-overlay"
+    )
+    assert (
+        codex_instruct.default_name_for_preset(codex_instruct.PRESET_UNRESTRICTED)
+        == "gpt-unrestricted"
+    )
+
+
 def test_preset_overlay_deploy_status_and_uninstall(tmp_path):
     codex_dir = _make_codex_dir(tmp_path)
 
