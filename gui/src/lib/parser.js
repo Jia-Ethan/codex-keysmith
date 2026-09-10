@@ -22,13 +22,20 @@ const STATUS_ERROR_RE =
 
 const NODE_NAME_MAP = {
   "config.toml": "configToml",
-  "gpt-unrestricted.md": "md",
   "gpt5.5-unrestricted.md": "legacyMd",
   "hooks.json": "hooks",
   "hooks.json.disabled": "hooksDisabled",
   "deployment manifest": "manifest",
 };
-const REQUIRED_STATUS_NODE_KEYS = Object.values(NODE_NAME_MAP);
+const BUNDLED_MD_NAMES = new Set([
+  "gpt-overlay.md",
+  "gpt-unrestricted.md",
+  "gpt-contract.md",
+  "gpt-persona-contract.md",
+  "gpt-lean.md",
+  "gpt-astra.md",
+]);
+const REQUIRED_STATUS_NODE_KEYS = [...Object.values(NODE_NAME_MAP), "md"];
 const REQUIRED_STATUS_FIELDS = [
   "modelInstructionsFile",
   "residue",
@@ -56,6 +63,13 @@ const MANAGEMENT_PREVIEW_SENTINELS = new Set([
   "[Preview] 终态资源不会反向恢复；确认清理请添加 --yes。",
   "[Preview] 业务路径未修改；确认清理初始化日志请添加 --yes。",
 ]);
+
+function nodeKeyForName(name) {
+  if (NODE_NAME_MAP[name]) return NODE_NAME_MAP[name];
+  if (BUNDLED_MD_NAMES.has(name)) return "md";
+  if (name.endsWith(".md") && name !== "gpt5.5-unrestricted.md") return "md";
+  return undefined;
+}
 
 function splitCliLines(text) {
   return String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -165,7 +179,7 @@ export function parseStatus(stdout, exitCode = null) {
     const fileMatch = line.match(FILE_LINE_RE);
     if (fileMatch) {
       const [, name, kind, path] = fileMatch;
-      const key = NODE_NAME_MAP[name];
+      const key = nodeKeyForName(name);
       // 必须落在已知节点名上才算节点行；否则 value 带括号的 kv 行
       // （如 Config activation: active (...)）会被误吞。
       if (key) {

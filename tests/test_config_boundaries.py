@@ -438,6 +438,7 @@ def test_deploy_preserves_new_md_when_config_changes_before_bound_backup(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -478,6 +479,7 @@ def test_deploy_rejects_config_change_after_mutating_preflight(tmp_path, monkeyp
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -531,6 +533,7 @@ def test_final_sweep_preserves_md_when_unchanged_config_changes_concurrently(
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,
@@ -583,6 +586,7 @@ def test_final_sweep_detects_concurrent_md_replacement(tmp_path, monkeypatch):
     args = types.SimpleNamespace(
         file=None,
         name="gpt-unrestricted",
+        preset="unrestricted",
         dry_run=False,
         yes=True,
         skip_hooks_isolation=False,

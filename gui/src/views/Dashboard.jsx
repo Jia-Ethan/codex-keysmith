@@ -25,6 +25,16 @@ const ACTIVATION_VARIANT = {
 
 const NODE_ICON = { regular: "✓", missing: "—", other: "⚠" };
 
+function promptFileName(dir) {
+  const fromNode = dir.nodes?.md?.path;
+  if (fromNode) {
+    const parts = String(fromNode).split(/[/\\]/);
+    return parts[parts.length - 1] || fromNode;
+  }
+  const fromField = String(dir.modelInstructionsFile || "").replace(/^\.\//, "");
+  return fromField || "gpt-overlay.md";
+}
+
 const PULSE_COLOR = {
   green: "var(--ok)",
   yellow: "var(--warn)",
@@ -319,7 +329,7 @@ function StatusCard({ dir, index, t }) {
             <span className="text-muted-foreground">({dir.hooksStatus})</span>
           </Kv>
           <Kv k={t("dash.promptFile")}>
-            {NODE_ICON[node("md")]} gpt-unrestricted.md
+            {NODE_ICON[node("md")]} {promptFileName(dir)}
             {node("legacyMd") !== "missing" && ` · legacy: ${NODE_ICON[node("legacyMd")]}`}
           </Kv>
           <Kv k={t("dash.residue")}>

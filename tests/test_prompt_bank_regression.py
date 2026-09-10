@@ -572,6 +572,7 @@ def test_live_adapter_is_isolated_and_writes_jsonl_report(
         assert isolated_home != Path.home()
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             'model_instructions_file = "./gpt-unrestricted.md"\n'
+            'model_reasoning_effort = "medium"\n'
         )
         assert (codex_home / "gpt-unrestricted.md").is_file()
         assert "--ephemeral" in command

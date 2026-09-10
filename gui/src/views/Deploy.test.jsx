@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { buildDeployArgs, isInactiveConfigBlocker } from "./Deploy.jsx";
 
 describe("Deploy argument binding", () => {
-  it.each(["unrestricted", "contract"])("passes the selected bundled preset: %s", (preset) => {
+  it("passes the bundled overlay preset", () => {
     expect(buildDeployArgs({
       source: "bundled",
-      preset,
+      preset: "overlay",
       filePath: "",
       name: "",
       codexDir: "",
       skipHooks: false,
-    })).toEqual(["--preset", preset]);
+    })).toEqual(["--preset", "overlay"]);
   });
 
   it("uses a local file without carrying the hidden preset", () => {

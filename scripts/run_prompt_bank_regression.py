@@ -698,6 +698,10 @@ def _write_isolated_config(root: Path, prompt: str) -> Tuple[Path, Path]:
         prompt_file.write(prompt)
     with config_path.open("w", encoding="utf-8", newline="\n") as config_file:
         config_file.write('model_instructions_file = "./gpt-unrestricted.md"\n')
+        catalog = (os.environ.get("KS_MODEL_CATALOG") or "").strip()
+        if catalog:
+            config_file.write('model_catalog_json = "{}"\n'.format(catalog.replace('"', "")))
+        config_file.write('model_reasoning_effort = "medium"\n')
     workspace = root / "workspace"
     workspace.mkdir()
     return prompt_path, workspace
