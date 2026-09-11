@@ -54,6 +54,14 @@ Keysmith 给本机的 AI 编程工具装指令：先预览，再写入，能验�
 3. **新开一轮对话。** 关掉旧任务，开一个新的。
 4. **随时撤走。** 同样先看计划，确认后恢复成原来的样子。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/codex-keysmith-preview-dark.webp" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/codex-keysmith-preview-light.webp" />
+    <img src="docs/assets/readme/codex-keysmith-preview-light.webp" alt="示意预览；实际路径与输出以本机 dry-run 为准" width="100%" />
+  </picture>
+</p>
+
 ## 选哪个 Keysmith
 
 | 你在用 | 用这个 | 怎么开始 |
