@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- README illustrations (zh/en) now use the shared champagne-key still-life set for hero, usage cards, and dry-run preview.
+
 ### Fixed
 
 - Codex `stream: true` now sets `stream: true` on the upstream `/messages` request and forwards Anthropic SSE `text_delta` frames as `response.output_text.delta` before the turn ends. Buffered JSON replies still work as a fallback. Terminal event follows status (`response.completed` / `incomplete` / `failed`) instead of always `response.completed`. A 2026-09-11 desktop turn sat ~4 minutes with no tokens after the last tool result, then `task_complete` with a null message.
