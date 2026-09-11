@@ -265,6 +265,39 @@ def probe_health(port: int) -> bool:
         return False
 
 
+def _listener_is_ours(port: int) -> bool:
+    """Whether the process listening on the loopback port is a ks-envelope.
+
+    Guards against reusing an unrelated (or stale e2e-test) listener that
+    merely happens to answer /health: a leftover process bound with different
+    arguments (e.g. --overlay-file from an aborted test run) would otherwise
+    be adopted silently. Best-effort: when lsof is unavailable or reports
+    nothing, fall back to trusting the health probe.
+    """
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    pids = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not pids:
+        return True
+    for pid in pids:
+        try:
+            ps = subprocess.run(
+                ["ps", "-o", "command=", "-p", pid],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        cmd = ps.strip()
+        if cmd and ("ks-envelope.py" in cmd or RUNTIME_SCRIPT_NAME in cmd):
+            return True
+    return False
+
+
 def _python_for_helper() -> str:
     if getattr(sys, "frozen", False):
         return shutil.which("python3") or shutil.which("python") or "/usr/bin/python3"
@@ -351,7 +384,7 @@ def ensure_listener(
 ) -> bool:
     if os.environ.get("KEYSMITH_CHANNEL_SKIP_LISTEN") == "1":
         return True
-    if probe_health(port):
+    if probe_health(port) and _listener_is_ours(port):
         return True
     if sys.platform == "darwin":
         try:
@@ -591,13 +624,19 @@ def cmd_agent(args: argparse.Namespace) -> int:
         overlay = Path(args.overlay).expanduser() if args.overlay else None
         if overlay is not None and not overlay.is_file():
             raise DeployError(f"overlay file not found: {overlay}")
+        codex_home = Path(args.codex_home).expanduser()
         PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
         (Path.home() / ".codex" / "logs").mkdir(parents=True, exist_ok=True)
+        # The repo checkout may live in a TCC-protected location (Documents,
+        # Desktop, Downloads) that launchd-spawned python cannot read. Point
+        # the agent at the runtime copy under the codex home, same as the
+        # sync_on_deploy path does.
+        script = copy_runtime_script(codex_home)
         existing = PLIST_PATH.is_file()
         if existing:
             subprocess.run(["launchctl", "unload", str(PLIST_PATH)], check=False)
         PLIST_PATH.write_text(
-            agent_plist(port, args.upstream, overlay), encoding="utf-8"
+            agent_plist(port, args.upstream, overlay, script=script), encoding="utf-8"
         )
         subprocess.run(["launchctl", "load", str(PLIST_PATH)], check=True)
         time.sleep(0.5)

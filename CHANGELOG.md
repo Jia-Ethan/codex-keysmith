@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- `ks-envelope-deploy agent install` now points the LaunchAgent at the runtime copy under the codex home (`copy_runtime_script`), same as the `sync_on_deploy` path. Previously it wrote the repo checkout path into the plist, which fails with `Operation not permitted` on macOS whenever the checkout lives in a TCC-protected location (Documents / Desktop / Downloads): launchd-spawned python cannot read those paths, so the agent crashed on load and KeepAlive retried forever.
+- `ensure_listener` no longer adopts a healthy loopback port held by an unrelated process. The listener's command line is verified (via `lsof`/`ps`) to be a `ks-envelope` / runtime-copy invocation before reuse; a stale foreign listener (e.g. an orphaned e2e-test process bound with different arguments such as `--overlay-file`) triggers launch/spawn instead of silent adoption.
+
 ### Changed
 
 - README 改成产品说明首页（hero、使用方式）。默认 overlay 稿同步更新。

@@ -234,3 +234,60 @@ def test_sync_on_uninstall_restores_original_url(monkeypatch):
         assert sb.manifest() is None
     finally:
         sb.cleanup()
+
+
+def test_agent_plist_defaults_to_repo_script_for_backcompat():
+    helper = _load_deploy_module()
+    # agent_plist(script=None) keeps the historical repo-path default so
+    # frozen/packaged callers that pass an explicit script are unaffected.
+    text = helper.agent_plist(8091, "https://lgw.gru.ai/v1", None)
+    assert str(helper.SCRIPT_DIR / helper.HELPER_SCRIPT_NAME) in text
+    assert "com.jia.codex-keysmith.envelope" in text
+
+
+def test_ensure_listener_rejects_foreign_listener(monkeypatch):
+    helper = _load_deploy_module()
+    # A healthy port held by an unrelated process (stale e2e leftover) must
+    # NOT be adopted; ensure_listener should fall through to launch/spawn.
+    monkeypatch.setattr(helper, "probe_health", lambda port: True)
+    monkeypatch.setattr(helper, "_listener_is_ours", lambda port: False)
+    spawn_calls = []
+
+    def fake_spawn(script, port, upstream, auth_file, log_dir):
+        spawn_calls.append((script, port, upstream))
+        return None  # spawn "fails" -> ensure_listener returns probe result
+
+    monkeypatch.setattr(helper, "_spawn_helper", fake_spawn)
+    monkeypatch.setattr(helper, "probe_health", lambda port: False)
+    assert helper.ensure_listener(8099, "https://lgw.gru.ai/v1",
+                                  Path("/tmp/x.py"), None, Path("/tmp/logs")) is False
+    assert spawn_calls, "foreign listener must not be adopted; spawn must run"
+
+
+def test_ensure_listener_adopts_own_listener(monkeypatch, tmp_path):
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "probe_health", lambda port: True)
+    monkeypatch.setattr(helper, "_listener_is_ours", lambda port: True)
+    spawn_calls = []
+    monkeypatch.setattr(
+        helper, "_spawn_helper",
+        lambda *a, **k: spawn_calls.append(a) or 12345,
+    )
+    assert helper.ensure_listener(8099, "https://lgw.gru.ai/v1",
+                                  tmp_path / "s.py", None, tmp_path) is True
+    assert not spawn_calls, "own healthy listener must be adopted, not respawned"
+
+
+def test_listener_is_ours_matches_envelope_command_lines(monkeypatch):
+    helper = _load_deploy_module()
+    # lsof reports a pid; ps reports a non-envelope command -> not ours.
+    monkeypatch.setattr(
+        helper.subprocess, "run",
+        lambda *a, **k: type("R", (), {
+            "stdout": "4242\n", "returncode": 0, "stderr": ""
+        })() if "lsof" in a[0] else type("R", (), {
+            "stdout": "/usr/bin/someOtherServer --port 8091\n",
+            "returncode": 0, "stderr": ""
+        })(),
+    )
+    assert helper._listener_is_ours(8091) is False
