@@ -658,6 +658,32 @@ def test_tool_call_input_string_becomes_input_dict():
     assert ks_envelope._tool_call_input(item) == ("wait", {"a": 1})
 
 
+def test_translate_request_forwards_input_image():
+    body = {
+        "model": "m",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,AAAA",
+                    },
+                ],
+            }
+        ],
+    }
+    out = ks_envelope.translate_request(body)
+    content = out["messages"][0]["content"]
+    types = [block["type"] for block in content]
+    assert types == ["text", "image"]
+    assert content[1]["source"]["type"] == "base64"
+    assert content[1]["source"]["media_type"] == "image/png"
+    assert content[1]["source"]["data"] == "AAAA"
+
+
 def test_translate_request_reasoning_off_by_default():
     body = {
         "model": "m",

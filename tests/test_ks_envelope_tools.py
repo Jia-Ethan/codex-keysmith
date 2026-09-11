@@ -180,6 +180,25 @@ def test_exec_command_nested_name_rewrites_to_exec():
     assert "ls /tmp" in call["input"]
 
 
+def test_spawn_agent_rewrites_to_exec_custom_tool():
+    reply = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "call_spawn",
+                "name": "spawn_agent",
+                "input": {"message": "audit envelope", "fork_turns": "all"},
+            }
+        ],
+        "stop_reason": "tool_use",
+    }
+    call = ks_envelope.translate_response(reply, "m")["output"][0]
+    assert call["type"] == "custom_tool_call"
+    assert call["name"] == "exec"
+    assert "spawn_agent" in call["input"]
+    assert "audit envelope" in call["input"]
+
+
 def test_wait_function_tool_emits_function_call_not_custom():
     reply = {
         "content": [
