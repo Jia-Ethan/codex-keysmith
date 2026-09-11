@@ -1073,6 +1073,85 @@ def test_translate_request_no_reasoning_field():
     assert "thinking" not in out
 
 
+def test_fingerprint_ignores_ids_and_developer_churn():
+    first = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "id": "dev-1",
+                "content": [{"type": "input_text", "text": "memory-router-a"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "user-1",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    retry = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "id": "dev-2",
+                "content": [{"type": "input_text", "text": "memory-router-b"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "user-2",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    with_assistant = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": list(retry["input"])
+        + [
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": "asst-1",
+                "content": [{"type": "output_text", "text": "[P]\nRECONNECT-CHECK-0911\npartial"}],
+            }
+        ],
+    }
+    assert ks_envelope._request_fingerprint(first) == ks_envelope._request_fingerprint(
+        retry
+    )
+    assert ks_envelope._request_fingerprint(first) == ks_envelope._request_fingerprint(
+        with_assistant
+    )
+
+
+def test_text_item_stays_in_progress_until_terminal():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "shown"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert types.index("response.output_text.delta") < types.index(
+        "response.output_item.done"
+    )
+    assert types.index("response.output_item.done") < types.index("response.completed")
+    assert types.count("response.output_item.done") == 1
+
+
 def test_anthropic_ping_emits_in_progress_keepalive():
     events = _stream_events([
         {"type": "ping"},
