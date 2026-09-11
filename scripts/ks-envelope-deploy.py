@@ -292,6 +292,15 @@ def _cmd_is_envelope(cmd: str) -> bool:
     return bool(cmd) and ("ks-envelope.py" in cmd or RUNTIME_SCRIPT_NAME in cmd)
 
 
+def _cmd_contains(cmd: str, token: str) -> bool:
+    """Path tokens in ps/lsof output may use either slash."""
+    if not token:
+        return False
+    if token in cmd:
+        return True
+    return token.replace("\\", "/") in cmd.replace("\\", "/")
+
+
 def _listener_is_ours(
     port: int,
     script: Optional[Path] = None,
@@ -312,12 +321,12 @@ def _listener_is_ours(
         cmd = _pid_command(pid)
         if not _cmd_is_envelope(cmd):
             continue
-        if expected_script is not None and expected_script not in cmd:
+        if expected_script is not None and not _cmd_contains(cmd, expected_script):
             continue
         has_overlay = "--overlay-file" in cmd
         if expected_overlay is None and has_overlay:
             continue
-        if expected_overlay is not None and expected_overlay not in cmd:
+        if expected_overlay is not None and not _cmd_contains(cmd, expected_overlay):
             continue
         return True
     return False

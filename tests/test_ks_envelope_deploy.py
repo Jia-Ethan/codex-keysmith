@@ -346,6 +346,10 @@ def test_listener_is_ours_rejects_overlay_leftover(monkeypatch, tmp_path):
     assert helper._listener_is_ours(
         8091, script=script, overlay=Path("/tmp/ks-e2e/overlay.md")
     ) is True
+    # Windows Path("/tmp/...") stringifies with backslashes; argv still uses /.
+    assert helper._cmd_contains(
+        leftover, str(Path("/tmp/ks-e2e/overlay.md"))
+    ) is True
 
 
 def test_listener_is_ours_requires_expected_script(monkeypatch, tmp_path):
