@@ -82,6 +82,8 @@ def test_anthropic_tool_use_plain_string_input_passthrough():
     call = out["output"][0]
     assert call["type"] == "custom_tool_call"
     assert call["input"] == "await tools.exec_command({cmd: 'ls'})"
+    assert out["status"] == "completed"
+    assert out["incomplete_details"] is None
 
 
 def test_anthropic_end_turn_text_reply():

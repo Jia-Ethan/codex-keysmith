@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Codex `stream: true` now sets `stream: true` on the upstream `/messages` request and forwards Anthropic SSE `text_delta` frames as `response.output_text.delta` before the turn ends. Buffered JSON replies still work as a fallback. Terminal event follows status (`response.completed` / `incomplete` / `failed`) instead of always `response.completed`. A 2026-09-11 desktop turn sat ~4 minutes with no tokens after the last tool result, then `task_complete` with a null message.
 - `docs/envelope.md` now describes the helper as this product's protocol adapter (stock prompt kept, overlay appended). The previous framing made a 2026-09-11 desktop session stop after a read-only audit.
 - Collaboration tools (`spawn_agent`, `send_message`, and the rest of the namespace) map onto the `exec` grammar tool. A live session's `function_call name=spawn_agent` came back `unsupported call: spawn_agent` from the Codex router.
 - `input_image` / `image` blocks are forwarded as anthropic image content instead of being dropped.
