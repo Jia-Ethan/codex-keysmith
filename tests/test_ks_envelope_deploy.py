@@ -75,6 +75,30 @@ def test_deploy_rewrites_only_base_url():
         sb.cleanup()
 
 
+def test_deploy_parks_model_instructions_file():
+    fixture = FIXTURE.replace(
+        'model = "gpt-5.6-sol"\n',
+        'model = "gpt-5.6-sol"\nmodel_instructions_file = "./gpt-overlay.md"\n',
+    )
+    sb = Sandbox(fixture=fixture)
+    try:
+        r = sb.run("deploy", "--codex-home", str(sb.home), "--port", "8099")
+        assert r.returncode == 0, r.stderr
+        cfg = sb.config()
+        assert 'base_url = "http://127.0.0.1:8099/v1"' in cfg
+        assert cfg.splitlines()[2].startswith("# keysmith-envelope-unstack: ")
+        assert 'model_instructions_file = "./gpt-overlay.md"' in cfg.splitlines()[2]
+        assert sb.manifest()["parked_model_instructions_file"] == "./gpt-overlay.md"
+        time.sleep(1.1)
+        assert sb.run("restore", "--codex-home", str(sb.home), "--yes").returncode == 0
+        restored = sb.config()
+        assert 'model_instructions_file = "./gpt-overlay.md"' in restored
+        assert "# keysmith-envelope-unstack:" not in restored
+        assert 'base_url = "https://lgw.gru.ai/v1"' in restored
+    finally:
+        sb.cleanup()
+
+
 def test_double_deploy_refused():
     sb = Sandbox()
     try:
