@@ -372,7 +372,6 @@ jobs:
               # never reaches its completion marker.
               $slowSidecarSource = Join-Path $smokeRoot "slow-sidecar.rs"
               $slowSidecarBinary = Join-Path $smokeRoot "slow-sidecar.exe"
-              $realSidecarBackup = Join-Path $smokeRoot "codex-keysmith-cli.real.exe"
               $slowMarker = Join-Path $smokeRoot "slow-sidecar.marker"
               @'
           use std::env;
@@ -414,14 +413,24 @@ jobs:
               if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
                 throw "Failed to build the slow sidecar lifecycle fixture."
               }
-              Copy-Item -LiteralPath $installedSidecars[0].FullName -Destination $realSidecarBackup
               $slowAppProcess = $null
+              $slowCliEnvBackup = [Environment]::GetEnvironmentVariable(
+                "CODEX_KEYSMITH_CLI",
+                "Process"
+              )
               $slowMarkerEnvBackup = [Environment]::GetEnvironmentVariable(
                 "CODEX_KEYSMITH_SLOW_MARKER",
                 "Process"
               )
               try {
-                Copy-Item -LiteralPath $slowSidecarBinary -Destination $installedSidecars[0].FullName -Force
+                # Use the supported executable override instead of replacing a
+                # file inside the installed NSIS payload. This keeps the smoke
+                # test deterministic on Windows file-locking runners.
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_CLI",
+                  $slowSidecarBinary,
+                  "Process"
+                )
                 [Environment]::SetEnvironmentVariable(
                   "CODEX_KEYSMITH_SLOW_MARKER",
                   $slowMarker,
@@ -475,6 +484,11 @@ jobs:
                   $slowMarkerEnvBackup,
                   "Process"
                 )
+                [Environment]::SetEnvironmentVariable(
+                  "CODEX_KEYSMITH_CLI",
+                  $slowCliEnvBackup,
+                  "Process"
+                )
                 if ($null -ne $slowAppProcess) {
                   $slowAppProcess.Refresh()
                   if (-not $slowAppProcess.HasExited) {
@@ -494,7 +508,6 @@ jobs:
                   try { $process.WaitForExit(5000) | Out-Null }
                   catch {}
                 }
-                Copy-Item -LiteralPath $realSidecarBackup -Destination $installedSidecars[0].FullName -Force
               }
 
               $appProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru

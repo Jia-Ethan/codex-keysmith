@@ -410,10 +410,20 @@ fn runtime_for_path(path: &Path, bundled: bool) -> CliRuntime {
 }
 
 fn bundled_sidecar_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()?
-        .parent()
-        .map(|directory| directory.join(sidecar_filename()))
+    let executable = std::env::current_exe().ok()?;
+    let directory = executable.parent()?;
+    let filename = sidecar_filename();
+    // Tauri places externalBin beside the app on macOS, while Windows
+    // installers may keep it under a resources/binaries directory. Probe
+    // both layouts so packaged builds do not silently fall back to Python.
+    [
+        directory.join(&filename),
+        directory.join("resources").join(&filename),
+        directory.join("resources").join("binaries").join(&filename),
+        directory.join("binaries").join(&filename),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 #[cfg(windows)]
