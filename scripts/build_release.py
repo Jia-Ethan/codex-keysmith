@@ -31,6 +31,8 @@ ARCHIVE_FILES = (
     "codex-instruct.py",
     "docs/agent-install.md",
     "docs/assets/readme/codex-keysmith-preview.png",
+    "docs/assets/readme/codex-keysmith-preview-dark.webp",
+    "docs/assets/readme/codex-keysmith-preview-light.webp",
     "docs/assets/readme/codex-keysmith-hero-dark.webp",
     "docs/assets/readme/codex-keysmith-hero-light.webp",
     "docs/assets/readme/project-architecture-en-dark.webp",
