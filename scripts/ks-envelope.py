@@ -204,7 +204,7 @@ def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
     tool, not as a wrapper name.
     """
     parsed = _parse_tool_arguments(arguments)
-    if isinstance(parsed, dict) and set(parsed.keys()) == {"input"}:
+    if name in _CUSTOM_TOOL_NAMES and isinstance(parsed, dict) and set(parsed.keys()) == {"input"}:
         parsed = parsed["input"]
         parsed = _parse_tool_arguments(parsed)
     label = (name or "").strip()
@@ -550,8 +550,8 @@ def _anthropic_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any
     """Decode an anthropic-messages reply body.
 
     Returns (text, tool_calls, stop_reason). Tool calls are normalized to
-    {id, name, arguments} where arguments is a JSON string (matching
-    _upstream_tool_calls' output contract). The anthropic reply shape is
+    {id, name, arguments}; arguments retain the original input object until
+    tool-specific normalization. The anthropic reply shape is
     ``content: [{type:"text"|"tool_use", ...}]`` at the top level with
     ``stop_reason``; anything lacking both anthropic and chat.completion
     markers returns a sentinel stop_reason so the caller can fall through.
@@ -568,7 +568,7 @@ def _anthropic_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any
         if block_type == "text":
             text_parts.append(str(block.get("text", "")))
         elif block_type == "tool_use":
-            arguments = _unwrap_tool_input(block.get("input"))
+            arguments = block.get("input")
             calls.append(
                 {
                     "id": block.get("id"),
