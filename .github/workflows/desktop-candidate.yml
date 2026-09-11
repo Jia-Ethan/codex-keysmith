@@ -184,10 +184,21 @@ jobs:
         shell: bash
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
-        run: >-
-          npm --prefix gui run tauri -- build
-          --target "$TARGET_TRIPLE"
-          --bundles app,dmg
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if npm --prefix gui run tauri -- build \
+              --target "$TARGET_TRIPLE" \
+              --bundles app,dmg; then
+              exit 0
+            fi
+            echo "DMG bundling attempt $attempt failed." >&2
+            hdiutil info || true
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Build NSIS candidate
         if: matrix.platform == 'windows'
