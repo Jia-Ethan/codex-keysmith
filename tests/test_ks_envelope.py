@@ -432,6 +432,53 @@ def test_translate_tools_from_additional_tools():
     assert tools[0]["input_schema"]["required"] == ["input"]
 
 
+def test_translate_tools_expands_namespace_and_keeps_function_schema():
+    raw = [
+        {
+            "type": "additional_tools",
+            "tools": [
+                {"type": "custom", "name": "exec", "description": "run"},
+                {
+                    "type": "function",
+                    "name": "wait",
+                    "description": "wait on a cell",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"cell_id": {"type": "string"}},
+                        "required": ["cell_id"],
+                    },
+                },
+                {
+                    "type": "namespace",
+                    "name": "collaboration",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "send_message",
+                            "description": "message an agent",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "string"},
+                                    "message": {"type": "string"},
+                                },
+                                "required": ["target", "message"],
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+    ]
+    tools = ks_envelope._translate_tools(raw)
+    by_name = {t["name"]: t for t in tools}
+    assert set(by_name) == {"exec", "wait", "send_message"}
+    assert "collaboration" not in by_name
+    assert by_name["exec"]["input_schema"]["properties"]["input"]["type"] == "string"
+    assert by_name["wait"]["input_schema"]["required"] == ["cell_id"]
+    assert "target" in by_name["send_message"]["input_schema"]["properties"]
+
+
 def test_translate_tools_ignores_bad_entries():
     raw = [
         {"type": "additional_tools", "role": "developer", "tools": [{"type": "custom"}, "junk"]},
@@ -600,12 +647,15 @@ def test_stream_events_include_tool_call_items():
 
 
 def test_tool_call_input_string_becomes_input_dict():
-    item = {"arguments": "await tools.exec_command({command: 'ls'})"}
-    assert ks_envelope._tool_call_input(item) == {"input": "await tools.exec_command({command: 'ls'})"}
-    item = {"arguments": "{\"a\": 1}"}
-    assert ks_envelope._tool_call_input(item) == {"a": 1}
-    item = {"arguments": {"a": 1}}
-    assert ks_envelope._tool_call_input(item) == {"a": 1}
+    item = {"name": "exec", "arguments": "await tools.exec_command({command: 'ls'})"}
+    assert ks_envelope._tool_call_input(item) == (
+        "exec",
+        {"input": "await tools.exec_command({command: 'ls'})"},
+    )
+    item = {"name": "wait", "arguments": "{\"a\": 1}"}
+    assert ks_envelope._tool_call_input(item) == ("wait", {"a": 1})
+    item = {"name": "wait", "arguments": {"a": 1}}
+    assert ks_envelope._tool_call_input(item) == ("wait", {"a": 1})
 
 
 def test_translate_request_reasoning_off_by_default():

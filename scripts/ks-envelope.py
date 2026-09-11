@@ -86,54 +86,169 @@ def _redact(text: str, secret: str) -> str:
 
 # --- request translation: Responses API -> Anthropic messages ----------------
 
+_FUNCTIONS_WRAPPER_NAMES = {"functions", "function", "tools"}
+_EXEC_NESTED_METHODS = {"exec_command", "apply_patch", "write_stdin"}
+_CUSTOM_TOOL_NAMES = {"exec"}
+
+
+def _function_input_schema(tool: Dict[str, Any]) -> Dict[str, Any]:
+    params = tool.get("parameters")
+    if isinstance(params, dict) and params.get("type") == "object":
+        return params
+    return {
+        "type": "object",
+        "properties": {"input": {"type": "string"}},
+        "required": ["input"],
+    }
+
+
+def _translate_one_tool(tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ttype = tool.get("type")
+    if ttype == "namespace":
+        nested: List[Dict[str, Any]] = []
+        for child in tool.get("tools") or []:
+            if isinstance(child, dict):
+                nested.extend(_translate_one_tool(child))
+        return nested
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        return []
+    if ttype == "function":
+        return [
+            {
+                "name": name,
+                "description": str(tool.get("description") or ""),
+                "input_schema": _function_input_schema(tool),
+            }
+        ]
+    return [
+        {
+            "name": name,
+            "description": str(tool.get("description") or ""),
+            "input_schema": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        }
+    ]
+
+
 def _translate_tools(raw_input: Any) -> List[Dict[str, Any]]:
     """Map Responses additional_tools declarations to anthropic tools.
 
-    Codex declares its tools as ``{type: "custom", name, description,
-    format: {type: "grammar", ...}}`` — free-text input tools. The
-    anthropic-messages surface wants JSON-schema tools; a single string
-    parameter carries the grammar source verbatim.
+    Custom grammar tools stay as a single string ``input``. JSON-schema
+    ``function`` tools keep their ``parameters``. ``namespace`` tools are
+    expanded to the nested function tools Codex actually dispatches
+    (``send_message``, ``spawn_agent``, …). Flattening a namespace into
+    one string-input tool is what made gpt-6-astra emit a wrapper call
+    named ``functions``, which Codex rejects as an unknown custom tool.
     """
     tools: List[Dict[str, Any]] = []
     if not isinstance(raw_input, list):
         return tools
+    seen = set()
     for item in raw_input:
         if not isinstance(item, dict) or item.get("type") != "additional_tools":
             continue
         for tool in item.get("tools") or []:
             if not isinstance(tool, dict):
                 continue
-            name = tool.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            tools.append(
-                {
-                    "name": name,
-                    "description": str(tool.get("description") or ""),
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {"input": {"type": "string"}},
-                        "required": ["input"],
-                    },
-                }
-            )
+            for translated in _translate_one_tool(tool):
+                name = translated["name"]
+                if name in seen:
+                    continue
+                seen.add(name)
+                tools.append(translated)
     return tools
 
 
-def _tool_call_input(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Arguments for a history tool_call item, as the anthropic input dict."""
-    arguments = item.get("arguments", item.get("input"))
-    if isinstance(arguments, dict):
+def _parse_tool_arguments(arguments: Any) -> Any:
+    if isinstance(arguments, str):
+        text = arguments.strip()
+        if text[:1] in "{[":
+            try:
+                return json.loads(text)
+            except ValueError:
+                return arguments
         return arguments
-    if isinstance(arguments, str) and arguments.strip():
-        try:
-            parsed = json.loads(arguments)
-            if isinstance(parsed, dict):
-                return parsed
-        except ValueError:
-            pass
-        return {"input": arguments}
-    return {"input": ""}
+    return arguments
+
+
+def _exec_js_call(method: str, arguments: Any) -> str:
+    if not method.isidentifier():
+        method = "exec_command"
+    if isinstance(arguments, dict):
+        arg = json.dumps(arguments, ensure_ascii=False)
+    elif isinstance(arguments, str):
+        arg = json.dumps(arguments, ensure_ascii=False)
+    elif arguments is None:
+        arg = "{}"
+    else:
+        arg = json.dumps(arguments, ensure_ascii=False)
+    return f"text(await tools.{method}({arg}));"
+
+
+def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
+    """Map an upstream tool_use onto a Codex custom or function call.
+
+    Returns ``(name, payload, kind)``. ``kind`` is ``custom`` (payload is
+    grammar source for ``custom_tool_call.input``) or ``function``
+    (payload is a JSON string for ``function_call.arguments``).
+
+    Live desktop session 2026-09-11: the model emitted
+    ``name=functions`` / ``{"tool":"exec_command","arguments":{"cmd":"pwd"}}``.
+    Codex replied ``unsupported custom tool call: functions`` and never
+    ran the command. Nested exec methods belong on the ``exec`` grammar
+    tool, not as a wrapper name.
+    """
+    parsed = _parse_tool_arguments(arguments)
+    if isinstance(parsed, dict) and set(parsed.keys()) == {"input"}:
+        parsed = parsed["input"]
+        parsed = _parse_tool_arguments(parsed)
+    label = (name or "").strip()
+    if label in _FUNCTIONS_WRAPPER_NAMES and isinstance(parsed, dict):
+        inner = parsed.get("tool") or parsed.get("name") or parsed.get("function")
+        inner_args = (
+            parsed.get("arguments")
+            or parsed.get("parameters")
+            or parsed.get("args")
+            or {}
+        )
+        if isinstance(inner, str) and inner.strip():
+            return _normalize_tool_call(inner.strip(), inner_args)
+    if label in _EXEC_NESTED_METHODS:
+        return "exec", _exec_js_call(label, parsed), "custom"
+    if label in _CUSTOM_TOOL_NAMES or label == "exec":
+        if isinstance(parsed, dict) and "cmd" in parsed:
+            return "exec", _exec_js_call("exec_command", parsed), "custom"
+        if isinstance(parsed, str):
+            return "exec", parsed, "custom"
+        if parsed is None:
+            return "exec", "", "custom"
+        return "exec", json.dumps(parsed, ensure_ascii=False), "custom"
+    if isinstance(parsed, dict):
+        payload = json.dumps(parsed, ensure_ascii=False)
+    elif isinstance(parsed, str):
+        payload = parsed
+    elif parsed is None:
+        payload = "{}"
+    else:
+        payload = json.dumps(parsed, ensure_ascii=False)
+    return label or "exec", payload, "function" if label else "custom"
+
+
+def _tool_call_input(item: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """History tool_call → (name, anthropic tool_use.input)."""
+    raw_name = str(item.get("name") or "")
+    raw_args = item.get("arguments", item.get("input"))
+    name, payload, kind = _normalize_tool_call(raw_name, raw_args)
+    if kind == "custom":
+        return name, {"input": payload}
+    parsed = _parse_tool_arguments(payload)
+    if isinstance(parsed, dict):
+        return name, parsed
+    return name, {"input": payload}
 
 
 def _tool_output_text(item: Dict[str, Any]) -> str:
@@ -221,7 +336,7 @@ def translate_request(
                 # Translated by _translate_tools into anthropic tool schemas.
                 continue
             if item_type in ("function_call", "custom_tool_call"):
-                # Assistant tool invocation from conversation history.
+                hist_name, hist_input = _tool_call_input(item)
                 messages.append(
                     {
                         "role": "assistant",
@@ -229,8 +344,8 @@ def translate_request(
                             {
                                 "type": "tool_use",
                                 "id": str(item.get("call_id") or item.get("id") or ""),
-                                "name": str(item.get("name") or ""),
-                                "input": _tool_call_input(item),
+                                "name": hist_name,
+                                "input": hist_input,
                             }
                         ],
                     }
@@ -479,36 +594,35 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
             }
         )
     for call_index, call in enumerate(calls):
-        arguments = call.get("arguments")
-        if isinstance(arguments, dict):
-            arguments = json.dumps(arguments, ensure_ascii=False)
-        # _unwrap_tool_input already normalized the anthropic path to the
-        # raw grammar string; chat.completion tool_calls.arguments arrive as
-        # JSON strings that may carry the same {"input": ...} envelope —
-        # unwrap those too so Codex always receives raw grammar source.
-        if isinstance(arguments, str) and arguments.lstrip().startswith("{"):
-            try:
-                parsed = json.loads(arguments)
-                if (
-                    isinstance(parsed, dict)
-                    and set(parsed.keys()) == {"input"}
-                    and isinstance(parsed["input"], str)
-                ):
-                    arguments = parsed["input"]
-            except ValueError:
-                pass
-        output.append(
-            {
-                "id": "ctc_" + hashlib.sha256(
-                    (str(call.get("id", "")) + str(resp_id)).encode("utf-8")
-                ).hexdigest()[:16],
-                "type": "custom_tool_call",
-                "status": "completed",
-                "call_id": str(call.get("id") or f"call_{call_index}"),
-                "name": str(call.get("name") or ""),
-                "input": str(arguments if arguments is not None else ""),
-            }
+        name, payload, kind = _normalize_tool_call(
+            str(call.get("name") or ""), call.get("arguments")
         )
+        call_id = str(call.get("id") or f"call_{call_index}")
+        item_id = hashlib.sha256(
+            (str(call.get("id", "")) + str(resp_id)).encode("utf-8")
+        ).hexdigest()[:16]
+        if kind == "custom":
+            output.append(
+                {
+                    "id": "ctc_" + item_id,
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": name,
+                    "input": payload,
+                }
+            )
+        else:
+            output.append(
+                {
+                    "id": "fc_" + item_id,
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": payload,
+                }
+            )
 
     return {
         "id": resp_id,
