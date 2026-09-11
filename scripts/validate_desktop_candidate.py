@@ -311,7 +311,7 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "active-sidecar native close": r'^\s*if \(-not \$slowAppProcess\.CloseMainWindow\(\)\) \{$',
         "active-sidecar exit deadline": r'^\s*if \(-not \$slowAppProcess\.WaitForExit\(20000\)\) \{$',
         "active-sidecar completion assertion": r'^\s*throw "GUI closed before the active sidecar process tree completed\."$',
-        "real sidecar restoration": r'^\s*Copy-Item -LiteralPath \$realSidecarBackup -Destination \$installedSidecars\[0\]\.FullName -Force$',
+        "slow CLI override restoration": r'^\s*\[Environment\]::SetEnvironmentVariable\($',
         "primary GUI launch": r'^\s*\$appProcess = Start-Process -FilePath \$installedApps\[0\]\.FullName -PassThru$',
         "primary GUI minimization": r'^\s*\[KeysmithWindowProbe\]::ShowWindow\(\$primaryWindowHandle, 6\) \| Out-Null$',
         "minimized handoff precondition": r'^\s*if \(-not \[KeysmithWindowProbe\]::IsIconic\(\$primaryWindowHandle\)\) \{$',
