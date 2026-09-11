@@ -134,6 +134,71 @@ def test_chat_completion_shape_still_decodes():
     assert out["usage"]["input_tokens"] == 1
 
 
+def test_functions_wrapper_rewrites_to_exec_custom_tool():
+    # Live desktop 2026-09-11: Codex rejected name=functions with
+    # "unsupported custom tool call: functions".
+    reply = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "call_vngiTW4aWR7sY4Hm8ZEBZLxd",
+                "name": "functions",
+                "input": {
+                    "tool": "exec_command",
+                    "arguments": {"cmd": "pwd"},
+                },
+            }
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    out = ks_envelope.translate_response(reply, "gpt-6-astra")
+    call = out["output"][0]
+    assert call["type"] == "custom_tool_call"
+    assert call["name"] == "exec"
+    assert call["call_id"] == "call_vngiTW4aWR7sY4Hm8ZEBZLxd"
+    assert "exec_command" in call["input"]
+    assert "pwd" in call["input"]
+    assert call["input"].startswith("text(await tools.exec_command(")
+
+
+def test_exec_command_nested_name_rewrites_to_exec():
+    reply = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_x",
+                "name": "exec_command",
+                "input": {"cmd": "ls /tmp", "max_output_tokens": 1000},
+            }
+        ],
+        "stop_reason": "tool_use",
+    }
+    call = ks_envelope.translate_response(reply, "m")["output"][0]
+    assert call["type"] == "custom_tool_call"
+    assert call["name"] == "exec"
+    assert "ls /tmp" in call["input"]
+
+
+def test_wait_function_tool_emits_function_call_not_custom():
+    reply = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "call_wait",
+                "name": "wait",
+                "input": {"cell_id": "exec-1", "yield_time_ms": 10000},
+            }
+        ],
+        "stop_reason": "tool_use",
+    }
+    call = ks_envelope.translate_response(reply, "m")["output"][0]
+    assert call["type"] == "function_call"
+    assert call["name"] == "wait"
+    args = json.loads(call["arguments"])
+    assert args["cell_id"] == "exec-1"
+
+
 def test_max_tokens_default_raised_for_tool_turns():
     body = {"model": "m", "input": [{"role": "user", "content": "hi"}]}
     out = ks_envelope.translate_request(body)

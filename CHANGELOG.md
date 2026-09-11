@@ -8,8 +8,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Envelope tool translation: a desktop session on 2026-09-11 emitted `custom_tool_call name=functions` with `{"tool":"exec_command",…}`; Codex replied `unsupported custom tool call: functions` and never ran the command. `_translate_tools` now expands `namespace` nested tools and keeps JSON-schema `function` parameters; the return path remaps wrapper/`exec_command`/`apply_patch` calls onto the `exec` grammar tool, and emits `function_call` for wait/collaboration tools.
 - `ks-envelope-deploy agent install` now points the LaunchAgent at the runtime copy under the codex home (`copy_runtime_script`), same as the `sync_on_deploy` path. Previously it wrote the repo checkout path into the plist, which fails with `Operation not permitted` on macOS whenever the checkout lives in a TCC-protected location (Documents / Desktop / Downloads): launchd-spawned python cannot read those paths, so the agent crashed on load and KeepAlive retried forever.
-- `ensure_listener` no longer adopts a healthy loopback port held by an unrelated process. The listener's command line is verified (via `lsof`/`ps`) to be a `ks-envelope` / runtime-copy invocation before reuse; a stale foreign listener (e.g. an orphaned e2e-test process bound with different arguments such as `--overlay-file`) triggers launch/spawn instead of silent adoption.
+- `--overlay` is copied next to the runtime helper (`copy_runtime_overlay`) and written into the plist as an absolute path under the codex home, so launchd does not have to read a TCC-protected checkout overlay.
+- `ensure_listener` no longer adopts a healthy loopback port held by an unrelated process. Ownership checks the expected runtime script path and overlay argv (a leftover `ks-envelope.py --overlay-file` from an aborted e2e run is not "ours"); a stale envelope occupant is SIGTERM'd before launch/spawn; `/health` after spawn still has to pass the ownership check. Unit tests no longer rewrite the live LaunchAgent plist.
 
 ### Changed
 
