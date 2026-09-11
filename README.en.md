@@ -54,6 +54,14 @@ Keysmith installs instructions onto local AI coding tools: preview, apply, verif
 3. **Start a new conversation.** Close old tasks and open a new one.
 4. **Remove it whenever you want.** Review the plan, then restore how it was.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/codex-keysmith-preview-dark.webp" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/codex-keysmith-preview-light.webp" />
+    <img src="docs/assets/readme/codex-keysmith-preview-light.webp" alt="Illustrative preview; actual paths and output follow the local dry-run" width="100%" />
+  </picture>
+</p>
+
 ## Which Keysmith to use
 
 | You use | Installer | How to start |
