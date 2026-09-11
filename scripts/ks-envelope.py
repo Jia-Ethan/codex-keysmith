@@ -46,14 +46,12 @@ MAX_REQUEST_BYTES = 8 * 1024 * 1024
 UPSTREAM_TIMEOUT_SECONDS = 300
 KEEPALIVE_INTERVAL_SECONDS = 2.0
 KEEPALIVE_COMMENT = b": keepalive\n\n"
-COALESCE_TTL_SECONDS = 45.0
-_FINGERPRINT_KEYS = (
-    "model",
-    "input",
-    "tools",
-    "instructions",
-    "reasoning",
-    "stream",
+COALESCE_TTL_SECONDS = 60.0
+_TOOL_ITEM_TYPES = (
+    "function_call",
+    "custom_tool_call",
+    "function_call_output",
+    "custom_tool_call_output",
 )
 
 SECRET_PATTERNS = (
@@ -87,10 +85,62 @@ def reset_coalesce_state() -> None:
         _coalesce.clear()
 
 
+def _content_text(item: Dict[str, Any]) -> str:
+    content = item.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if isinstance(block, str) and block:
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in (
+            "input_text",
+            "output_text",
+            "text",
+            "summary_text",
+        ):
+            text = str(block.get("text") or "")
+            if text:
+                parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def _request_fingerprint(body: Dict[str, Any]) -> str:
-    subset = {key: body.get(key) for key in _FINGERPRINT_KEYS}
-    blob = json.dumps(subset, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    """Stable across Codex retries: ignore item ids and developer/memory-router churn."""
+    parts: List[str] = [
+        str(body.get("model") or ""),
+        "stream=" + ("1" if body.get("stream") is True else "0"),
+    ]
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict) and reasoning.get("effort"):
+        parts.append("effort=" + str(reasoning.get("effort")))
+    raw = body.get("input")
+    if isinstance(raw, str):
+        parts.append("user:" + raw.strip())
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            itype = str(item.get("type") or "")
+            role = item.get("role")
+            if itype in _TOOL_ITEM_TYPES:
+                parts.append(
+                    itype
+                    + ":"
+                    + str(item.get("name") or "")
+                    + ":"
+                    + str(item.get("call_id") or item.get("id") or "")
+                )
+                continue
+            if role == "developer":
+                continue
+            if role == "user":
+                text = _content_text(item)
+                if text:
+                    parts.append("user:" + text)
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def _coalesce_begin(fingerprint: str) -> Tuple[_CoalescedTurn, bool]:
@@ -108,9 +158,15 @@ def _coalesce_begin(fingerprint: str) -> Tuple[_CoalescedTurn, bool]:
             not existing.done.is_set()
             or now - existing.finished_at <= COALESCE_TTL_SECONDS
         ):
+            sys.stderr.write(
+                "[ks-envelope] coalesce replay fp=%s\n" % fingerprint[:16]
+            )
+            sys.stderr.flush()
             return existing, False
         slot = _CoalescedTurn()
         _coalesce[fingerprint] = slot
+        sys.stderr.write("[ks-envelope] coalesce leader fp=%s\n" % fingerprint[:16])
+        sys.stderr.flush()
         return slot, True
 
 
@@ -140,6 +196,7 @@ class _SseKeepalive:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self.resp_id = ""
 
     def start(self) -> None:
         if self.interval <= 0:
@@ -149,12 +206,31 @@ class _SseKeepalive:
         )
         self._thread.start()
 
+    def _progress_frame(self) -> bytes:
+        if not self.resp_id:
+            return KEEPALIVE_COMMENT
+        return KEEPALIVE_COMMENT + _sse_event(
+            "response.in_progress",
+            {
+                "type": "response.in_progress",
+                "response": {"id": self.resp_id, "status": "in_progress"},
+            },
+        )
+
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
-            if not self.emit(KEEPALIVE_COMMENT, capture=False):
+            if not self.emit(self._progress_frame(), capture=False):
                 return
 
     def emit(self, frame: bytes, capture: bool = True) -> bool:
+        if b"event: response.created" in frame and not self.resp_id:
+            marker = b'"id": "'
+            start = frame.find(marker)
+            if start >= 0:
+                start += len(marker)
+                end = frame.find(b'"', start)
+                if end > start:
+                    self.resp_id = frame[start:end].decode("ascii", errors="replace")
         try:
             with self._lock:
                 if capture and self.capture is not None and not frame.startswith(b":"):
@@ -1093,16 +1169,29 @@ class _LiveResponse:
         index = payload.get("index")
         btype = block.get("type")
         if btype == "text" and isinstance(index, int):
-            if self.text_closed:
+            frames: List[bytes] = []
+            if (
+                self.text_index is not None
+                and not self.text_closed
+                and self.text_block_index is not None
+                and index != self.text_block_index
+            ):
+                frames.extend(self._close_text_item())
+                self.text_index = None
+                self.text_closed = False
+                self.text = ""
+                self.text_id = "msg_" + uuid.uuid4().hex[:20]
+            elif self.text_closed:
                 self.text_index = None
                 self.text_closed = False
                 self.text = ""
                 self.text_id = "msg_" + uuid.uuid4().hex[:20]
             self.text_block_index = index
             if block.get("text"):
-                return list(self.block_delta({"index": index, "delta": {
+                frames.extend(self.block_delta({"index": index, "delta": {
                     "type": "text_delta", "text": block["text"],
                 }}))
+            return frames
         elif btype == "tool_use" and isinstance(index, int):
             self.tools[index] = {
                 "id": block.get("id"),
@@ -1141,7 +1230,9 @@ class _LiveResponse:
     def block_stop(self, payload: Dict[str, Any]) -> Iterator[bytes]:
         index = payload.get("index")
         if index == self.text_block_index:
-            yield from self._close_text_item()
+            # Keep the message in_progress until finish()/fail(). Codex
+            # commits AgentMessage on output_item.done; emitting it before
+            # the terminal event is what produced a second reply on reconnect.
             return
         if not isinstance(index, int) or index not in self.tools:
             return
@@ -1352,8 +1443,9 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
     ) -> None:
         try:
             for frame in iter_anthropic_stream_as_responses(resp, model):
-                if not gate.emit(frame):
-                    break
+                # Client disconnect still captures frames so a reconnect
+                # POST can replay this generation instead of calling LGW again.
+                gate.emit(frame)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
