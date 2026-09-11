@@ -80,6 +80,14 @@ def _redact(text: str, secret: str) -> str:
 
 _FUNCTIONS_WRAPPER_NAMES = {"functions", "function", "tools"}
 _EXEC_NESTED_METHODS = {"exec_command", "apply_patch", "write_stdin"}
+_COLLAB_METHODS = {
+    "followup_task",
+    "interrupt_agent",
+    "list_agents",
+    "send_message",
+    "spawn_agent",
+    "wait_agent",
+}
 _CUSTOM_TOOL_NAMES = {"exec"}
 
 
@@ -209,7 +217,7 @@ def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
         )
         if isinstance(inner, str) and inner.strip():
             return _normalize_tool_call(inner.strip(), inner_args)
-    if label in _EXEC_NESTED_METHODS:
+    if label in _EXEC_NESTED_METHODS or label in _COLLAB_METHODS:
         return "exec", _exec_js_call(label, parsed), "custom"
     if label in _CUSTOM_TOOL_NAMES or label == "exec":
         if isinstance(parsed, dict) and "cmd" in parsed:
@@ -277,14 +285,78 @@ def _item_text(item: Dict[str, Any]) -> str:
                     "summary_text",
                 ):
                     parts.append(str(block.get("text", "")))
-                # other block types (reasoning traces, tool calls) carry no
-                # prose for the delivery arm; skip rather than reject.
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(p for p in parts if p)
     if content is None:
         return ""
     raise EnvelopeError("input item content is not text")
+
+
+def _anthropic_image_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    url = block.get("image_url") or block.get("url")
+    if not isinstance(url, str) or not url:
+        source = block.get("source")
+        if isinstance(source, dict) and isinstance(source.get("data"), str):
+            media = str(source.get("media_type") or "image/png")
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media,
+                    "data": source["data"],
+                },
+            }
+        return None
+    if url.startswith("data:") and "," in url:
+        header, data = url.split(",", 1)
+        media = "image/png"
+        rest = header[5:] if header.startswith("data:") else header
+        if ";" in rest:
+            media = rest.split(";", 1)[0] or media
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media, "data": data},
+        }
+    if url.startswith(("http://", "https://")):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    return None
+
+
+def _message_content_blocks(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    content = item.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        text = _item_text(item)
+        return [{"type": "text", "text": text}] if text else []
+    blocks: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+
+    def flush_text() -> None:
+        if text_parts:
+            blocks.append({"type": "text", "text": "\n".join(text_parts)})
+            text_parts.clear()
+
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                text_parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype in ("input_text", "output_text", "text", "summary_text"):
+            text = str(block.get("text", ""))
+            if text:
+                text_parts.append(text)
+        elif btype in ("input_image", "image"):
+            image = _anthropic_image_block(block)
+            if image is not None:
+                flush_text()
+                blocks.append(image)
+    flush_text()
+    return blocks
 
 
 def translate_request(
@@ -358,15 +430,17 @@ def translate_request(
                 )
                 continue
             role = item.get("role", "user")
-            text = _item_text(item)
             if role == "developer":
-                system_parts.append(text)
+                text = _item_text(item)
+                if text:
+                    system_parts.append(text)
                 continue
             if role not in ("user", "assistant"):
                 role = "user"
-            messages.append(
-                {"role": role, "content": [{"type": "text", "text": text}]}
-            )
+            content_blocks = _message_content_blocks(item)
+            if not content_blocks:
+                continue
+            messages.append({"role": role, "content": content_blocks})
     else:
         raise EnvelopeError("request has no usable input field")
 

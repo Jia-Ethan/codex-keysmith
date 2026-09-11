@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- `docs/envelope.md` now describes the helper as this product's protocol adapter (stock prompt kept, overlay appended). The previous framing made a 2026-09-11 desktop session stop after a read-only audit.
+- Collaboration tools (`spawn_agent`, `send_message`, and the rest of the namespace) map onto the `exec` grammar tool. A live session's `function_call name=spawn_agent` came back `unsupported call: spawn_agent` from the Codex router.
+- `input_image` / `image` blocks are forwarded as anthropic image content instead of being dropped.
 - Envelope mode now parks a live top-level `model_instructions_file` (comment prefix `# keysmith-envelope-unstack:`) so overlay is appended after the stock Astra prompt instead of replacing it. Stacking replacement+envelope wiped stock execution/depth clauses and was the 2026-09-11 desktop path that refused to edit this repo (`reasoning_output_tokens: 0`). `restore` puts the field back.
 - `ks-envelope.py` module docstring no longer discusses upstream classification; Codex was reading that file and stopping the turn. Default (non-passthrough) path now writes the request's `reasoning.effort` into the system string so high/xhigh turns keep a depth instruction without emitting an anthropic thinking block.
 - Envelope tool translation: a desktop session on 2026-09-11 emitted `custom_tool_call name=functions` with `{"tool":"exec_command",…}`; Codex replied `unsupported custom tool call: functions` and never ran the command. `_translate_tools` now expands `namespace` nested tools and keeps JSON-schema `function` parameters; the return path remaps wrapper/`exec_command`/`apply_patch` calls onto the `exec` grammar tool, and emits `function_call` for wait/collaboration tools.
@@ -55,7 +58,7 @@ Overlay-append follow-up (same day, gpt-6-astra, isolated `CODEX_HOME`, `codex e
 
 - Opponent index was Codex Astra / 5.6 / personality / plan_mode only. ChatGPT safety sections were not written into any contract.
 - Direct `model_instructions_file` replacement wipes stock Astra clauses; overlay append keeps them. That is why v080-core restates user-first/complete/no-disclaimer and v080-overlay does not.
-- The 12-case first-line bank is a weak overlay metric (0/12 on append). Overlay's measured strength remains the envelope/cybergym path (stock kept, classifier not fed a replacement body).
+- The 12-case first-line bank is a weak overlay metric (0/12 on append). Overlay's measured strength remains the envelope/cybergym path (stock prompt kept, overlay appended).
 
 Envelope tool-fidelity (2026-09-10, gpt-6-astra, isolated `CODEX_HOME`, `ks-envelope` overlay append, messages arm live again): stock / current-overlay / v081 all **1 command_execution, `alpha 1` read, not flagged**. v081 does not break tools vs current overlay. Cybergym 2-task rerun **did not run**: Docker Desktop volume hit `no space left on device` pulling `n132/arvo:10400` and `cybergym/oss-fuzz:385167047` (host Data volume still had ~467Gi free). **v081 not merged.** Bundled overlay remains `1762798a5eaba119…`. Evidence: `breaktest-results/contract-v080/overlay-agent-summary.json`.
 
