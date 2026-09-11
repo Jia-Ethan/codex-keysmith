@@ -46,7 +46,7 @@ python3 scripts/ks-envelope-deploy.py agent uninstall
 | 默认 `--preset overlay` | `model_instructions_file` 写入 `gpt-overlay.md` | 默认安装 |
 | envelope + `gpt-overlay.md` | 只改 provider `base_url`；stock 提示保留 | 要把 overlay 追加在 stock 之后时 |
 
-不要叠用：envelope 模式下不要再写 `model_instructions_file`。`ks-envelope-deploy` 也不会写该字段。
+不要叠用：envelope 模式下不要再写 `model_instructions_file`。`deploy` / `agent install` 若发现该顶层字段仍在，会把它注释成 `# keysmith-envelope-unstack:`，把同一份 overlay 交给 `--overlay-file` 追加在 stock 提示之后。`restore` 会把字段取消注释。
 
 # Envelope overlay (append path, not the default install)
 
@@ -60,4 +60,4 @@ Measured (2026-09-08/10, isolated `CODEX_HOME`, live `~/.codex` untouched):
 
 Default install is already the overlay prompt (`codex-instruct.py` with no `--preset`). This page is only the advanced path that **appends** the same overlay after stock instructions and does not write `model_instructions_file`. Do not present it as a second default install prompt.
 
-See the Chinese section above for the deploy/restore commands. `deploy` does not write `model_instructions_file`.
+See the Chinese section above for the deploy/restore commands. `deploy` does not write `model_instructions_file`; if that field is already present it is parked and restored with the original `base_url`.

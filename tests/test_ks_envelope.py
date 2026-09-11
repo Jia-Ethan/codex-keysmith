@@ -666,6 +666,7 @@ def test_translate_request_reasoning_off_by_default():
     }
     out = ks_envelope.translate_request(body)
     assert "thinking" not in out
+    assert "extra-high depth" in out.get("system", "")
 
 
 def test_translate_request_reasoning_effort_maps_to_thinking():

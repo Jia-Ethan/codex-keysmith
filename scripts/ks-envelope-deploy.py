@@ -61,6 +61,8 @@ class DeployError(Exception):
 
 _PROVIDER_TABLE_RE = re.compile(r"^\s*\[model_providers\.([A-Za-z0-9_.-]+)\]")
 _BASE_URL_RE = re.compile(r'^(\s*base_url\s*=\s*")(.*?)(")')
+_INSTRUCTIONS_RE = re.compile(r'^(\s*model_instructions_file\s*=\s*")(.*?)(")')
+UNSTACK_PREFIX = "# keysmith-envelope-unstack: "
 
 
 def find_provider_base_url(lines: List[str], provider: str) -> Optional[Tuple[int, str]]:
@@ -90,6 +92,35 @@ def find_active_provider(lines: List[str]) -> Optional[str]:
         if s.startswith("model_provider") and "=" in s:
             return s.split("=", 1)[1].strip().strip('"')
     return None
+
+
+def park_model_instructions(lines: List[str]) -> Tuple[List[str], Optional[str]]:
+    """Comment out a live top-level model_instructions_file so envelope
+    append keeps the stock prompt. Returns (lines, parked value)."""
+    parked: Optional[str] = None
+    new_lines = list(lines)
+    for i, line in enumerate(new_lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        if stripped.startswith("#"):
+            continue
+        match = _INSTRUCTIONS_RE.match(line)
+        if match:
+            parked = match.group(2)
+            new_lines[i] = UNSTACK_PREFIX + line
+            break
+    return new_lines, parked
+
+
+def unpark_model_instructions(lines: List[str]) -> List[str]:
+    restored = []
+    for line in lines:
+        if line.startswith(UNSTACK_PREFIX):
+            restored.append(line[len(UNSTACK_PREFIX):])
+        else:
+            restored.append(line)
+    return restored
 
 
 def set_provider_base_url(lines: List[str], provider: str, new_url: str) -> List[str]:
@@ -172,6 +203,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     bak = backup_config(config)
     new_lines = set_provider_base_url(lines, provider, envelope_url)
+    new_lines, parked = park_model_instructions(new_lines)
     save_config_lines(config, new_lines)
     write_manifest(
         codex_home,
@@ -183,6 +215,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "envelope_base_url": envelope_url,
             "port": args.port,
             "overlay": str(Path(args.overlay).resolve()) if args.overlay else None,
+            "parked_model_instructions_file": parked,
             "config_backup": str(bak),
         },
     )
@@ -191,7 +224,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     print(f"  backup:   {bak}")
     if args.overlay:
         print(f"  overlay:  {args.overlay} (pass --overlay-file to ks-envelope)")
-    print("  stock base prompt untouched (no model_instructions_file written)")
+    if parked:
+        print(f"  parked:   model_instructions_file ({parked})")
+    print("  stock base prompt kept (replacement field parked, overlay appends)")
     return 0
 
 
@@ -221,6 +256,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         )
     backup_config(config)
     new_lines = set_provider_base_url(lines, provider, original)
+    new_lines = unpark_model_instructions(new_lines)
     save_config_lines(config, new_lines)
     (codex_home / MANIFEST_NAME).unlink()
     print(f"restored: {provider} base_url -> {original}")
@@ -506,9 +542,17 @@ def restore_provider_url(codex_home: Path) -> None:
     hit = find_provider_base_url(lines, provider)
     if hit is None:
         return
+    changed = False
     if hit[1] != original:
+        lines = set_provider_base_url(lines, provider, original)
+        changed = True
+    unparked = unpark_model_instructions(lines)
+    if unparked != lines:
+        lines = unparked
+        changed = True
+    if changed:
         backup_config(config)
-        save_config_lines(config, set_provider_base_url(lines, provider, original))
+        save_config_lines(config, lines)
     try:
         (codex_home / MANIFEST_NAME).unlink()
     except OSError:
@@ -561,9 +605,9 @@ def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
     log_dir = Path.home() / ".codex" / "logs"
     if not already:
         bak = backup_config(config)
-        save_config_lines(
-            config, set_provider_base_url(list(lines), provider, envelope_url)
-        )
+        new_lines = set_provider_base_url(list(lines), provider, envelope_url)
+        new_lines, parked = park_model_instructions(new_lines)
+        save_config_lines(config, new_lines)
         write_manifest(
             codex_home,
             {
@@ -573,10 +617,19 @@ def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
                 "original_base_url": original_url,
                 "envelope_base_url": envelope_url,
                 "port": port,
-                "overlay": None,
+                "overlay": overlay_raw if overlay_raw else None,
+                "parked_model_instructions_file": parked,
                 "config_backup": str(bak),
             },
         )
+    else:
+        parked_lines, parked = park_model_instructions(list(lines))
+        if parked is not None:
+            backup_config(config)
+            save_config_lines(config, parked_lines)
+            if manifest is not None:
+                manifest["parked_model_instructions_file"] = parked
+                write_manifest(codex_home, manifest)
     if ensure_listener(
         port, upstream, script, auth_file, log_dir, overlay=overlay_path
     ):
@@ -717,6 +770,20 @@ def cmd_agent(args: argparse.Namespace) -> int:
             if overlay is not None
             else None
         )
+        config = codex_home / "config.toml"
+        if config.is_file():
+            cfg_lines = load_config_lines(config)
+            parked_lines, parked = park_model_instructions(cfg_lines)
+            if parked is not None:
+                backup_config(config)
+                save_config_lines(config, parked_lines)
+            manifest = read_manifest(codex_home)
+            if manifest is not None:
+                if parked is not None:
+                    manifest["parked_model_instructions_file"] = parked
+                if overlay_runtime is not None:
+                    manifest["overlay"] = str(overlay_runtime)
+                write_manifest(codex_home, manifest)
         auth_candidate = codex_home / "auth.json"
         auth_file = auth_candidate if auth_candidate.is_file() else None
         existing = PLIST_PATH.is_file()
