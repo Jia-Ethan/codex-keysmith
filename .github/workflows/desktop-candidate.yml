@@ -372,7 +372,11 @@ jobs:
               # never reaches its completion marker.
               $slowSidecarSource = Join-Path $smokeRoot "slow-sidecar.rs"
               $slowSidecarBinary = Join-Path $smokeRoot "slow-sidecar.exe"
+              $realSidecarBackup = Join-Path $smokeRoot "codex-keysmith-cli.real.exe"
               $slowMarker = Join-Path $smokeRoot "slow-sidecar.marker"
+              # Bake the marker path into the fixture. Start-Process defaults to
+              # UseShellExecute on Windows, so a process-level environment variable
+              # never reaches the GUI or the sidecar it launches.
               @'
           use std::env;
           use std::fs::OpenOptions;
@@ -382,7 +386,7 @@ jobs:
           use std::time::Duration;
 
           fn mark(value: &str) {
-              let marker = env::var("CODEX_KEYSMITH_SLOW_MARKER").expect("marker path");
+              let marker = r#"__SLOW_MARKER_PATH__"#;
               let mut file = OpenOptions::new()
                   .create(true)
                   .append(true)
@@ -408,34 +412,34 @@ jobs:
               mark("complete");
               println!("codex-keysmith 0.2.0");
           }
-          '@ | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
+          '@.Replace('__SLOW_MARKER_PATH__', $slowMarker) | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
               & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
               if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
                 throw "Failed to build the slow sidecar lifecycle fixture."
               }
+              $sidecarIdleDeadline = [DateTime]::UtcNow.AddSeconds(15)
+              do {
+                $busySidecars = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.Equals($installedSidecars[0].FullName, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                if ($busySidecars.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 250
+              } while ([DateTime]::UtcNow -lt $sidecarIdleDeadline)
+              if ($busySidecars.Count -ne 0) {
+                throw "Installed sidecar remained busy before the slow-sidecar fixture swap."
+              }
+              Copy-Item -LiteralPath $installedSidecars[0].FullName -Destination $realSidecarBackup
               $slowAppProcess = $null
-              $slowCliEnvBackup = [Environment]::GetEnvironmentVariable(
-                "CODEX_KEYSMITH_CLI",
-                "Process"
-              )
-              $slowMarkerEnvBackup = [Environment]::GetEnvironmentVariable(
-                "CODEX_KEYSMITH_SLOW_MARKER",
-                "Process"
-              )
               try {
-                # Use the supported executable override instead of replacing a
-                # file inside the installed NSIS payload. This keeps the smoke
-                # test deterministic on Windows file-locking runners.
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_CLI",
-                  $slowSidecarBinary,
-                  "Process"
-                )
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_SLOW_MARKER",
-                  $slowMarker,
-                  "Process"
-                )
+                # Automatic CLI discovery prefers the bundled sidecar over
+                # CODEX_KEYSMITH_CLI, so the lifecycle fixture must occupy that
+                # path. The marker path is compiled in; do not depend on env
+                # inheritance from Start-Process.
+                Copy-Item -LiteralPath $slowSidecarBinary -Destination $installedSidecars[0].FullName -Force
                 $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
                 $slowWindowDeadline = [DateTime]::UtcNow.AddSeconds(30)
                 do {
@@ -479,16 +483,6 @@ jobs:
                 }
               }
               finally {
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_SLOW_MARKER",
-                  $slowMarkerEnvBackup,
-                  "Process"
-                )
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_CLI",
-                  $slowCliEnvBackup,
-                  "Process"
-                )
                 if ($null -ne $slowAppProcess) {
                   $slowAppProcess.Refresh()
                   if (-not $slowAppProcess.HasExited) {
@@ -508,6 +502,7 @@ jobs:
                   try { $process.WaitForExit(5000) | Out-Null }
                   catch {}
                 }
+                Copy-Item -LiteralPath $realSidecarBackup -Destination $installedSidecars[0].FullName -Force
               }
 
               $appProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru

@@ -80,6 +80,8 @@ jobs:
               throw "Automatic discovery reported the Windows runtime directory"
             }
             & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
+            let marker = r#"__SLOW_MARKER_PATH__"#;
+            '@.Replace('__SLOW_MARKER_PATH__', $slowMarker) | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
             $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
             if (-not $slowAppProcess.CloseMainWindow()) {
               throw "Slow-sidecar GUI rejected the native close request."
