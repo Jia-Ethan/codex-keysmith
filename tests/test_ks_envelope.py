@@ -495,6 +495,8 @@ class _AnthropicSseUpstream(BaseHTTPRequestHandler):
         for chunk in chunks:
             self.wfile.write(chunk.encode("utf-8"))
             self.wfile.flush()
+            if '"text":"ab"' in chunk:
+                assert self.server.delta_received.wait(5), "adapter buffered upstream"
 
     def log_message(self, fmt, *args):
         pass
@@ -502,6 +504,7 @@ class _AnthropicSseUpstream(BaseHTTPRequestHandler):
 
 def test_end_to_end_forwards_anthropic_sse_deltas():
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicSseUpstream)
+    upstream.delta_received = threading.Event()
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     handler = type(
         "BoundSse",
@@ -530,11 +533,20 @@ def test_end_to_end_forwards_anthropic_sse_deltas():
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode("utf-8")
+            lines = []
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                lines.append(line)
+                if b'"delta": "ab"' in line:
+                    upstream.delta_received.set()
+            body = b"".join(lines).decode("utf-8")
         assert '"delta": "ab"' in body
         assert "event: response.completed" in body
         assert body.index("response.created") < body.index('"delta": "ab"')
     finally:
+        upstream.delta_received.set()
         adapter.shutdown()
         upstream.shutdown()
         adapter.server_close()
@@ -564,6 +576,138 @@ def test_unknown_post_path_404(_servers):
 
 
 # --- CLI guards ----------------------------------------------------------------
+
+
+def _stream_events(events):
+    raw = b"".join(ks_envelope._sse_event(e["type"], e) for e in events)
+    frames = b"".join(ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m"))
+    return [payload for _, payload in ks_envelope.iter_sse_events(io.BytesIO(frames))]
+
+
+@pytest.mark.parametrize("tail", [[], [{"type": "message_stop"}],
+    [{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}]])
+def test_stream_missing_terminal_metadata_fails(tail):
+    events = _stream_events(tail)
+    assert events[-1]["type"] == "response.failed"
+    assert not any(e["type"] == "response.completed" for e in events)
+
+
+@pytest.mark.parametrize("reason,status", [
+    ("end_turn", "completed"), ("tool_use", "completed"),
+    ("stop_sequence", "completed"), ("max_tokens", "incomplete"),
+])
+def test_stream_terminal_and_start_usage(reason, status):
+    events = _stream_events([
+        {"type": "message_start", "message": {"usage": {"input_tokens": 17}}},
+        {"type": "message_delta", "delta": {"stop_reason": reason},
+         "usage": {"output_tokens": 3}},
+        {"type": "message_stop"},
+    ])
+    assert events[-1]["type"] == "response." + status
+    assert events[-1]["response"]["usage"]["input_tokens"] == 17
+    assert events[-1]["response"]["usage"]["output_tokens"] == 3
+
+
+def test_stream_multiple_text_blocks_have_distinct_done_items():
+    source = []
+    for index, text in enumerate(["first", "second"]):
+        source.extend([
+            {"type": "content_block_start", "index": index,
+             "content_block": {"type": "text", "text": text}},
+            {"type": "content_block_stop", "index": index},
+        ])
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    done = [e for e in events if e["type"] == "response.output_item.done"]
+    assert [e["output_index"] for e in done] == [0, 1]
+    assert done[0]["item"]["id"] != done[1]["item"]["id"]
+    assert [e["item"] for e in done] == events[-1]["response"]["output"]
+    assert [e["item"]["content"][0]["text"] for e in done] == ["first", "second"]
+
+
+@pytest.mark.parametrize("raw", [b"data: invalid\n\n", b"data: []\n\n",
+    b"data: [DONE]\n\n",
+    b'data: {"type":"error","error":{"message":"SECRET"}}\n\n'])
+def test_stream_bad_frames_fail_without_leaking(raw):
+    result = b"".join(ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m"))
+    assert result.count(b"event: response.failed\n") == 1
+    assert b"response.completed" not in result
+    assert b"SECRET" not in result
+
+
+@pytest.mark.parametrize("error", [TimeoutError("SECRET"),
+    ks_envelope.http.client.IncompleteRead(b"SECRET"), ConnectionResetError("SECRET")])
+def test_stream_read_errors_are_failed_sse(error):
+    class BrokenStream:
+        def readline(self):
+            raise error
+
+    result = b"".join(ks_envelope.iter_anthropic_stream_as_responses(BrokenStream(), "m"))
+    assert result.count(b"event: response.failed\n") == 1
+    assert b"SECRET" not in result
+
+
+def test_handler_read_failure_does_not_append_http_error():
+    class BrokenStream:
+        def readline(self):
+            raise TimeoutError("SECRET")
+
+    handler = object.__new__(ks_envelope.EnvelopeHandler)
+    handler.wfile = io.BytesIO()
+    statuses = []
+    handler.send_response = statuses.append
+    handler.send_header = lambda *args: None
+    handler.end_headers = lambda: None
+    handler._reply_upstream_stream(BrokenStream(), "m")
+    assert statuses == [200]
+    assert handler.close_connection is True
+    assert handler.wfile.getvalue().count(b"event: response.failed\n") == 1
+    assert b"SECRET" not in handler.wfile.getvalue()
+
+
+def test_stream_fragmented_function_arguments_and_initial_tool_input():
+    source = []
+    for index in range(2):
+        source.append({"type": "content_block_start", "index": index,
+                       "content_block": {"type": "tool_use", "id": str(index),
+                                         "name": "wait", "input": {"cell_id": "x"}}})
+        if index == 0:
+            for fragment in ['{"cell_', 'id":"x"}']:
+                source.append({"type": "content_block_delta", "index": index,
+                               "delta": {"type": "input_json_delta",
+                                         "partial_json": fragment}})
+        source.append({"type": "content_block_stop", "index": index})
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    assert events[-1]["type"] == "response.completed"
+    for item in events[-1]["response"]["output"]:
+        assert item["type"] == "function_call"
+        assert json.loads(item["arguments"]) == {"cell_id": "x"}
+
+
+@pytest.mark.parametrize("partial,closed", [("{", True), ("{}", False)])
+def test_stream_invalid_or_unclosed_tool_is_not_dispatched(partial, closed):
+    source = [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "t", "name": "exec"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": partial}},
+    ]
+    if closed:
+        source.append({"type": "content_block_stop", "index": 0})
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["output"] == []
 
 
 def test_main_rejects_bad_port(capsys):

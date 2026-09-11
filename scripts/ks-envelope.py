@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -784,7 +785,7 @@ def _sse_data_payload(parts: List[str]) -> Any:
     try:
         return json.loads(blob)
     except ValueError:
-        return None
+        raise EnvelopeError("invalid upstream SSE JSON") from None
 
 
 def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
@@ -821,13 +822,21 @@ def iter_anthropic_stream_as_responses(
     """Translate an Anthropic /messages SSE stream into Responses SSE frames."""
     live = _LiveResponse(model)
     yield live.created_frame()
+    try:
+        yield from _forward_anthropic_stream(fp, live)
+    except (OSError, http.client.HTTPException, EnvelopeError):
+        # Headers are already sent. Never append another HTTP response or
+        # expose upstream exception text (which may contain credentials).
+        yield from live.fail("upstream stream interrupted or invalid")
+
+
+def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
     for _name, payload in iter_sse_events(fp):
         if not isinstance(payload, dict):
-            continue
+            raise EnvelopeError("invalid upstream SSE payload")
         etype = str(payload.get("type") or _name or "")
         if etype == "error":
-            err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-            yield from live.fail(str(err.get("message") or "upstream stream error"))
+            yield from live.fail("upstream stream error")
             return
         if etype == "content_block_start":
             yield from live.block_start(payload)
@@ -837,11 +846,16 @@ def iter_anthropic_stream_as_responses(
             yield from live.block_stop(payload)
         elif etype == "message_delta":
             live.message_delta(payload)
-        elif etype in ("ping", "message_start"):
+        elif etype == "message_start":
+            message = payload.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                live.usage.update(message["usage"])
+        elif etype == "ping":
             continue
         elif etype == "message_stop":
-            break
-    yield from live.finish()
+            yield from live.finish()
+            return
+    yield from live.fail("upstream stream ended before message_stop")
 
 
 class _LiveResponse:
@@ -929,12 +943,22 @@ class _LiveResponse:
         index = payload.get("index")
         btype = block.get("type")
         if btype == "text" and isinstance(index, int):
+            if self.text_closed:
+                self.text_index = None
+                self.text_closed = False
+                self.text = ""
+                self.text_id = "msg_" + uuid.uuid4().hex[:20]
             self.text_block_index = index
+            if block.get("text"):
+                return list(self.block_delta({"index": index, "delta": {
+                    "type": "text_delta", "text": block["text"],
+                }}))
         elif btype == "tool_use" and isinstance(index, int):
             self.tools[index] = {
                 "id": block.get("id"),
                 "name": block.get("name") or "",
                 "json": "",
+                "input": block.get("input", {}),
             }
         return []
 
@@ -977,9 +1001,9 @@ class _LiveResponse:
             try:
                 parsed: Any = json.loads(raw_args)
             except ValueError:
-                parsed = raw_args
+                raise EnvelopeError("invalid upstream tool JSON") from None
         else:
-            parsed = {}
+            parsed = acc["input"]
         name, payload_text, kind = _normalize_tool_call(
             str(acc.get("name") or ""), parsed
         )
@@ -1037,9 +1061,12 @@ class _LiveResponse:
         })
 
     def finish(self) -> Iterator[bytes]:
+        if not self.stop_reason or self.tools:
+            yield from self.fail("upstream stream ended without complete message metadata")
+            return
         yield from self._close_text_item()
         status = "completed" if self.stop_reason in (
-            "stop", "tool_calls", "end_turn", "tool_use", ""
+            "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
         ) else "incomplete"
         terminal = _terminal_event_name(status)
         yield _sse_event(terminal, {
