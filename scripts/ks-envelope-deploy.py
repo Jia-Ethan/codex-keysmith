@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,8 +90,10 @@ def find_active_provider(lines: List[str]) -> Optional[str]:
         s = line.strip()
         if s.startswith("["):
             break
-        if s.startswith("model_provider") and "=" in s:
-            return s.split("=", 1)[1].strip().strip('"')
+        match = re.fullmatch(r"model_provider\s*=\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*')\s*(?:#.*)?", s)
+        if match:
+            value = match.group(1)
+            return json.loads(value) if value.startswith('"') else value[1:-1]
     return None
 
 
@@ -154,8 +157,10 @@ def write_manifest(codex_home: Path, data: Dict[str, Any]) -> None:
 
 def backup_config(config: Path) -> Path:
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    bak = config.with_name(f"config.toml.bak_{stamp}_envelope")
-    bak.write_text(config.read_text(encoding="utf-8"), encoding="utf-8")
+    bak = config.with_name(f"config.toml.bak_{stamp}_{uuid.uuid4().hex}_envelope")
+    with bak.open("x", encoding="utf-8") as fp:
+        fp.write(config.read_text(encoding="utf-8"))
+    bak.chmod(0o600)
     return bak
 
 
@@ -254,6 +259,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
             f"provider [model_providers.{provider}] no longer has a base_url; "
             "restore manually from " + str(manifest.get("config_backup"))
         )
+    _check_restore_url(hit[1], manifest)
     backup_config(config)
     new_lines = set_provider_base_url(lines, provider, original)
     new_lines = unpark_model_instructions(new_lines)
@@ -529,6 +535,11 @@ def _stop_spawned_helper(codex_home: Path) -> None:
         pass
 
 
+def _check_restore_url(current: str, manifest: Dict[str, Any]) -> None:
+    if current not in (manifest.get("original_base_url"), manifest.get("envelope_base_url")):
+        raise DeployError("provider base_url changed after deployment; preserving config and manifest")
+
+
 def restore_provider_url(codex_home: Path) -> None:
     config = codex_home / "config.toml"
     manifest = read_manifest(codex_home)
@@ -542,6 +553,7 @@ def restore_provider_url(codex_home: Path) -> None:
     hit = find_provider_base_url(lines, provider)
     if hit is None:
         return
+    _check_restore_url(hit[1], manifest)
     changed = False
     if hit[1] != original:
         lines = set_provider_base_url(lines, provider, original)

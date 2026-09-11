@@ -307,6 +307,8 @@ def _validate_workflow_policy(path: Path, sidecar_basename: str) -> None:
         "automatic status execution": r'^\s*\$automaticStatusOutput = & \$installedSidecars\[0\]\.FullName --status --lang en 2>&1$',
         "runtime-directory exclusion": r'^\s*if \(\$automaticStatusText -match \[Regex\]::Escape\(\$runtimeDir\)\) \{$',
         "slow sidecar build": r'^\s*& rustup run \$env:RUST_VERSION rustc \$slowSidecarSource -O -o \$slowSidecarBinary$',
+        "slow sidecar baked marker": r'let marker = r#"__SLOW_MARKER_PATH__"#;',
+        "slow sidecar marker substitution": r"\.Replace\('__SLOW_MARKER_PATH__', \$slowMarker\)",
         "slow sidecar launch": r'^\s*\$slowAppProcess = Start-Process -FilePath \$installedApps\[0\]\.FullName -PassThru$',
         "active-sidecar native close": r'^\s*if \(-not \$slowAppProcess\.CloseMainWindow\(\)\) \{$',
         "active-sidecar exit deadline": r'^\s*if \(-not \$slowAppProcess\.WaitForExit\(20000\)\) \{$',

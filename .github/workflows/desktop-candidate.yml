@@ -184,10 +184,21 @@ jobs:
         shell: bash
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
-        run: >-
-          npm --prefix gui run tauri -- build
-          --target "$TARGET_TRIPLE"
-          --bundles app,dmg
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if npm --prefix gui run tauri -- build \
+              --target "$TARGET_TRIPLE" \
+              --bundles app,dmg; then
+              exit 0
+            fi
+            echo "DMG bundling attempt $attempt failed." >&2
+            hdiutil info || true
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Build NSIS candidate
         if: matrix.platform == 'windows'
@@ -363,6 +374,9 @@ jobs:
               $slowSidecarBinary = Join-Path $smokeRoot "slow-sidecar.exe"
               $realSidecarBackup = Join-Path $smokeRoot "codex-keysmith-cli.real.exe"
               $slowMarker = Join-Path $smokeRoot "slow-sidecar.marker"
+              # Bake the marker path into the fixture. Start-Process defaults to
+              # UseShellExecute on Windows, so a process-level environment variable
+              # never reaches the GUI or the sidecar it launches.
               @'
           use std::env;
           use std::fs::OpenOptions;
@@ -372,7 +386,7 @@ jobs:
           use std::time::Duration;
 
           fn mark(value: &str) {
-              let marker = env::var("CODEX_KEYSMITH_SLOW_MARKER").expect("marker path");
+              let marker = r#"__SLOW_MARKER_PATH__"#;
               let mut file = OpenOptions::new()
                   .create(true)
                   .append(true)
@@ -398,24 +412,34 @@ jobs:
               mark("complete");
               println!("codex-keysmith 0.2.0");
           }
-          '@ | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
+          '@.Replace('__SLOW_MARKER_PATH__', $slowMarker) | Set-Content -LiteralPath $slowSidecarSource -Encoding UTF8
               & rustup run $env:RUST_VERSION rustc $slowSidecarSource -O -o $slowSidecarBinary
               if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $slowSidecarBinary)) {
                 throw "Failed to build the slow sidecar lifecycle fixture."
               }
+              $sidecarIdleDeadline = [DateTime]::UtcNow.AddSeconds(15)
+              do {
+                $busySidecars = @(
+                  Get-Process -Name "codex-keysmith*" -ErrorAction SilentlyContinue |
+                    Where-Object {
+                      try { $_.Path.Equals($installedSidecars[0].FullName, [StringComparison]::OrdinalIgnoreCase) }
+                      catch { $false }
+                    }
+                )
+                if ($busySidecars.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 250
+              } while ([DateTime]::UtcNow -lt $sidecarIdleDeadline)
+              if ($busySidecars.Count -ne 0) {
+                throw "Installed sidecar remained busy before the slow-sidecar fixture swap."
+              }
               Copy-Item -LiteralPath $installedSidecars[0].FullName -Destination $realSidecarBackup
               $slowAppProcess = $null
-              $slowMarkerEnvBackup = [Environment]::GetEnvironmentVariable(
-                "CODEX_KEYSMITH_SLOW_MARKER",
-                "Process"
-              )
               try {
+                # Automatic CLI discovery prefers the bundled sidecar over
+                # CODEX_KEYSMITH_CLI, so the lifecycle fixture must occupy that
+                # path. The marker path is compiled in; do not depend on env
+                # inheritance from Start-Process.
                 Copy-Item -LiteralPath $slowSidecarBinary -Destination $installedSidecars[0].FullName -Force
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_SLOW_MARKER",
-                  $slowMarker,
-                  "Process"
-                )
                 $slowAppProcess = Start-Process -FilePath $installedApps[0].FullName -PassThru
                 $slowWindowDeadline = [DateTime]::UtcNow.AddSeconds(30)
                 do {
@@ -459,11 +483,6 @@ jobs:
                 }
               }
               finally {
-                [Environment]::SetEnvironmentVariable(
-                  "CODEX_KEYSMITH_SLOW_MARKER",
-                  $slowMarkerEnvBackup,
-                  "Process"
-                )
                 if ($null -ne $slowAppProcess) {
                   $slowAppProcess.Refresh()
                   if (-not $slowAppProcess.HasExited) {

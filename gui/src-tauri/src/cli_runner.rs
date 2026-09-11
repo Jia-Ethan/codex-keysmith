@@ -116,9 +116,11 @@ async fn run_invocation(
             )
         })?;
 
+    let deadline = tokio::time::Instant::now() + limit;
+    let process_id = child.id();
     let stdout_reader = child.stdout.take().expect("stdout pipe");
     let stderr_reader = child.stderr.take().expect("stderr pipe");
-    let read_task = tokio::spawn(async move {
+    let mut read_task = tokio::spawn(async move {
         tokio::join!(read_capped(stdout_reader), read_capped(stderr_reader))
     });
 
@@ -126,12 +128,18 @@ async fn run_invocation(
         Ok(Ok(status)) => status.code().unwrap_or(-1),
         Ok(Err(error)) => {
             terminate_process_tree(&mut child).await;
-            let _ = read_task.await;
+            read_task.abort();
             return Err(format!("等待 CLI 进程失败: {error}"));
         }
         Err(_) => {
             terminate_process_tree(&mut child).await;
-            let (stdout, stderr) = read_task.await.unwrap_or_default();
+            let (stdout, stderr) = match timeout(Duration::from_secs(1), &mut read_task).await {
+                Ok(result) => result.unwrap_or_default(),
+                Err(_) => {
+                    read_task.abort();
+                    Default::default()
+                }
+            };
             return Ok(CliOutput {
                 stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
@@ -141,9 +149,28 @@ async fn run_invocation(
         }
     };
 
-    let (stdout, stderr) = read_task
-        .await
-        .map_err(|error| format!("读取 CLI 输出任务失败: {error}"))?;
+    let (stdout, stderr) = match tokio::time::timeout_at(deadline, &mut read_task).await {
+        Ok(result) => result.map_err(|error| format!("读取 CLI 输出任务失败: {error}"))?,
+        Err(_) => {
+            // The leader may have exited while descendants still own its pipes.
+            // Retain its process group ID rather than consulting child.id().
+            #[cfg(unix)]
+            if let Some(pid) = process_id.and_then(|pid| i32::try_from(pid).ok()) {
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = process_id;
+            read_task.abort();
+            return Ok(CliOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                timed_out: true,
+            });
+        }
+    };
     validate_captured_output(&stdout, &stderr)?;
     Ok(CliOutput {
         stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
@@ -383,10 +410,20 @@ fn runtime_for_path(path: &Path, bundled: bool) -> CliRuntime {
 }
 
 fn bundled_sidecar_path() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()?
-        .parent()
-        .map(|directory| directory.join(sidecar_filename()))
+    let executable = std::env::current_exe().ok()?;
+    let directory = executable.parent()?;
+    let filename = sidecar_filename();
+    // Tauri places externalBin beside the app on macOS, while Windows
+    // installers may keep it under a resources/binaries directory. Probe
+    // both layouts so packaged builds do not silently fall back to Python.
+    [
+        directory.join(&filename),
+        directory.join("resources").join(&filename),
+        directory.join("resources").join("binaries").join(&filename),
+        directory.join("binaries").join(&filename),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 #[cfg(windows)]
@@ -510,6 +547,25 @@ mod tests {
     #[test]
     fn version_probe_allows_for_sidecar_startup() {
         assert_eq!(version_probe_timeout(), Duration::from_secs(15));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_covers_pipes_after_leader_exit() {
+        let invocation = CliInvocation {
+            path: PathBuf::from("/bin/sh"),
+            program: PathBuf::from("/bin/sh"),
+            prefix_args: vec![OsString::from("-c"), OsString::from("sleep 2 & exit 0")],
+            runtime: CliRuntime::Executable,
+        };
+        let output = timeout(
+            Duration::from_secs(1),
+            run_invocation(&invocation, &[], Duration::from_millis(100)),
+        )
+        .await
+        .expect("pipe read exceeded deadline")
+        .expect("invocation result");
+        assert!(output.timed_out);
     }
 
     #[cfg(unix)]
