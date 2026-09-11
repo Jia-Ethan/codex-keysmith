@@ -1132,6 +1132,41 @@ def test_fingerprint_ignores_ids_and_developer_churn():
     assert ks_envelope._request_fingerprint(first) == ks_envelope._request_fingerprint(
         with_assistant
     )
+    agents_then_prompt = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "id": "agents",
+                "content": [{"type": "input_text", "text": "# AGENTS.md instructions\nfoo"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "prompt",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    prompt_only = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "id": "prompt-2",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    assert ks_envelope._request_fingerprint(agents_then_prompt) == (
+        ks_envelope._request_fingerprint(prompt_only)
+    )
 
 
 def test_text_item_stays_in_progress_until_terminal():

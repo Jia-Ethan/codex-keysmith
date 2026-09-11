@@ -117,8 +117,9 @@ def _request_fingerprint(body: Dict[str, Any]) -> str:
     if isinstance(reasoning, dict) and reasoning.get("effort"):
         parts.append("effort=" + str(reasoning.get("effort")))
     raw = body.get("input")
+    last_user = ""
     if isinstance(raw, str):
-        parts.append("user:" + raw.strip())
+        last_user = raw.strip()
     elif isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
@@ -134,12 +135,12 @@ def _request_fingerprint(body: Dict[str, Any]) -> str:
                     + str(item.get("call_id") or item.get("id") or "")
                 )
                 continue
-            if role == "developer":
-                continue
             if role == "user":
                 text = _content_text(item)
                 if text:
-                    parts.append("user:" + text)
+                    last_user = text
+    if last_user:
+        parts.append("user:" + last_user)
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
