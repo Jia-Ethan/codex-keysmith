@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - README illustrations (zh/en) now use the shared champagne-key still-life set for hero, usage cards, and dry-run preview.
+- Release archives now include the README dry-run preview webp pair so relative image links stay inside the bundle.
 
 ### Fixed
 
