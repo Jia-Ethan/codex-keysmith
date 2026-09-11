@@ -13,6 +13,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 DEPLOY_SCRIPT = (
     Path(__file__).resolve().parent.parent / "scripts" / "ks-envelope-deploy.py"
@@ -205,6 +208,47 @@ def _load_deploy_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_provider_comment_and_literal_string():
+    helper = _load_deploy_module()
+    assert helper.find_active_provider(['model_provider = "custom" # active']) == "custom"
+    assert helper.find_active_provider(["model_provider = 'custom' # active"]) == "custom"
+    assert helper.find_active_provider(['model_provider_extra = "wrong"']) is None
+
+
+def test_backups_do_not_collide(tmp_path):
+    helper = _load_deploy_module()
+    config = tmp_path / "config.toml"
+    config.write_text("original")
+    with patch.object(helper.time, "strftime", return_value="same-second"):
+        first = helper.backup_config(config)
+        config.write_text("new")
+        second = helper.backup_config(config)
+    assert first != second
+    assert first.read_text() == "original"
+    assert second.read_text() == "new"
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "automatic"])
+def test_restore_preserves_changed_provider(entrypoint):
+    helper = _load_deploy_module()
+    sb = Sandbox()
+    try:
+        assert sb.run("deploy", "--codex-home", str(sb.home)).returncode == 0
+        config = sb.home / "config.toml"
+        config.write_text(sb.config().replace("http://127.0.0.1:8091/v1", "https://new.example/v1"))
+        before = config.read_bytes()
+        manifest = sb.manifest()
+        if entrypoint == "cli":
+            assert sb.run("restore", "--codex-home", str(sb.home), "--yes").returncode != 0
+        else:
+            with pytest.raises(helper.DeployError, match="changed after deployment"):
+                helper.restore_provider_url(sb.home)
+        assert config.read_bytes() == before
+        assert sb.manifest() == manifest
+    finally:
+        sb.cleanup()
 
 
 def test_sync_on_deploy_skips_homes_without_provider():

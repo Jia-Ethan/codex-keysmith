@@ -638,6 +638,19 @@ def test_nonstream_stop_sequence_is_completed():
     assert out['status'] == 'completed'
 
 
+def test_function_input_field_preserved_in_both_response_modes():
+    block = {'type': 'tool_use', 'id': 'c', 'name': 'lookup', 'input': {'input': 'hello'}}
+    response = ks_envelope.translate_response({'content': [block], 'stop_reason': 'tool_use'}, 'm')
+    assert json.loads(response['output'][0]['arguments']) == {'input': 'hello'}
+    events = _stream_events([
+        {'type': 'content_block_start', 'index': 0, 'content_block': block},
+        {'type': 'content_block_stop', 'index': 0},
+        {'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}},
+        {'type': 'message_stop'},
+    ])
+    assert json.loads(events[-1]['response']['output'][0]['arguments']) == {'input': 'hello'}
+
+
 def test_cached_usage_counts_full_context():
     usage = ks_envelope._usage_fields({
         'input_tokens': 7, 'output_tokens': 3,
