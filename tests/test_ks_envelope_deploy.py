@@ -75,6 +75,30 @@ def test_deploy_rewrites_only_base_url():
         sb.cleanup()
 
 
+def test_deploy_parks_model_instructions_file():
+    fixture = FIXTURE.replace(
+        'model = "gpt-5.6-sol"\n',
+        'model = "gpt-5.6-sol"\nmodel_instructions_file = "./gpt-overlay.md"\n',
+    )
+    sb = Sandbox(fixture=fixture)
+    try:
+        r = sb.run("deploy", "--codex-home", str(sb.home), "--port", "8099")
+        assert r.returncode == 0, r.stderr
+        cfg = sb.config()
+        assert 'base_url = "http://127.0.0.1:8099/v1"' in cfg
+        assert cfg.splitlines()[2].startswith("# keysmith-envelope-unstack: ")
+        assert 'model_instructions_file = "./gpt-overlay.md"' in cfg.splitlines()[2]
+        assert sb.manifest()["parked_model_instructions_file"] == "./gpt-overlay.md"
+        time.sleep(1.1)
+        assert sb.run("restore", "--codex-home", str(sb.home), "--yes").returncode == 0
+        restored = sb.config()
+        assert 'model_instructions_file = "./gpt-overlay.md"' in restored
+        assert "# keysmith-envelope-unstack:" not in restored
+        assert 'base_url = "https://lgw.gru.ai/v1"' in restored
+    finally:
+        sb.cleanup()
+
+
 def test_double_deploy_refused():
     sb = Sandbox()
     try:
@@ -234,3 +258,136 @@ def test_sync_on_uninstall_restores_original_url(monkeypatch):
         assert sb.manifest() is None
     finally:
         sb.cleanup()
+
+
+def test_agent_plist_defaults_to_repo_script_for_backcompat():
+    helper = _load_deploy_module()
+    text = helper.agent_plist(8091, "https://lgw.gru.ai/v1", None)
+    assert str(helper.SCRIPT_DIR / helper.HELPER_SCRIPT_NAME) in text
+    assert "com.jia.codex-keysmith.envelope" in text
+
+
+def test_agent_plist_uses_runtime_script_and_overlay():
+    helper = _load_deploy_module()
+    runtime = Path("/Users/me/.codex/.codex-keysmith-channel.py")
+    overlay = Path("/Users/me/.codex/.codex-keysmith-overlay.md")
+    text = helper.agent_plist(
+        8091, "https://lgw.gru.ai/v1", overlay, script=runtime
+    )
+    assert str(runtime) in text
+    assert str(overlay) in text
+    assert "--overlay-file" in text
+    assert str(helper.SCRIPT_DIR / helper.HELPER_SCRIPT_NAME) not in text
+
+
+def test_copy_runtime_overlay_writes_codex_home_copy(tmp_path):
+    helper = _load_deploy_module()
+    src = tmp_path / "gpt-overlay.md"
+    src.write_text("overlay-bytes\n", encoding="utf-8")
+    dest = helper.copy_runtime_overlay(tmp_path, src)
+    assert dest == tmp_path / helper.RUNTIME_OVERLAY_NAME
+    assert dest.read_text(encoding="utf-8") == "overlay-bytes\n"
+
+
+def test_ensure_listener_rejects_foreign_listener(monkeypatch, tmp_path):
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "sys", type("S", (), {"platform": "linux"})())
+    monkeypatch.setattr(
+        helper, "_listener_is_ours", lambda port, script=None, overlay=None: False
+    )
+    evict_calls = []
+    spawn_calls = []
+    monkeypatch.setattr(
+        helper, "_evict_envelope_listener", lambda port: evict_calls.append(port)
+    )
+    monkeypatch.setattr(
+        helper, "_install_launch_agent", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not touch LaunchAgent")
+        ),
+    )
+
+    def fake_spawn(*a, **k):
+        spawn_calls.append((a, k))
+        return None
+
+    monkeypatch.setattr(helper, "_spawn_helper", fake_spawn)
+    # adopt check True, evict check True, post-spawn False.
+    health_values = iter([True, True, False])
+    monkeypatch.setattr(helper, "probe_health", lambda port: next(health_values))
+    assert helper.ensure_listener(
+        8099, "https://lgw.gru.ai/v1", tmp_path / "s.py", None, tmp_path
+    ) is False
+    assert evict_calls == [8099]
+    assert spawn_calls, "foreign listener must not be adopted; spawn must run"
+
+
+def test_ensure_listener_adopts_own_listener(monkeypatch, tmp_path):
+    helper = _load_deploy_module()
+    monkeypatch.setattr(helper, "probe_health", lambda port: True)
+    monkeypatch.setattr(
+        helper, "_listener_is_ours", lambda port, script=None, overlay=None: True
+    )
+    spawn_calls = []
+    monkeypatch.setattr(
+        helper, "_spawn_helper",
+        lambda *a, **k: spawn_calls.append(a) or 12345,
+    )
+    monkeypatch.setattr(
+        helper, "_install_launch_agent", lambda *a, **k: spawn_calls.append("launch")
+    )
+    assert helper.ensure_listener(
+        8099, "https://lgw.gru.ai/v1", tmp_path / "s.py", None, tmp_path
+    ) is True
+    assert not spawn_calls, "own healthy listener must be adopted, not respawned"
+
+
+def test_listener_is_ours_rejects_non_envelope(monkeypatch):
+    helper = _load_deploy_module()
+
+    def fake_run(argv, **_k):
+        stdout = "4242\n" if argv and argv[0] == "lsof" else (
+            "/usr/bin/someOtherServer --port 8091\n"
+        )
+        return type("R", (), {"stdout": stdout, "returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(helper.subprocess, "run", fake_run)
+    assert helper._listener_is_ours(8091) is False
+
+
+def test_listener_is_ours_rejects_overlay_leftover(monkeypatch, tmp_path):
+    helper = _load_deploy_module()
+    script = tmp_path / helper.RUNTIME_SCRIPT_NAME
+    leftover = (
+        f"python3 {script} --port 8091 --overlay-file /tmp/ks-e2e/overlay.md\n"
+    )
+
+    def fake_run(argv, **_k):
+        stdout = "4242\n" if argv and argv[0] == "lsof" else leftover
+        return type("R", (), {"stdout": stdout, "returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(helper.subprocess, "run", fake_run)
+    assert helper._listener_is_ours(8091, script=script, overlay=None) is False
+    assert helper._listener_is_ours(
+        8091, script=script, overlay=Path("/tmp/ks-e2e/overlay.md")
+    ) is True
+    # Windows Path("/tmp/...") stringifies with backslashes; argv still uses /.
+    assert helper._cmd_contains(
+        leftover, str(Path("/tmp/ks-e2e/overlay.md"))
+    ) is True
+
+
+def test_listener_is_ours_requires_expected_script(monkeypatch, tmp_path):
+    helper = _load_deploy_module()
+    runtime = tmp_path / helper.RUNTIME_SCRIPT_NAME
+    checkout = tmp_path / "scripts" / "ks-envelope.py"
+
+    def fake_run(argv, **_k):
+        stdout = (
+            "4242\n" if argv and argv[0] == "lsof"
+            else f"python3 {checkout} --port 8091\n"
+        )
+        return type("R", (), {"stdout": stdout, "returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(helper.subprocess, "run", fake_run)
+    assert helper._listener_is_ours(8091, script=runtime) is False
+    assert helper._listener_is_ours(8091, script=checkout) is True

@@ -45,6 +45,7 @@ DEFAULT_PORT = 8091
 DEFAULT_UPSTREAM = "https://lgw.gru.ai/v1"
 SCRIPT_DIR = Path(__file__).resolve().parent
 RUNTIME_SCRIPT_NAME = ".codex-keysmith-channel.py"
+RUNTIME_OVERLAY_NAME = ".codex-keysmith-overlay.md"
 RUNTIME_PID_NAME = ".codex-keysmith-channel.pid"
 HELPER_SCRIPT_NAME = "ks-envelope.py"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
@@ -60,6 +61,8 @@ class DeployError(Exception):
 
 _PROVIDER_TABLE_RE = re.compile(r"^\s*\[model_providers\.([A-Za-z0-9_.-]+)\]")
 _BASE_URL_RE = re.compile(r'^(\s*base_url\s*=\s*")(.*?)(")')
+_INSTRUCTIONS_RE = re.compile(r'^(\s*model_instructions_file\s*=\s*")(.*?)(")')
+UNSTACK_PREFIX = "# keysmith-envelope-unstack: "
 
 
 def find_provider_base_url(lines: List[str], provider: str) -> Optional[Tuple[int, str]]:
@@ -89,6 +92,35 @@ def find_active_provider(lines: List[str]) -> Optional[str]:
         if s.startswith("model_provider") and "=" in s:
             return s.split("=", 1)[1].strip().strip('"')
     return None
+
+
+def park_model_instructions(lines: List[str]) -> Tuple[List[str], Optional[str]]:
+    """Comment out a live top-level model_instructions_file so envelope
+    append keeps the stock prompt. Returns (lines, parked value)."""
+    parked: Optional[str] = None
+    new_lines = list(lines)
+    for i, line in enumerate(new_lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        if stripped.startswith("#"):
+            continue
+        match = _INSTRUCTIONS_RE.match(line)
+        if match:
+            parked = match.group(2)
+            new_lines[i] = UNSTACK_PREFIX + line
+            break
+    return new_lines, parked
+
+
+def unpark_model_instructions(lines: List[str]) -> List[str]:
+    restored = []
+    for line in lines:
+        if line.startswith(UNSTACK_PREFIX):
+            restored.append(line[len(UNSTACK_PREFIX):])
+        else:
+            restored.append(line)
+    return restored
 
 
 def set_provider_base_url(lines: List[str], provider: str, new_url: str) -> List[str]:
@@ -171,6 +203,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     bak = backup_config(config)
     new_lines = set_provider_base_url(lines, provider, envelope_url)
+    new_lines, parked = park_model_instructions(new_lines)
     save_config_lines(config, new_lines)
     write_manifest(
         codex_home,
@@ -182,6 +215,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             "envelope_base_url": envelope_url,
             "port": args.port,
             "overlay": str(Path(args.overlay).resolve()) if args.overlay else None,
+            "parked_model_instructions_file": parked,
             "config_backup": str(bak),
         },
     )
@@ -190,7 +224,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     print(f"  backup:   {bak}")
     if args.overlay:
         print(f"  overlay:  {args.overlay} (pass --overlay-file to ks-envelope)")
-    print("  stock base prompt untouched (no model_instructions_file written)")
+    if parked:
+        print(f"  parked:   model_instructions_file ({parked})")
+    print("  stock base prompt kept (replacement field parked, overlay appends)")
     return 0
 
 
@@ -220,6 +256,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         )
     backup_config(config)
     new_lines = set_provider_base_url(lines, provider, original)
+    new_lines = unpark_model_instructions(new_lines)
     save_config_lines(config, new_lines)
     (codex_home / MANIFEST_NAME).unlink()
     print(f"restored: {provider} base_url -> {original}")
@@ -265,6 +302,87 @@ def probe_health(port: int) -> bool:
         return False
 
 
+def _listen_pids(port: int) -> Optional[List[str]]:
+    """PIDs listening on the loopback port, or None if lsof cannot say."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def _pid_command(pid: str) -> str:
+    try:
+        return subprocess.run(
+            ["ps", "-o", "command=", "-p", pid],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _cmd_is_envelope(cmd: str) -> bool:
+    return bool(cmd) and ("ks-envelope.py" in cmd or RUNTIME_SCRIPT_NAME in cmd)
+
+
+def _cmd_contains(cmd: str, token: str) -> bool:
+    """Path tokens in ps/lsof output may use either slash."""
+    if not token:
+        return False
+    if token in cmd:
+        return True
+    return token.replace("\\", "/") in cmd.replace("\\", "/")
+
+
+def _listener_is_ours(
+    port: int,
+    script: Optional[Path] = None,
+    overlay: Optional[Path] = None,
+) -> bool:
+    """True only when the occupant is this install's helper.
+
+    A leftover ``ks-envelope.py --overlay-file …`` from an aborted e2e run
+    still contains ``ks-envelope.py``; substring-only matching would adopt
+    it. Missing lsof stays fail-open (same as a successful health probe).
+    """
+    pids = _listen_pids(port)
+    if pids is None or not pids:
+        return True
+    expected_script = str(script) if script is not None else None
+    expected_overlay = str(overlay) if overlay is not None else None
+    for pid in pids:
+        cmd = _pid_command(pid)
+        if not _cmd_is_envelope(cmd):
+            continue
+        if expected_script is not None and not _cmd_contains(cmd, expected_script):
+            continue
+        has_overlay = "--overlay-file" in cmd
+        if expected_overlay is None and has_overlay:
+            continue
+        if expected_overlay is not None and not _cmd_contains(cmd, expected_overlay):
+            continue
+        return True
+    return False
+
+
+def _evict_envelope_listener(port: int) -> None:
+    """SIGTERM envelope-shaped listeners only; leave unrelated occupants."""
+    pids = _listen_pids(port)
+    if not pids:
+        return
+    for pid in pids:
+        cmd = _pid_command(pid)
+        if not _cmd_is_envelope(cmd):
+            continue
+        try:
+            os.kill(int(pid), 15)
+        except (OSError, ValueError):
+            pass
+
+
 def _python_for_helper() -> str:
     if getattr(sys, "frozen", False):
         return shutil.which("python3") or shutil.which("python") or "/usr/bin/python3"
@@ -301,12 +419,22 @@ def copy_runtime_script(codex_home: Path) -> Path:
     return dest
 
 
+def copy_runtime_overlay(codex_home: Path, overlay: Path) -> Path:
+    dest = codex_home / RUNTIME_OVERLAY_NAME
+    data = overlay.read_bytes()
+    if not dest.is_file() or dest.read_bytes() != data:
+        dest.write_bytes(data)
+        dest.chmod(0o600)
+    return dest
+
+
 def _spawn_helper(
     script: Path,
     port: int,
     upstream: str,
     auth_file: Optional[Path],
     log_dir: Path,
+    overlay: Optional[Path] = None,
 ) -> Optional[int]:
     log_dir.mkdir(parents=True, exist_ok=True)
     argv = [
@@ -317,6 +445,8 @@ def _spawn_helper(
         "--upstream",
         upstream,
     ]
+    if overlay is not None:
+        argv.extend(["--overlay-file", str(overlay)])
     if auth_file is not None:
         argv.extend(["--auth-file", str(auth_file)])
     out = (log_dir / "ks-envelope.out.log").open("ab")
@@ -348,26 +478,36 @@ def ensure_listener(
     script: Path,
     auth_file: Optional[Path],
     log_dir: Path,
+    overlay: Optional[Path] = None,
 ) -> bool:
     if os.environ.get("KEYSMITH_CHANNEL_SKIP_LISTEN") == "1":
         return True
-    if probe_health(port):
+
+    def listener_is_current() -> bool:
+        return _listener_is_ours(port, script=script, overlay=overlay)
+
+    if probe_health(port) and listener_is_current():
         return True
+    if probe_health(port):
+        _evict_envelope_listener(port)
+        time.sleep(0.3)
     if sys.platform == "darwin":
         try:
-            _install_launch_agent(port, upstream, script, auth_file, log_dir)
+            _install_launch_agent(
+                port, upstream, script, auth_file, log_dir, overlay=overlay
+            )
         except Exception:
             pass
         time.sleep(0.5)
-        if probe_health(port):
+        if probe_health(port) and listener_is_current():
             return True
-    pid = _spawn_helper(script, port, upstream, auth_file, log_dir)
+    pid = _spawn_helper(script, port, upstream, auth_file, log_dir, overlay=overlay)
     if pid:
         pid_path = script.parent / RUNTIME_PID_NAME
         pid_path.write_text(str(pid) + "\n", encoding="utf-8")
         pid_path.chmod(0o600)
     time.sleep(0.5)
-    return probe_health(port)
+    return bool(probe_health(port) and listener_is_current())
 
 
 def _stop_spawned_helper(codex_home: Path) -> None:
@@ -402,9 +542,17 @@ def restore_provider_url(codex_home: Path) -> None:
     hit = find_provider_base_url(lines, provider)
     if hit is None:
         return
+    changed = False
     if hit[1] != original:
+        lines = set_provider_base_url(lines, provider, original)
+        changed = True
+    unparked = unpark_model_instructions(lines)
+    if unparked != lines:
+        lines = unparked
+        changed = True
+    if changed:
         backup_config(config)
-        save_config_lines(config, set_provider_base_url(lines, provider, original))
+        save_config_lines(config, lines)
     try:
         (codex_home / MANIFEST_NAME).unlink()
     except OSError:
@@ -443,14 +591,23 @@ def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
         script = copy_runtime_script(codex_home)
     except (OSError, DeployError):
         return False
+    overlay_path: Optional[Path] = None
+    overlay_raw = (manifest or {}).get("overlay")
+    if overlay_raw:
+        overlay_src = Path(str(overlay_raw)).expanduser()
+        if overlay_src.is_file():
+            try:
+                overlay_path = copy_runtime_overlay(codex_home, overlay_src)
+            except OSError:
+                overlay_path = None
     auth_candidate = codex_home / "auth.json"
     auth_file = auth_candidate if auth_candidate.is_file() else None
     log_dir = Path.home() / ".codex" / "logs"
     if not already:
         bak = backup_config(config)
-        save_config_lines(
-            config, set_provider_base_url(list(lines), provider, envelope_url)
-        )
+        new_lines = set_provider_base_url(list(lines), provider, envelope_url)
+        new_lines, parked = park_model_instructions(new_lines)
+        save_config_lines(config, new_lines)
         write_manifest(
             codex_home,
             {
@@ -460,11 +617,22 @@ def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
                 "original_base_url": original_url,
                 "envelope_base_url": envelope_url,
                 "port": port,
-                "overlay": None,
+                "overlay": overlay_raw if overlay_raw else None,
+                "parked_model_instructions_file": parked,
                 "config_backup": str(bak),
             },
         )
-    if ensure_listener(port, upstream, script, auth_file, log_dir):
+    else:
+        parked_lines, parked = park_model_instructions(list(lines))
+        if parked is not None:
+            backup_config(config)
+            save_config_lines(config, parked_lines)
+            if manifest is not None:
+                manifest["parked_model_instructions_file"] = parked
+                write_manifest(codex_home, manifest)
+    if ensure_listener(
+        port, upstream, script, auth_file, log_dir, overlay=overlay_path
+    ):
         return True
     if not already:
         restore_provider_url(codex_home)
@@ -562,6 +730,7 @@ def _install_launch_agent(
     script: Path,
     auth_file: Optional[Path],
     log_dir: Path,
+    overlay: Optional[Path] = None,
 ) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -571,7 +740,7 @@ def _install_launch_agent(
         agent_plist(
             port,
             upstream,
-            overlay=None,
+            overlay=overlay,
             script=script,
             auth_file=auth_file,
             python=_python_for_helper(),
@@ -591,13 +760,45 @@ def cmd_agent(args: argparse.Namespace) -> int:
         overlay = Path(args.overlay).expanduser() if args.overlay else None
         if overlay is not None and not overlay.is_file():
             raise DeployError(f"overlay file not found: {overlay}")
+        codex_home = Path(args.codex_home).expanduser()
         PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
         (Path.home() / ".codex" / "logs").mkdir(parents=True, exist_ok=True)
+        # launchd-spawned python cannot read TCC-protected checkouts.
+        script = copy_runtime_script(codex_home)
+        overlay_runtime = (
+            copy_runtime_overlay(codex_home, overlay.resolve())
+            if overlay is not None
+            else None
+        )
+        config = codex_home / "config.toml"
+        if config.is_file():
+            cfg_lines = load_config_lines(config)
+            parked_lines, parked = park_model_instructions(cfg_lines)
+            if parked is not None:
+                backup_config(config)
+                save_config_lines(config, parked_lines)
+            manifest = read_manifest(codex_home)
+            if manifest is not None:
+                if parked is not None:
+                    manifest["parked_model_instructions_file"] = parked
+                if overlay_runtime is not None:
+                    manifest["overlay"] = str(overlay_runtime)
+                write_manifest(codex_home, manifest)
+        auth_candidate = codex_home / "auth.json"
+        auth_file = auth_candidate if auth_candidate.is_file() else None
         existing = PLIST_PATH.is_file()
         if existing:
             subprocess.run(["launchctl", "unload", str(PLIST_PATH)], check=False)
         PLIST_PATH.write_text(
-            agent_plist(port, args.upstream, overlay), encoding="utf-8"
+            agent_plist(
+                port,
+                args.upstream,
+                overlay_runtime,
+                script=script,
+                auth_file=auth_file,
+                python=_python_for_helper(),
+            ),
+            encoding="utf-8",
         )
         subprocess.run(["launchctl", "load", str(PLIST_PATH)], check=True)
         time.sleep(0.5)

@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
-"""ks-envelope — local OpenAI-to-Anthropic-shape protocol adapter for keysmith.
+"""ks-envelope — local Responses-to-messages protocol adapter for keysmith.
 
-Pure stdlib. Listens on a loopback-only port, accepts OpenAI Responses-API
+Pure stdlib. Listens on a loopback-only port, accepts Codex Responses-API
 requests (/v1/responses), translates each into an Anthropic-shaped
 /v1/messages call against the upstream gateway, and translates the
-chat.completion reply back into a Responses-API response object.
-
-Why: the upstream content classifiers are envelope-sensitive. Measured
-2026-09-06/07 on gpt-5.6-sol via lgw.gru.ai (breaktest-results/nsfw-v051/
-phase7-cyber-envelope-summary.json): the same frozen 12-case prompt bank and
-the same lean preset scored messages-arm 4/12 vs codex/responses 1/12, with
-at least one cell (anti-detection-zh) blocked by the upstream cyber
-classifier on chat/responses arms but delivered through the anthropic-shaped
-messages arm. This adapter gives Codex the messages-arm envelope without
-changing its OpenAI client.
+reply back into a Responses-API response object so Codex keeps its
+OpenAI client.
 
 Security posture:
 - loopback bind only (127.0.0.1); non-loopback bind is refused
@@ -33,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -42,7 +35,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 DEFAULT_UPSTREAM = "https://lgw.gru.ai/v1"
 DEFAULT_AUTH_PATH = Path.home() / ".codex" / "auth.json"
@@ -86,54 +79,177 @@ def _redact(text: str, secret: str) -> str:
 
 # --- request translation: Responses API -> Anthropic messages ----------------
 
+_FUNCTIONS_WRAPPER_NAMES = {"functions", "function", "tools"}
+_EXEC_NESTED_METHODS = {"exec_command", "apply_patch", "write_stdin"}
+_COLLAB_METHODS = {
+    "followup_task",
+    "interrupt_agent",
+    "list_agents",
+    "send_message",
+    "spawn_agent",
+    "wait_agent",
+}
+_CUSTOM_TOOL_NAMES = {"exec"}
+
+
+def _function_input_schema(tool: Dict[str, Any]) -> Dict[str, Any]:
+    params = tool.get("parameters")
+    if isinstance(params, dict) and params.get("type") == "object":
+        return params
+    return {
+        "type": "object",
+        "properties": {"input": {"type": "string"}},
+        "required": ["input"],
+    }
+
+
+def _translate_one_tool(tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ttype = tool.get("type")
+    if ttype == "namespace":
+        nested: List[Dict[str, Any]] = []
+        for child in tool.get("tools") or []:
+            if isinstance(child, dict):
+                nested.extend(_translate_one_tool(child))
+        return nested
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        return []
+    if ttype == "function":
+        return [
+            {
+                "name": name,
+                "description": str(tool.get("description") or ""),
+                "input_schema": _function_input_schema(tool),
+            }
+        ]
+    return [
+        {
+            "name": name,
+            "description": str(tool.get("description") or ""),
+            "input_schema": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        }
+    ]
+
+
 def _translate_tools(raw_input: Any) -> List[Dict[str, Any]]:
     """Map Responses additional_tools declarations to anthropic tools.
 
-    Codex declares its tools as ``{type: "custom", name, description,
-    format: {type: "grammar", ...}}`` — free-text input tools. The
-    anthropic-messages surface wants JSON-schema tools; a single string
-    parameter carries the grammar source verbatim.
+    Custom grammar tools stay as a single string ``input``. JSON-schema
+    ``function`` tools keep their ``parameters``. ``namespace`` tools are
+    expanded to the nested function tools Codex actually dispatches
+    (``send_message``, ``spawn_agent``, …). Flattening a namespace into
+    one string-input tool is what made gpt-6-astra emit a wrapper call
+    named ``functions``, which Codex rejects as an unknown custom tool.
     """
     tools: List[Dict[str, Any]] = []
     if not isinstance(raw_input, list):
         return tools
+    seen = set()
     for item in raw_input:
         if not isinstance(item, dict) or item.get("type") != "additional_tools":
             continue
         for tool in item.get("tools") or []:
             if not isinstance(tool, dict):
                 continue
-            name = tool.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            tools.append(
-                {
-                    "name": name,
-                    "description": str(tool.get("description") or ""),
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {"input": {"type": "string"}},
-                        "required": ["input"],
-                    },
-                }
-            )
+            for translated in _translate_one_tool(tool):
+                name = translated["name"]
+                if name in seen:
+                    continue
+                seen.add(name)
+                tools.append(translated)
     return tools
 
 
-def _tool_call_input(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Arguments for a history tool_call item, as the anthropic input dict."""
-    arguments = item.get("arguments", item.get("input"))
-    if isinstance(arguments, dict):
+def _parse_tool_arguments(arguments: Any) -> Any:
+    if isinstance(arguments, str):
+        text = arguments.strip()
+        if text[:1] in "{[":
+            try:
+                return json.loads(text)
+            except ValueError:
+                return arguments
         return arguments
-    if isinstance(arguments, str) and arguments.strip():
-        try:
-            parsed = json.loads(arguments)
-            if isinstance(parsed, dict):
-                return parsed
-        except ValueError:
-            pass
-        return {"input": arguments}
-    return {"input": ""}
+    return arguments
+
+
+def _exec_js_call(method: str, arguments: Any) -> str:
+    if not method.isidentifier():
+        method = "exec_command"
+    if isinstance(arguments, dict):
+        arg = json.dumps(arguments, ensure_ascii=False)
+    elif isinstance(arguments, str):
+        arg = json.dumps(arguments, ensure_ascii=False)
+    elif arguments is None:
+        arg = "{}"
+    else:
+        arg = json.dumps(arguments, ensure_ascii=False)
+    return f"text(await tools.{method}({arg}));"
+
+
+def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
+    """Map an upstream tool_use onto a Codex custom or function call.
+
+    Returns ``(name, payload, kind)``. ``kind`` is ``custom`` (payload is
+    grammar source for ``custom_tool_call.input``) or ``function``
+    (payload is a JSON string for ``function_call.arguments``).
+
+    Live desktop session 2026-09-11: the model emitted
+    ``name=functions`` / ``{"tool":"exec_command","arguments":{"cmd":"pwd"}}``.
+    Codex replied ``unsupported custom tool call: functions`` and never
+    ran the command. Nested exec methods belong on the ``exec`` grammar
+    tool, not as a wrapper name.
+    """
+    parsed = _parse_tool_arguments(arguments)
+    if isinstance(parsed, dict) and set(parsed.keys()) == {"input"}:
+        parsed = parsed["input"]
+        parsed = _parse_tool_arguments(parsed)
+    label = (name or "").strip()
+    if label in _FUNCTIONS_WRAPPER_NAMES and isinstance(parsed, dict):
+        inner = parsed.get("tool") or parsed.get("name") or parsed.get("function")
+        inner_args = (
+            parsed.get("arguments")
+            or parsed.get("parameters")
+            or parsed.get("args")
+            or {}
+        )
+        if isinstance(inner, str) and inner.strip():
+            return _normalize_tool_call(inner.strip(), inner_args)
+    if label in _EXEC_NESTED_METHODS or label in _COLLAB_METHODS:
+        return "exec", _exec_js_call(label, parsed), "custom"
+    if label in _CUSTOM_TOOL_NAMES or label == "exec":
+        if isinstance(parsed, dict) and "cmd" in parsed:
+            return "exec", _exec_js_call("exec_command", parsed), "custom"
+        if isinstance(parsed, str):
+            return "exec", parsed, "custom"
+        if parsed is None:
+            return "exec", "", "custom"
+        return "exec", json.dumps(parsed, ensure_ascii=False), "custom"
+    if isinstance(parsed, dict):
+        payload = json.dumps(parsed, ensure_ascii=False)
+    elif isinstance(parsed, str):
+        payload = parsed
+    elif parsed is None:
+        payload = "{}"
+    else:
+        payload = json.dumps(parsed, ensure_ascii=False)
+    return label or "exec", payload, "function" if label else "custom"
+
+
+def _tool_call_input(item: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """History tool_call → (name, anthropic tool_use.input)."""
+    raw_name = str(item.get("name") or "")
+    raw_args = item.get("arguments", item.get("input"))
+    name, payload, kind = _normalize_tool_call(raw_name, raw_args)
+    if kind == "custom":
+        return name, {"input": payload}
+    parsed = _parse_tool_arguments(payload)
+    if isinstance(parsed, dict):
+        return name, parsed
+    return name, {"input": payload}
 
 
 def _tool_output_text(item: Dict[str, Any]) -> str:
@@ -170,14 +286,78 @@ def _item_text(item: Dict[str, Any]) -> str:
                     "summary_text",
                 ):
                     parts.append(str(block.get("text", "")))
-                # other block types (reasoning traces, tool calls) carry no
-                # prose for the delivery arm; skip rather than reject.
             elif isinstance(block, str):
                 parts.append(block)
         return "\n".join(p for p in parts if p)
     if content is None:
         return ""
     raise EnvelopeError("input item content is not text")
+
+
+def _anthropic_image_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    url = block.get("image_url") or block.get("url")
+    if not isinstance(url, str) or not url:
+        source = block.get("source")
+        if isinstance(source, dict) and isinstance(source.get("data"), str):
+            media = str(source.get("media_type") or "image/png")
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media,
+                    "data": source["data"],
+                },
+            }
+        return None
+    if url.startswith("data:") and "," in url:
+        header, data = url.split(",", 1)
+        media = "image/png"
+        rest = header[5:] if header.startswith("data:") else header
+        if ";" in rest:
+            media = rest.split(";", 1)[0] or media
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media, "data": data},
+        }
+    if url.startswith(("http://", "https://")):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    return None
+
+
+def _message_content_blocks(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    content = item.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        text = _item_text(item)
+        return [{"type": "text", "text": text}] if text else []
+    blocks: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+
+    def flush_text() -> None:
+        if text_parts:
+            blocks.append({"type": "text", "text": "\n".join(text_parts)})
+            text_parts.clear()
+
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                text_parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype in ("input_text", "output_text", "text", "summary_text"):
+            text = str(block.get("text", ""))
+            if text:
+                text_parts.append(text)
+        elif btype in ("input_image", "image"):
+            image = _anthropic_image_block(block)
+            if image is not None:
+                flush_text()
+                blocks.append(image)
+    flush_text()
+    return blocks
 
 
 def translate_request(
@@ -221,7 +401,7 @@ def translate_request(
                 # Translated by _translate_tools into anthropic tool schemas.
                 continue
             if item_type in ("function_call", "custom_tool_call"):
-                # Assistant tool invocation from conversation history.
+                hist_name, hist_input = _tool_call_input(item)
                 messages.append(
                     {
                         "role": "assistant",
@@ -229,8 +409,8 @@ def translate_request(
                             {
                                 "type": "tool_use",
                                 "id": str(item.get("call_id") or item.get("id") or ""),
-                                "name": str(item.get("name") or ""),
-                                "input": _tool_call_input(item),
+                                "name": hist_name,
+                                "input": hist_input,
                             }
                         ],
                     }
@@ -244,22 +424,31 @@ def translate_request(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": str(item.get("call_id") or ""),
-                                "content": _tool_output_text(item),
+                                "content": (
+                                    _message_content_blocks({"content": item["output"]})
+                                    if isinstance(item.get("output"), list) and any(
+                                        isinstance(block, dict)
+                                        and block.get("type") in ("input_image", "image")
+                                        for block in item["output"]
+                                    ) else _tool_output_text(item)
+                                ),
                             }
                         ],
                     }
                 )
                 continue
             role = item.get("role", "user")
-            text = _item_text(item)
             if role == "developer":
-                system_parts.append(text)
+                text = _item_text(item)
+                if text:
+                    system_parts.append(text)
                 continue
             if role not in ("user", "assistant"):
                 role = "user"
-            messages.append(
-                {"role": role, "content": [{"type": "text", "text": text}]}
-            )
+            content_blocks = _message_content_blocks(item)
+            if not content_blocks:
+                continue
+            messages.append({"role": role, "content": content_blocks})
     else:
         raise EnvelopeError("request has no usable input field")
 
@@ -268,7 +457,10 @@ def translate_request(
         # else remains, the request is unusable for the messages arm.
         raise EnvelopeError("request has no user/assistant messages")
 
-    tools = _translate_tools(raw_input)
+    tool_items = list(raw_input) if isinstance(raw_input, list) else []
+    if isinstance(body.get("tools"), list):
+        tool_items.append({"type": "additional_tools", "tools": body["tools"]})
+    tools = _translate_tools(tool_items)
 
     out: Dict[str, Any] = {
         "model": body.get("model"),
@@ -292,22 +484,31 @@ def translate_request(
     # point for the keysmith overlay preset (--overlay-file).
     if overlay_text:
         system_parts.append(overlay_text)
+
+    # The messages arm hangs if we emit an anthropic thinking block
+    # (--thinking-passthrough). Still honor Codex's effort so high/xhigh
+    # turns do not collapse to a short first-token reply.
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        depth_label = {
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "extra-high",
+            "max": "maximum",
+        }.get(effort) if isinstance(effort, str) else None
+        budgets = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384}
+        if thinking_passthrough and effort in budgets:
+            out["thinking"] = {"type": "enabled", "budget_tokens": budgets[effort]}
+        elif depth_label:
+            system_parts.append(
+                f"Work this turn at {depth_label} depth. Inspect the named "
+                "files, then act. A plan without an executed step is unfinished."
+            )
+
     if system_parts:
         out["system"] = "\n\n".join(p for p in system_parts if p)
-
-    # Reasoning passthrough (off by default). Measured on lgw.gru.ai 2026-09-07:
-    # the /messages arm hangs intermittently when a thinking block is present and
-    # never returns reasoning text on any arm (/responses returns encrypted_content
-    # only; summary="auto"/"detailed" hang it outright) — so codex shows
-    # "reasoning summaries: none" identically with or without this adapter, and
-    # passthrough buys nothing here while risking gateway hangs. Gateways that
-    # honor anthropic thinking can enable it with --thinking-passthrough.
-    reasoning = body.get("reasoning")
-    if thinking_passthrough and isinstance(reasoning, dict):
-        effort = reasoning.get("effort")
-        budgets = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384}
-        if effort in budgets:
-            out["thinking"] = {"type": "enabled", "budget_tokens": budgets[effort]}
     for passthrough in ("temperature", "top_p"):
         value = body.get(passthrough)
         if isinstance(value, (int, float)):
@@ -440,9 +641,9 @@ def _extract_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     return _chat_completion_output(upstream)
 
 
-def _usage_fields(usage: Dict[str, Any]) -> Dict[str, int]:
+def _usage_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize usage across shapes (prompt_tokens | input_tokens ...)."""
-    return {
+    result: Dict[str, Any] = {
         "input_tokens": usage.get(
             "input_tokens", usage.get("prompt_tokens", 0)
         ) or 0,
@@ -451,6 +652,15 @@ def _usage_fields(usage: Dict[str, Any]) -> Dict[str, int]:
         ) or 0,
         "total_tokens": usage.get("total_tokens", 0) or 0,
     }
+    # Anthropic excludes cache reads/writes from input_tokens; Responses
+    # counts the full input and reports cache hits as a subset.
+    cached = usage.get("cache_read_input_tokens", 0) or 0
+    result["input_tokens"] += cached + (usage.get("cache_creation_input_tokens", 0) or 0)
+    if "cache_read_input_tokens" in usage:
+        result["input_tokens_details"] = {"cached_tokens": cached}
+    if not result["total_tokens"]:
+        result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
+    return result
 
 
 def _now_iso() -> str:
@@ -479,49 +689,49 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
             }
         )
     for call_index, call in enumerate(calls):
-        arguments = call.get("arguments")
-        if isinstance(arguments, dict):
-            arguments = json.dumps(arguments, ensure_ascii=False)
-        # _unwrap_tool_input already normalized the anthropic path to the
-        # raw grammar string; chat.completion tool_calls.arguments arrive as
-        # JSON strings that may carry the same {"input": ...} envelope —
-        # unwrap those too so Codex always receives raw grammar source.
-        if isinstance(arguments, str) and arguments.lstrip().startswith("{"):
-            try:
-                parsed = json.loads(arguments)
-                if (
-                    isinstance(parsed, dict)
-                    and set(parsed.keys()) == {"input"}
-                    and isinstance(parsed["input"], str)
-                ):
-                    arguments = parsed["input"]
-            except ValueError:
-                pass
-        output.append(
-            {
-                "id": "ctc_" + hashlib.sha256(
-                    (str(call.get("id", "")) + str(resp_id)).encode("utf-8")
-                ).hexdigest()[:16],
-                "type": "custom_tool_call",
-                "status": "completed",
-                "call_id": str(call.get("id") or f"call_{call_index}"),
-                "name": str(call.get("name") or ""),
-                "input": str(arguments if arguments is not None else ""),
-            }
+        name, payload, kind = _normalize_tool_call(
+            str(call.get("name") or ""), call.get("arguments")
         )
+        call_id = str(call.get("id") or f"call_{call_index}")
+        item_id = hashlib.sha256(
+            (str(call.get("id", "")) + str(resp_id)).encode("utf-8")
+        ).hexdigest()[:16]
+        if kind == "custom":
+            output.append(
+                {
+                    "id": "ctc_" + item_id,
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": name,
+                    "input": payload,
+                }
+            )
+        else:
+            output.append(
+                {
+                    "id": "fc_" + item_id,
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": payload,
+                }
+            )
 
+    status = "completed" if finish in (
+        "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
+    ) else "incomplete"
     return {
         "id": resp_id,
         "object": "response",
         "created_at": int(time.time()),
-        "status": "completed" if finish in (
-            "stop", "tool_calls", "end_turn", "tool_use"
-        ) else "incomplete",
+        "status": status,
         "model": model,
         "output": output,
         "usage": _usage_fields(usage),
         "incomplete_details": (
-            {"reason": finish} if finish and finish not in ("stop", "end_turn") else None
+            {"reason": finish} if status != "completed" and finish else None
         ),
     }
 
@@ -531,10 +741,19 @@ def _sse_event(event: str, data: Dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
 
 
+def _terminal_event_name(status: str) -> str:
+    if status == "failed":
+        return "response.failed"
+    if status == "incomplete":
+        return "response.incomplete"
+    return "response.completed"
+
+
 def stream_response_events(
     response: Dict[str, Any],
+    include_created: bool = True,
 ) -> List[bytes]:
-    """Responses-API SSE event frames for a completed response object."""
+    """Responses-API SSE frames. Terminal event follows response.status."""
     text = ""
     for item in response.get("output", []):
         if item.get("type") == "message":
@@ -542,18 +761,23 @@ def stream_response_events(
                 if block.get("type") == "output_text":
                     text = text + str(block.get("text", ""))
     events: List[bytes] = []
-    created = {
-        "type": "response.created",
-        "response": {k: response[k] for k in ("id", "object", "created_at", "model", "status") if k in response},
-    }
-    events.append(_sse_event("response.created", created))
+    if include_created:
+        created = {
+            "type": "response.created",
+            "response": {
+                k: response[k]
+                for k in ("id", "object", "created_at", "model", "status")
+                if k in response
+            },
+        }
+        events.append(_sse_event("response.created", created))
     for index, item in enumerate(response.get("output", [])):
         events.append(_sse_event("response.output_item.added", {
             "type": "response.output_item.added",
             "output_index": index,
             "item": item,
         }))
-        if item.get("type") == "message":
+        if item.get("type") == "message" and text:
             events.append(_sse_event("response.output_text.delta", {
                 "type": "response.output_text.delta",
                 "output_index": index,
@@ -565,11 +789,309 @@ def stream_response_events(
             "output_index": index,
             "item": item,
         }))
-    events.append(_sse_event("response.completed", {
-        "type": "response.completed",
+    terminal = _terminal_event_name(str(response.get("status") or "completed"))
+    events.append(_sse_event(terminal, {
+        "type": terminal,
         "response": response,
     }))
     return events
+
+
+def _sse_data_payload(parts: List[str]) -> Any:
+    blob = "\n".join(parts).strip()
+    if not blob or blob == "[DONE]":
+        return None
+    try:
+        return json.loads(blob)
+    except ValueError:
+        raise EnvelopeError("invalid upstream SSE JSON") from None
+
+
+def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
+    """Yield (event_name, data) from an Anthropic-style SSE byte/text stream."""
+    event_name: Optional[str] = None
+    data_parts: List[str] = []
+    while True:
+        raw = fp.readline()
+        if not raw:
+            if data_parts:
+                yield event_name, _sse_data_payload(data_parts)
+            return
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        line = line.rstrip("\r\n")
+        if not line:
+            if data_parts:
+                yield event_name, _sse_data_payload(data_parts)
+            event_name = None
+            data_parts = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            continue
+        if line.startswith("data:"):
+            data_parts.append(line[5:].lstrip())
+
+
+def iter_anthropic_stream_as_responses(
+    fp: Any,
+    model: str,
+) -> Iterator[bytes]:
+    """Translate an Anthropic /messages SSE stream into Responses SSE frames."""
+    live = _LiveResponse(model)
+    yield live.created_frame()
+    try:
+        yield from _forward_anthropic_stream(fp, live)
+    except (OSError, http.client.HTTPException, EnvelopeError):
+        # Headers are already sent. Never append another HTTP response or
+        # expose upstream exception text (which may contain credentials).
+        yield from live.fail("upstream stream interrupted or invalid")
+
+
+def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
+    for _name, payload in iter_sse_events(fp):
+        if not isinstance(payload, dict):
+            raise EnvelopeError("invalid upstream SSE payload")
+        etype = str(payload.get("type") or _name or "")
+        if etype == "error":
+            yield from live.fail("upstream stream error")
+            return
+        if etype == "content_block_start":
+            yield from live.block_start(payload)
+        elif etype == "content_block_delta":
+            yield from live.block_delta(payload)
+        elif etype == "content_block_stop":
+            yield from live.block_stop(payload)
+        elif etype == "message_delta":
+            live.message_delta(payload)
+        elif etype == "message_start":
+            message = payload.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                live.usage.update(message["usage"])
+        elif etype == "ping":
+            continue
+        elif etype == "message_stop":
+            yield from live.finish()
+            return
+    yield from live.fail("upstream stream ended before message_stop")
+
+
+class _LiveResponse:
+    """Assemble Responses SSE while an Anthropic stream is in flight."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model or ""
+        self.resp_id = "resp_" + uuid.uuid4().hex[:24]
+        self.created_at = int(time.time())
+        self.output: List[Dict[str, Any]] = []
+        self.stop_reason = ""
+        self.usage: Dict[str, Any] = {}
+        self.next_index = 0
+        self.text_index: Optional[int] = None
+        self.text_block_index: Optional[int] = None
+        self.text_closed = False
+        self.text = ""
+        self.text_id = "msg_" + self.resp_id[-20:]
+        self.tools: Dict[int, Dict[str, Any]] = {}
+
+    def created_frame(self) -> bytes:
+        body = {
+            "id": self.resp_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "model": self.model,
+            "status": "in_progress",
+        }
+        return _sse_event(
+            "response.created", {"type": "response.created", "response": body}
+        )
+
+    def snapshot(self, status: str) -> Dict[str, Any]:
+        incomplete = None
+        if status != "completed" and self.stop_reason:
+            incomplete = {"reason": self.stop_reason}
+        out: Dict[str, Any] = {
+            "id": self.resp_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": list(self.output),
+            "usage": _usage_fields(self.usage),
+            "incomplete_details": incomplete,
+        }
+        return out
+
+    def _ensure_text_item(self) -> Iterator[bytes]:
+        if self.text_index is not None:
+            return
+        self.text_index = self.next_index
+        self.next_index += 1
+        item = {
+            "id": self.text_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [{"type": "output_text", "annotations": [], "text": ""}],
+        }
+        self.output.append(item)
+        yield _sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.text_index,
+            "item": item,
+        })
+
+    def _close_text_item(self) -> Iterator[bytes]:
+        if self.text_index is None or self.text_closed:
+            return
+        item = self.output[self.text_index]
+        item["status"] = "completed"
+        item["content"][0]["text"] = self.text
+        self.text_closed = True
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": self.text_index,
+            "item": item,
+        })
+
+    def block_start(self, payload: Dict[str, Any]) -> List[bytes]:
+        block = payload.get("content_block")
+        if not isinstance(block, dict):
+            return []
+        index = payload.get("index")
+        btype = block.get("type")
+        if btype == "text" and isinstance(index, int):
+            if self.text_closed:
+                self.text_index = None
+                self.text_closed = False
+                self.text = ""
+                self.text_id = "msg_" + uuid.uuid4().hex[:20]
+            self.text_block_index = index
+            if block.get("text"):
+                return list(self.block_delta({"index": index, "delta": {
+                    "type": "text_delta", "text": block["text"],
+                }}))
+        elif btype == "tool_use" and isinstance(index, int):
+            self.tools[index] = {
+                "id": block.get("id"),
+                "name": block.get("name") or "",
+                "json": "",
+                "input": block.get("input", {}),
+            }
+        return []
+
+    def block_delta(self, payload: Dict[str, Any]) -> Iterator[bytes]:
+        delta = payload.get("delta")
+        if not isinstance(delta, dict):
+            return
+        dtype = delta.get("type")
+        index = payload.get("index")
+        if dtype == "text_delta":
+            chunk = str(delta.get("text") or "")
+            if not chunk:
+                return
+            yield from self._ensure_text_item()
+            self.text += chunk
+            assert self.text_index is not None
+            self.output[self.text_index]["content"][0]["text"] = self.text
+            yield _sse_event("response.output_text.delta", {
+                "type": "response.output_text.delta",
+                "output_index": self.text_index,
+                "content_index": 0,
+                "delta": chunk,
+            })
+            return
+        if dtype == "input_json_delta" and isinstance(index, int):
+            acc = self.tools.get(index)
+            if acc is not None:
+                acc["json"] += str(delta.get("partial_json") or "")
+
+    def block_stop(self, payload: Dict[str, Any]) -> Iterator[bytes]:
+        index = payload.get("index")
+        if index == self.text_block_index:
+            yield from self._close_text_item()
+            return
+        if not isinstance(index, int) or index not in self.tools:
+            return
+        acc = self.tools.pop(index)
+        raw_args: Any = acc.get("json") or ""
+        if isinstance(raw_args, str) and raw_args.strip():
+            try:
+                parsed: Any = json.loads(raw_args)
+            except ValueError:
+                raise EnvelopeError("invalid upstream tool JSON") from None
+        else:
+            parsed = acc["input"]
+        name, payload_text, kind = _normalize_tool_call(
+            str(acc.get("name") or ""), parsed
+        )
+        call_id = str(acc.get("id") or f"call_{self.next_index}")
+        item_id = hashlib.sha256(
+            (call_id + self.resp_id).encode("utf-8")
+        ).hexdigest()[:16]
+        out_index = self.next_index
+        self.next_index += 1
+        if kind == "custom":
+            item = {
+                "id": "ctc_" + item_id,
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "input": payload_text,
+            }
+        else:
+            item = {
+                "id": "fc_" + item_id,
+                "type": "function_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "arguments": payload_text,
+            }
+        self.output.append(item)
+        yield _sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": out_index,
+            "item": item,
+        })
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": out_index,
+            "item": item,
+        })
+
+    def message_delta(self, payload: Dict[str, Any]) -> None:
+        delta = payload.get("delta")
+        if isinstance(delta, dict) and delta.get("stop_reason"):
+            self.stop_reason = str(delta["stop_reason"])
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            self.usage.update(usage)
+
+    def fail(self, message: str) -> Iterator[bytes]:
+        yield from self._close_text_item()
+        snap = self.snapshot("failed")
+        snap["error"] = {"code": "upstream_error", "message": message[:300]}
+        yield _sse_event("response.failed", {
+            "type": "response.failed",
+            "response": snap,
+        })
+
+    def finish(self) -> Iterator[bytes]:
+        if not self.stop_reason or self.tools:
+            yield from self.fail("upstream stream ended without complete message metadata")
+            return
+        yield from self._close_text_item()
+        status = "completed" if self.stop_reason in (
+            "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
+        ) else "incomplete"
+        terminal = _terminal_event_name(status)
+        yield _sse_event(terminal, {
+            "type": terminal,
+            "response": self.snapshot(status),
+        })
 
 
 def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any]:
@@ -634,6 +1156,23 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
+    def _write_sse_frame(self, frame: bytes) -> None:
+        self.wfile.write(frame)
+        self.wfile.flush()
+
+    def _reply_upstream_stream(self, resp: Any, model: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for frame in iter_anthropic_stream_as_responses(resp, model):
+                self._write_sse_frame(frame)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path.rstrip("/") in ("", "/health", LOCAL_PREFIX + "/health"):
             self._reply_json(
@@ -672,6 +1211,8 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             return
 
         wants_stream = request_body.get("stream") is True
+        if wants_stream:
+            translated["stream"] = True
         payload = json.dumps(translated, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             self.upstream_base + UPSTREAM_MESSAGES,
@@ -683,14 +1224,17 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             },
             method="POST",
         )
+        model = str(request_body.get("model") or "")
         try:
             with urllib.request.urlopen(
                 req, timeout=UPSTREAM_TIMEOUT_SECONDS
             ) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if wants_stream and "text/event-stream" in ctype:
+                    self._reply_upstream_stream(resp, model)
+                    return
                 data = json.loads(resp.read().decode("utf-8"))
-                translated_out = translate_response(
-                    data, str(request_body.get("model"))
-                )
+                translated_out = translate_response(data, model)
                 if wants_stream:
                     self._reply_sse(translated_out)
                 else:

@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import sys
 import threading
@@ -140,6 +141,106 @@ def test_stream_response_events_order_and_delta():
         < joined.index("response.output_text.delta")
         < joined.index("response.completed")
     )
+
+
+def test_stream_response_events_failed_uses_failed_terminal():
+    response = {
+        "id": "resp_f",
+        "object": "response",
+        "created_at": 1,
+        "model": "m",
+        "status": "failed",
+        "output": [],
+        "error": {"code": "upstream_error", "message": "upstream 401"},
+    }
+    joined = b"".join(ks_envelope.stream_response_events(response)).decode("utf-8")
+    assert "event: response.failed" in joined
+    assert "event: response.completed" not in joined
+
+
+def test_stream_response_events_incomplete_terminal():
+    response = {
+        "id": "resp_i",
+        "object": "response",
+        "created_at": 1,
+        "model": "m",
+        "status": "incomplete",
+        "output": [],
+        "incomplete_details": {"reason": "failed"},
+    }
+    joined = b"".join(ks_envelope.stream_response_events(response)).decode("utf-8")
+    assert "event: response.incomplete" in joined
+    assert "event: response.completed" not in joined
+
+
+def test_anthropic_stream_emits_text_deltas_before_completed():
+    raw = (
+        "event: message_start\n"
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_s\"}}\n"
+        "\n"
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,"
+        "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,"
+        "\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,"
+        "\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n"
+        "\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n"
+        "\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+        "\"usage\":{\"output_tokens\":2}}\n"
+        "\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n"
+        "\n"
+    )
+    frames = list(
+        ks_envelope.iter_anthropic_stream_as_responses(
+            io.BytesIO(raw.encode("utf-8")), "m"
+        )
+    )
+    joined = b"".join(frames).decode("utf-8")
+    assert joined.index("response.created") < joined.index('"delta": "Hel"')
+    assert joined.index('"delta": "Hel"') < joined.index('"delta": "lo"')
+    assert joined.index('"delta": "lo"') < joined.index("response.completed")
+    assert '"delta": "Hello"' not in joined
+
+
+def test_anthropic_stream_tool_use_emits_custom_tool_call():
+    raw = (
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":"
+        "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"exec\",\"input\":{}}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":"
+        "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"input\\\": \\\"ls\\\"}\"}}\n"
+        "\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n"
+        "\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n"
+        "\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n"
+        "\n"
+    )
+    joined = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(
+            io.BytesIO(raw.encode("utf-8")), "m"
+        )
+    ).decode("utf-8")
+    assert '"type": "custom_tool_call"' in joined
+    assert '"name": "exec"' in joined
+    assert "event: response.completed" in joined
 
 
 def test_translate_request_string_input():
@@ -372,6 +473,86 @@ def test_end_to_end_stream_request_gets_sse(_servers):
     assert "event: response.output_text.delta" in body
 
 
+class _AnthropicSseUpstream(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or "0")
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        assert body.get("stream") is True
+        chunks = [
+            'event: content_block_start\ndata: {"type":"content_block_start",'
+            '"index":0,"content_block":{"type":"text","text":""}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            '"index":0,"delta":{"type":"text_delta","text":"ab"}}\n\n',
+            'event: content_block_stop\ndata: {"type":"content_block_stop",'
+            '"index":0}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+            if '"text":"ab"' in chunk:
+                assert self.server.delta_received.wait(5), "adapter buffered upstream"
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def test_end_to_end_forwards_anthropic_sse_deltas():
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicSseUpstream)
+    upstream.delta_received = threading.Event()
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    handler = type(
+        "BoundSse",
+        (ks_envelope.EnvelopeHandler,),
+        {
+            "upstream_key": "k",
+            "upstream_base": f"http://127.0.0.1:{upstream.server_address[1]}",
+            "secret_for_redaction": "k",
+            "verbose": False,
+        },
+    )
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    adapter.daemon_threads = True
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{adapter.server_address[1]}/v1/responses",
+            data=json.dumps(
+                {
+                    "model": "m",
+                    "stream": True,
+                    "input": [{"role": "user", "content": "hi"}],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            lines = []
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                lines.append(line)
+                if b'"delta": "ab"' in line:
+                    upstream.delta_received.set()
+            body = b"".join(lines).decode("utf-8")
+        assert '"delta": "ab"' in body
+        assert "event: response.completed" in body
+        assert body.index("response.created") < body.index('"delta": "ab"')
+    finally:
+        upstream.delta_received.set()
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+
+
 def test_health_endpoint(_servers):
     with urllib.request.urlopen(
         f"http://127.0.0.1:{_servers['adapter_port']}/v1/health", timeout=10
@@ -395,6 +576,177 @@ def test_unknown_post_path_404(_servers):
 
 
 # --- CLI guards ----------------------------------------------------------------
+
+
+def _stream_events(events):
+    raw = b"".join(ks_envelope._sse_event(e["type"], e) for e in events)
+    frames = b"".join(ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m"))
+    return [payload for _, payload in ks_envelope.iter_sse_events(io.BytesIO(frames))]
+
+
+@pytest.mark.parametrize("tail", [[], [{"type": "message_stop"}],
+    [{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}]])
+def test_stream_missing_terminal_metadata_fails(tail):
+    events = _stream_events(tail)
+    assert events[-1]["type"] == "response.failed"
+    assert not any(e["type"] == "response.completed" for e in events)
+
+
+@pytest.mark.parametrize("reason,status", [
+    ("end_turn", "completed"), ("tool_use", "completed"),
+    ("stop_sequence", "completed"), ("max_tokens", "incomplete"),
+])
+def test_stream_terminal_and_start_usage(reason, status):
+    events = _stream_events([
+        {"type": "message_start", "message": {"usage": {"input_tokens": 17}}},
+        {"type": "message_delta", "delta": {"stop_reason": reason},
+         "usage": {"output_tokens": 3}},
+        {"type": "message_stop"},
+    ])
+    assert events[-1]["type"] == "response." + status
+    assert events[-1]["response"]["usage"]["input_tokens"] == 17
+    assert events[-1]["response"]["usage"]["output_tokens"] == 3
+
+
+@pytest.mark.parametrize("kind", ["function", "custom_tool"])
+def test_standard_tools_and_tool_result_images_survive_replay(kind):
+    out = ks_envelope.translate_request({
+        'model': 'm',
+        'tools': [{'type': 'function', 'name': 'inspect',
+                   'parameters': {'type': 'object', 'properties': {}}}],
+        'input': [
+            {'type': 'function_call', 'name': 'inspect', 'call_id': 'c', 'arguments': '{}'},
+            {'type': kind + '_call_output', 'call_id': 'c', 'output': [
+                {'type': 'input_text', 'text': 'screenshot'},
+                {'type': 'input_image', 'image_url': 'data:image/png;base64,AAAA'},
+            ]},
+        ],
+    })
+    assert out['tools'][0]['name'] == 'inspect'
+    result = out['messages'][1]['content'][0]
+    assert result['content'] == [
+        {'type': 'text', 'text': 'screenshot'},
+        {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'AAAA'}},
+    ]
+
+
+def test_nonstream_stop_sequence_is_completed():
+    out = ks_envelope.translate_response({
+        'content': [{'type': 'text', 'text': 'done'}],
+        'stop_reason': 'stop_sequence',
+    }, 'm')
+    assert out['status'] == 'completed'
+
+
+def test_cached_usage_counts_full_context():
+    usage = ks_envelope._usage_fields({
+        'input_tokens': 7, 'output_tokens': 3,
+        'cache_read_input_tokens': 100, 'cache_creation_input_tokens': 20,
+    })
+    assert usage == {'input_tokens': 127, 'output_tokens': 3, 'total_tokens': 130,
+                     'input_tokens_details': {'cached_tokens': 100}}
+
+
+def test_stream_multiple_text_blocks_have_distinct_done_items():
+    source = []
+    for index, text in enumerate(["first", "second"]):
+        source.extend([
+            {"type": "content_block_start", "index": index,
+             "content_block": {"type": "text", "text": text}},
+            {"type": "content_block_stop", "index": index},
+        ])
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    done = [e for e in events if e["type"] == "response.output_item.done"]
+    assert [e["output_index"] for e in done] == [0, 1]
+    assert done[0]["item"]["id"] != done[1]["item"]["id"]
+    assert [e["item"] for e in done] == events[-1]["response"]["output"]
+    assert [e["item"]["content"][0]["text"] for e in done] == ["first", "second"]
+
+
+@pytest.mark.parametrize("raw", [b"data: invalid\n\n", b"data: []\n\n",
+    b"data: [DONE]\n\n",
+    b'data: {"type":"error","error":{"message":"SECRET"}}\n\n'])
+def test_stream_bad_frames_fail_without_leaking(raw):
+    result = b"".join(ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m"))
+    assert result.count(b"event: response.failed\n") == 1
+    assert b"response.completed" not in result
+    assert b"SECRET" not in result
+
+
+@pytest.mark.parametrize("error", [TimeoutError("SECRET"),
+    ks_envelope.http.client.IncompleteRead(b"SECRET"), ConnectionResetError("SECRET")])
+def test_stream_read_errors_are_failed_sse(error):
+    class BrokenStream:
+        def readline(self):
+            raise error
+
+    result = b"".join(ks_envelope.iter_anthropic_stream_as_responses(BrokenStream(), "m"))
+    assert result.count(b"event: response.failed\n") == 1
+    assert b"SECRET" not in result
+
+
+def test_handler_read_failure_does_not_append_http_error():
+    class BrokenStream:
+        def readline(self):
+            raise TimeoutError("SECRET")
+
+    handler = object.__new__(ks_envelope.EnvelopeHandler)
+    handler.wfile = io.BytesIO()
+    statuses = []
+    handler.send_response = statuses.append
+    handler.send_header = lambda *args: None
+    handler.end_headers = lambda: None
+    handler._reply_upstream_stream(BrokenStream(), "m")
+    assert statuses == [200]
+    assert handler.close_connection is True
+    assert handler.wfile.getvalue().count(b"event: response.failed\n") == 1
+    assert b"SECRET" not in handler.wfile.getvalue()
+
+
+def test_stream_fragmented_function_arguments_and_initial_tool_input():
+    source = []
+    for index in range(2):
+        source.append({"type": "content_block_start", "index": index,
+                       "content_block": {"type": "tool_use", "id": str(index),
+                                         "name": "wait", "input": {"cell_id": "x"}}})
+        if index == 0:
+            for fragment in ['{"cell_', 'id":"x"}']:
+                source.append({"type": "content_block_delta", "index": index,
+                               "delta": {"type": "input_json_delta",
+                                         "partial_json": fragment}})
+        source.append({"type": "content_block_stop", "index": index})
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    assert events[-1]["type"] == "response.completed"
+    for item in events[-1]["response"]["output"]:
+        assert item["type"] == "function_call"
+        assert json.loads(item["arguments"]) == {"cell_id": "x"}
+
+
+@pytest.mark.parametrize("partial,closed", [("{", True), ("{}", False)])
+def test_stream_invalid_or_unclosed_tool_is_not_dispatched(partial, closed):
+    source = [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "t", "name": "exec"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": partial}},
+    ]
+    if closed:
+        source.append({"type": "content_block_stop", "index": 0})
+    source.extend([
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ])
+    events = _stream_events(source)
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["output"] == []
 
 
 def test_main_rejects_bad_port(capsys):
@@ -430,6 +782,53 @@ def test_translate_tools_from_additional_tools():
     assert tools[0]["description"] == "Run code"
     assert tools[0]["input_schema"]["properties"]["input"]["type"] == "string"
     assert tools[0]["input_schema"]["required"] == ["input"]
+
+
+def test_translate_tools_expands_namespace_and_keeps_function_schema():
+    raw = [
+        {
+            "type": "additional_tools",
+            "tools": [
+                {"type": "custom", "name": "exec", "description": "run"},
+                {
+                    "type": "function",
+                    "name": "wait",
+                    "description": "wait on a cell",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"cell_id": {"type": "string"}},
+                        "required": ["cell_id"],
+                    },
+                },
+                {
+                    "type": "namespace",
+                    "name": "collaboration",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "send_message",
+                            "description": "message an agent",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "string"},
+                                    "message": {"type": "string"},
+                                },
+                                "required": ["target", "message"],
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+    ]
+    tools = ks_envelope._translate_tools(raw)
+    by_name = {t["name"]: t for t in tools}
+    assert set(by_name) == {"exec", "wait", "send_message"}
+    assert "collaboration" not in by_name
+    assert by_name["exec"]["input_schema"]["properties"]["input"]["type"] == "string"
+    assert by_name["wait"]["input_schema"]["required"] == ["cell_id"]
+    assert "target" in by_name["send_message"]["input_schema"]["properties"]
 
 
 def test_translate_tools_ignores_bad_entries():
@@ -600,12 +999,41 @@ def test_stream_events_include_tool_call_items():
 
 
 def test_tool_call_input_string_becomes_input_dict():
-    item = {"arguments": "await tools.exec_command({command: 'ls'})"}
-    assert ks_envelope._tool_call_input(item) == {"input": "await tools.exec_command({command: 'ls'})"}
-    item = {"arguments": "{\"a\": 1}"}
-    assert ks_envelope._tool_call_input(item) == {"a": 1}
-    item = {"arguments": {"a": 1}}
-    assert ks_envelope._tool_call_input(item) == {"a": 1}
+    item = {"name": "exec", "arguments": "await tools.exec_command({command: 'ls'})"}
+    assert ks_envelope._tool_call_input(item) == (
+        "exec",
+        {"input": "await tools.exec_command({command: 'ls'})"},
+    )
+    item = {"name": "wait", "arguments": "{\"a\": 1}"}
+    assert ks_envelope._tool_call_input(item) == ("wait", {"a": 1})
+    item = {"name": "wait", "arguments": {"a": 1}}
+    assert ks_envelope._tool_call_input(item) == ("wait", {"a": 1})
+
+
+def test_translate_request_forwards_input_image():
+    body = {
+        "model": "m",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,AAAA",
+                    },
+                ],
+            }
+        ],
+    }
+    out = ks_envelope.translate_request(body)
+    content = out["messages"][0]["content"]
+    types = [block["type"] for block in content]
+    assert types == ["text", "image"]
+    assert content[1]["source"]["type"] == "base64"
+    assert content[1]["source"]["media_type"] == "image/png"
+    assert content[1]["source"]["data"] == "AAAA"
 
 
 def test_translate_request_reasoning_off_by_default():
@@ -616,6 +1044,7 @@ def test_translate_request_reasoning_off_by_default():
     }
     out = ks_envelope.translate_request(body)
     assert "thinking" not in out
+    assert "extra-high depth" in out.get("system", "")
 
 
 def test_translate_request_reasoning_effort_maps_to_thinking():
