@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import sys
 import threading
@@ -140,6 +141,106 @@ def test_stream_response_events_order_and_delta():
         < joined.index("response.output_text.delta")
         < joined.index("response.completed")
     )
+
+
+def test_stream_response_events_failed_uses_failed_terminal():
+    response = {
+        "id": "resp_f",
+        "object": "response",
+        "created_at": 1,
+        "model": "m",
+        "status": "failed",
+        "output": [],
+        "error": {"code": "upstream_error", "message": "upstream 401"},
+    }
+    joined = b"".join(ks_envelope.stream_response_events(response)).decode("utf-8")
+    assert "event: response.failed" in joined
+    assert "event: response.completed" not in joined
+
+
+def test_stream_response_events_incomplete_terminal():
+    response = {
+        "id": "resp_i",
+        "object": "response",
+        "created_at": 1,
+        "model": "m",
+        "status": "incomplete",
+        "output": [],
+        "incomplete_details": {"reason": "failed"},
+    }
+    joined = b"".join(ks_envelope.stream_response_events(response)).decode("utf-8")
+    assert "event: response.incomplete" in joined
+    assert "event: response.completed" not in joined
+
+
+def test_anthropic_stream_emits_text_deltas_before_completed():
+    raw = (
+        "event: message_start\n"
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_s\"}}\n"
+        "\n"
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,"
+        "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,"
+        "\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,"
+        "\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n"
+        "\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n"
+        "\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+        "\"usage\":{\"output_tokens\":2}}\n"
+        "\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n"
+        "\n"
+    )
+    frames = list(
+        ks_envelope.iter_anthropic_stream_as_responses(
+            io.BytesIO(raw.encode("utf-8")), "m"
+        )
+    )
+    joined = b"".join(frames).decode("utf-8")
+    assert joined.index("response.created") < joined.index('"delta": "Hel"')
+    assert joined.index('"delta": "Hel"') < joined.index('"delta": "lo"')
+    assert joined.index('"delta": "lo"') < joined.index("response.completed")
+    assert '"delta": "Hello"' not in joined
+
+
+def test_anthropic_stream_tool_use_emits_custom_tool_call():
+    raw = (
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":"
+        "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"exec\",\"input\":{}}}\n"
+        "\n"
+        "event: content_block_delta\n"
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":"
+        "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"input\\\": \\\"ls\\\"}\"}}\n"
+        "\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n"
+        "\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n"
+        "\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n"
+        "\n"
+    )
+    joined = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(
+            io.BytesIO(raw.encode("utf-8")), "m"
+        )
+    ).decode("utf-8")
+    assert '"type": "custom_tool_call"' in joined
+    assert '"name": "exec"' in joined
+    assert "event: response.completed" in joined
 
 
 def test_translate_request_string_input():
@@ -370,6 +471,74 @@ def test_end_to_end_stream_request_gets_sse(_servers):
         body = resp.read().decode("utf-8")
     assert "event: response.completed" in body
     assert "event: response.output_text.delta" in body
+
+
+class _AnthropicSseUpstream(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or "0")
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        assert body.get("stream") is True
+        chunks = [
+            'event: content_block_start\ndata: {"type":"content_block_start",'
+            '"index":0,"content_block":{"type":"text","text":""}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            '"index":0,"delta":{"type":"text_delta","text":"ab"}}\n\n',
+            'event: content_block_stop\ndata: {"type":"content_block_stop",'
+            '"index":0}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def test_end_to_end_forwards_anthropic_sse_deltas():
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicSseUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    handler = type(
+        "BoundSse",
+        (ks_envelope.EnvelopeHandler,),
+        {
+            "upstream_key": "k",
+            "upstream_base": f"http://127.0.0.1:{upstream.server_address[1]}",
+            "secret_for_redaction": "k",
+            "verbose": False,
+        },
+    )
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    adapter.daemon_threads = True
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{adapter.server_address[1]}/v1/responses",
+            data=json.dumps(
+                {
+                    "model": "m",
+                    "stream": True,
+                    "input": [{"role": "user", "content": "hi"}],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+        assert '"delta": "ab"' in body
+        assert "event: response.completed" in body
+        assert body.index("response.created") < body.index('"delta": "ab"')
+    finally:
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
 
 
 def test_health_endpoint(_servers):

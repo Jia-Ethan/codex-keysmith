@@ -34,7 +34,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 DEFAULT_UPSTREAM = "https://lgw.gru.ai/v1"
 DEFAULT_AUTH_PATH = Path.home() / ".codex" / "auth.json"
@@ -699,18 +699,19 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
                 }
             )
 
+    status = "completed" if finish in (
+        "stop", "tool_calls", "end_turn", "tool_use"
+    ) else "incomplete"
     return {
         "id": resp_id,
         "object": "response",
         "created_at": int(time.time()),
-        "status": "completed" if finish in (
-            "stop", "tool_calls", "end_turn", "tool_use"
-        ) else "incomplete",
+        "status": status,
         "model": model,
         "output": output,
         "usage": _usage_fields(usage),
         "incomplete_details": (
-            {"reason": finish} if finish and finish not in ("stop", "end_turn") else None
+            {"reason": finish} if status != "completed" and finish else None
         ),
     }
 
@@ -720,10 +721,19 @@ def _sse_event(event: str, data: Dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
 
 
+def _terminal_event_name(status: str) -> str:
+    if status == "failed":
+        return "response.failed"
+    if status == "incomplete":
+        return "response.incomplete"
+    return "response.completed"
+
+
 def stream_response_events(
     response: Dict[str, Any],
+    include_created: bool = True,
 ) -> List[bytes]:
-    """Responses-API SSE event frames for a completed response object."""
+    """Responses-API SSE frames. Terminal event follows response.status."""
     text = ""
     for item in response.get("output", []):
         if item.get("type") == "message":
@@ -731,18 +741,23 @@ def stream_response_events(
                 if block.get("type") == "output_text":
                     text = text + str(block.get("text", ""))
     events: List[bytes] = []
-    created = {
-        "type": "response.created",
-        "response": {k: response[k] for k in ("id", "object", "created_at", "model", "status") if k in response},
-    }
-    events.append(_sse_event("response.created", created))
+    if include_created:
+        created = {
+            "type": "response.created",
+            "response": {
+                k: response[k]
+                for k in ("id", "object", "created_at", "model", "status")
+                if k in response
+            },
+        }
+        events.append(_sse_event("response.created", created))
     for index, item in enumerate(response.get("output", [])):
         events.append(_sse_event("response.output_item.added", {
             "type": "response.output_item.added",
             "output_index": index,
             "item": item,
         }))
-        if item.get("type") == "message":
+        if item.get("type") == "message" and text:
             events.append(_sse_event("response.output_text.delta", {
                 "type": "response.output_text.delta",
                 "output_index": index,
@@ -754,11 +769,283 @@ def stream_response_events(
             "output_index": index,
             "item": item,
         }))
-    events.append(_sse_event("response.completed", {
-        "type": "response.completed",
+    terminal = _terminal_event_name(str(response.get("status") or "completed"))
+    events.append(_sse_event(terminal, {
+        "type": terminal,
         "response": response,
     }))
     return events
+
+
+def _sse_data_payload(parts: List[str]) -> Any:
+    blob = "\n".join(parts).strip()
+    if not blob or blob == "[DONE]":
+        return None
+    try:
+        return json.loads(blob)
+    except ValueError:
+        return None
+
+
+def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
+    """Yield (event_name, data) from an Anthropic-style SSE byte/text stream."""
+    event_name: Optional[str] = None
+    data_parts: List[str] = []
+    while True:
+        raw = fp.readline()
+        if not raw:
+            if data_parts:
+                yield event_name, _sse_data_payload(data_parts)
+            return
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        line = line.rstrip("\r\n")
+        if not line:
+            if data_parts:
+                yield event_name, _sse_data_payload(data_parts)
+            event_name = None
+            data_parts = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            continue
+        if line.startswith("data:"):
+            data_parts.append(line[5:].lstrip())
+
+
+def iter_anthropic_stream_as_responses(
+    fp: Any,
+    model: str,
+) -> Iterator[bytes]:
+    """Translate an Anthropic /messages SSE stream into Responses SSE frames."""
+    live = _LiveResponse(model)
+    yield live.created_frame()
+    for _name, payload in iter_sse_events(fp):
+        if not isinstance(payload, dict):
+            continue
+        etype = str(payload.get("type") or _name or "")
+        if etype == "error":
+            err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            yield from live.fail(str(err.get("message") or "upstream stream error"))
+            return
+        if etype == "content_block_start":
+            yield from live.block_start(payload)
+        elif etype == "content_block_delta":
+            yield from live.block_delta(payload)
+        elif etype == "content_block_stop":
+            yield from live.block_stop(payload)
+        elif etype == "message_delta":
+            live.message_delta(payload)
+        elif etype in ("ping", "message_start"):
+            continue
+        elif etype == "message_stop":
+            break
+    yield from live.finish()
+
+
+class _LiveResponse:
+    """Assemble Responses SSE while an Anthropic stream is in flight."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model or ""
+        self.resp_id = "resp_" + uuid.uuid4().hex[:24]
+        self.created_at = int(time.time())
+        self.output: List[Dict[str, Any]] = []
+        self.stop_reason = ""
+        self.usage: Dict[str, Any] = {}
+        self.next_index = 0
+        self.text_index: Optional[int] = None
+        self.text_block_index: Optional[int] = None
+        self.text_closed = False
+        self.text = ""
+        self.text_id = "msg_" + self.resp_id[-20:]
+        self.tools: Dict[int, Dict[str, Any]] = {}
+
+    def created_frame(self) -> bytes:
+        body = {
+            "id": self.resp_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "model": self.model,
+            "status": "in_progress",
+        }
+        return _sse_event(
+            "response.created", {"type": "response.created", "response": body}
+        )
+
+    def snapshot(self, status: str) -> Dict[str, Any]:
+        incomplete = None
+        if status != "completed" and self.stop_reason:
+            incomplete = {"reason": self.stop_reason}
+        out: Dict[str, Any] = {
+            "id": self.resp_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": list(self.output),
+            "usage": _usage_fields(self.usage),
+            "incomplete_details": incomplete,
+        }
+        return out
+
+    def _ensure_text_item(self) -> Iterator[bytes]:
+        if self.text_index is not None:
+            return
+        self.text_index = self.next_index
+        self.next_index += 1
+        item = {
+            "id": self.text_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [{"type": "output_text", "annotations": [], "text": ""}],
+        }
+        self.output.append(item)
+        yield _sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.text_index,
+            "item": item,
+        })
+
+    def _close_text_item(self) -> Iterator[bytes]:
+        if self.text_index is None or self.text_closed:
+            return
+        item = self.output[self.text_index]
+        item["status"] = "completed"
+        item["content"][0]["text"] = self.text
+        self.text_closed = True
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": self.text_index,
+            "item": item,
+        })
+
+    def block_start(self, payload: Dict[str, Any]) -> List[bytes]:
+        block = payload.get("content_block")
+        if not isinstance(block, dict):
+            return []
+        index = payload.get("index")
+        btype = block.get("type")
+        if btype == "text" and isinstance(index, int):
+            self.text_block_index = index
+        elif btype == "tool_use" and isinstance(index, int):
+            self.tools[index] = {
+                "id": block.get("id"),
+                "name": block.get("name") or "",
+                "json": "",
+            }
+        return []
+
+    def block_delta(self, payload: Dict[str, Any]) -> Iterator[bytes]:
+        delta = payload.get("delta")
+        if not isinstance(delta, dict):
+            return
+        dtype = delta.get("type")
+        index = payload.get("index")
+        if dtype == "text_delta":
+            chunk = str(delta.get("text") or "")
+            if not chunk:
+                return
+            yield from self._ensure_text_item()
+            self.text += chunk
+            assert self.text_index is not None
+            self.output[self.text_index]["content"][0]["text"] = self.text
+            yield _sse_event("response.output_text.delta", {
+                "type": "response.output_text.delta",
+                "output_index": self.text_index,
+                "content_index": 0,
+                "delta": chunk,
+            })
+            return
+        if dtype == "input_json_delta" and isinstance(index, int):
+            acc = self.tools.get(index)
+            if acc is not None:
+                acc["json"] += str(delta.get("partial_json") or "")
+
+    def block_stop(self, payload: Dict[str, Any]) -> Iterator[bytes]:
+        index = payload.get("index")
+        if index == self.text_block_index:
+            yield from self._close_text_item()
+            return
+        if not isinstance(index, int) or index not in self.tools:
+            return
+        acc = self.tools.pop(index)
+        raw_args: Any = acc.get("json") or ""
+        if isinstance(raw_args, str) and raw_args.strip():
+            try:
+                parsed: Any = json.loads(raw_args)
+            except ValueError:
+                parsed = raw_args
+        else:
+            parsed = {}
+        name, payload_text, kind = _normalize_tool_call(
+            str(acc.get("name") or ""), parsed
+        )
+        call_id = str(acc.get("id") or f"call_{self.next_index}")
+        item_id = hashlib.sha256(
+            (call_id + self.resp_id).encode("utf-8")
+        ).hexdigest()[:16]
+        out_index = self.next_index
+        self.next_index += 1
+        if kind == "custom":
+            item = {
+                "id": "ctc_" + item_id,
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "input": payload_text,
+            }
+        else:
+            item = {
+                "id": "fc_" + item_id,
+                "type": "function_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "arguments": payload_text,
+            }
+        self.output.append(item)
+        yield _sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": out_index,
+            "item": item,
+        })
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": out_index,
+            "item": item,
+        })
+
+    def message_delta(self, payload: Dict[str, Any]) -> None:
+        delta = payload.get("delta")
+        if isinstance(delta, dict) and delta.get("stop_reason"):
+            self.stop_reason = str(delta["stop_reason"])
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            self.usage.update(usage)
+
+    def fail(self, message: str) -> Iterator[bytes]:
+        yield from self._close_text_item()
+        snap = self.snapshot("failed")
+        snap["error"] = {"code": "upstream_error", "message": message[:300]}
+        yield _sse_event("response.failed", {
+            "type": "response.failed",
+            "response": snap,
+        })
+
+    def finish(self) -> Iterator[bytes]:
+        yield from self._close_text_item()
+        status = "completed" if self.stop_reason in (
+            "stop", "tool_calls", "end_turn", "tool_use", ""
+        ) else "incomplete"
+        terminal = _terminal_event_name(status)
+        yield _sse_event(terminal, {
+            "type": terminal,
+            "response": self.snapshot(status),
+        })
 
 
 def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any]:
@@ -823,6 +1110,23 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
+    def _write_sse_frame(self, frame: bytes) -> None:
+        self.wfile.write(frame)
+        self.wfile.flush()
+
+    def _reply_upstream_stream(self, resp: Any, model: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for frame in iter_anthropic_stream_as_responses(resp, model):
+                self._write_sse_frame(frame)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path.rstrip("/") in ("", "/health", LOCAL_PREFIX + "/health"):
             self._reply_json(
@@ -861,6 +1165,8 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             return
 
         wants_stream = request_body.get("stream") is True
+        if wants_stream:
+            translated["stream"] = True
         payload = json.dumps(translated, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             self.upstream_base + UPSTREAM_MESSAGES,
@@ -872,14 +1178,17 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             },
             method="POST",
         )
+        model = str(request_body.get("model") or "")
         try:
             with urllib.request.urlopen(
                 req, timeout=UPSTREAM_TIMEOUT_SECONDS
             ) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if wants_stream and "text/event-stream" in ctype:
+                    self._reply_upstream_stream(resp, model)
+                    return
                 data = json.loads(resp.read().decode("utf-8"))
-                translated_out = translate_response(
-                    data, str(request_body.get("model"))
-                )
+                translated_out = translate_response(data, model)
                 if wants_stream:
                     self._reply_sse(translated_out)
                 else:
