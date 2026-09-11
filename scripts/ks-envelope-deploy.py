@@ -437,8 +437,11 @@ def ensure_listener(
 ) -> bool:
     if os.environ.get("KEYSMITH_CHANNEL_SKIP_LISTEN") == "1":
         return True
-    ours = lambda: _listener_is_ours(port, script=script, overlay=overlay)
-    if probe_health(port) and ours():
+
+    def listener_is_current() -> bool:
+        return _listener_is_ours(port, script=script, overlay=overlay)
+
+    if probe_health(port) and listener_is_current():
         return True
     if probe_health(port):
         _evict_envelope_listener(port)
@@ -451,7 +454,7 @@ def ensure_listener(
         except Exception:
             pass
         time.sleep(0.5)
-        if probe_health(port) and ours():
+        if probe_health(port) and listener_is_current():
             return True
     pid = _spawn_helper(script, port, upstream, auth_file, log_dir, overlay=overlay)
     if pid:
@@ -459,7 +462,7 @@ def ensure_listener(
         pid_path.write_text(str(pid) + "\n", encoding="utf-8")
         pid_path.chmod(0o600)
     time.sleep(0.5)
-    return bool(probe_health(port) and ours())
+    return bool(probe_health(port) and listener_is_current())
 
 
 def _stop_spawned_helper(codex_home: Path) -> None:
