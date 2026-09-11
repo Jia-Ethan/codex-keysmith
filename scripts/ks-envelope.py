@@ -424,7 +424,14 @@ def translate_request(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": str(item.get("call_id") or ""),
-                                "content": _tool_output_text(item),
+                                "content": (
+                                    _message_content_blocks({"content": item["output"]})
+                                    if isinstance(item.get("output"), list) and any(
+                                        isinstance(block, dict)
+                                        and block.get("type") in ("input_image", "image")
+                                        for block in item["output"]
+                                    ) else _tool_output_text(item)
+                                ),
                             }
                         ],
                     }
@@ -450,7 +457,10 @@ def translate_request(
         # else remains, the request is unusable for the messages arm.
         raise EnvelopeError("request has no user/assistant messages")
 
-    tools = _translate_tools(raw_input)
+    tool_items = list(raw_input) if isinstance(raw_input, list) else []
+    if isinstance(body.get("tools"), list):
+        tool_items.append({"type": "additional_tools", "tools": body["tools"]})
+    tools = _translate_tools(tool_items)
 
     out: Dict[str, Any] = {
         "model": body.get("model"),
@@ -631,9 +641,9 @@ def _extract_output(upstream: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     return _chat_completion_output(upstream)
 
 
-def _usage_fields(usage: Dict[str, Any]) -> Dict[str, int]:
+def _usage_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize usage across shapes (prompt_tokens | input_tokens ...)."""
-    return {
+    result: Dict[str, Any] = {
         "input_tokens": usage.get(
             "input_tokens", usage.get("prompt_tokens", 0)
         ) or 0,
@@ -642,6 +652,15 @@ def _usage_fields(usage: Dict[str, Any]) -> Dict[str, int]:
         ) or 0,
         "total_tokens": usage.get("total_tokens", 0) or 0,
     }
+    # Anthropic excludes cache reads/writes from input_tokens; Responses
+    # counts the full input and reports cache hits as a subset.
+    cached = usage.get("cache_read_input_tokens", 0) or 0
+    result["input_tokens"] += cached + (usage.get("cache_creation_input_tokens", 0) or 0)
+    if "cache_read_input_tokens" in usage:
+        result["input_tokens_details"] = {"cached_tokens": cached}
+    if not result["total_tokens"]:
+        result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
+    return result
 
 
 def _now_iso() -> str:
@@ -701,7 +720,7 @@ def translate_response(upstream: Dict[str, Any], model: str) -> Dict[str, Any]:
             )
 
     status = "completed" if finish in (
-        "stop", "tool_calls", "end_turn", "tool_use"
+        "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
     ) else "incomplete"
     return {
         "id": resp_id,

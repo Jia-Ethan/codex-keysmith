@@ -608,6 +608,45 @@ def test_stream_terminal_and_start_usage(reason, status):
     assert events[-1]["response"]["usage"]["output_tokens"] == 3
 
 
+@pytest.mark.parametrize("kind", ["function", "custom_tool"])
+def test_standard_tools_and_tool_result_images_survive_replay(kind):
+    out = ks_envelope.translate_request({
+        'model': 'm',
+        'tools': [{'type': 'function', 'name': 'inspect',
+                   'parameters': {'type': 'object', 'properties': {}}}],
+        'input': [
+            {'type': 'function_call', 'name': 'inspect', 'call_id': 'c', 'arguments': '{}'},
+            {'type': kind + '_call_output', 'call_id': 'c', 'output': [
+                {'type': 'input_text', 'text': 'screenshot'},
+                {'type': 'input_image', 'image_url': 'data:image/png;base64,AAAA'},
+            ]},
+        ],
+    })
+    assert out['tools'][0]['name'] == 'inspect'
+    result = out['messages'][1]['content'][0]
+    assert result['content'] == [
+        {'type': 'text', 'text': 'screenshot'},
+        {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'AAAA'}},
+    ]
+
+
+def test_nonstream_stop_sequence_is_completed():
+    out = ks_envelope.translate_response({
+        'content': [{'type': 'text', 'text': 'done'}],
+        'stop_reason': 'stop_sequence',
+    }, 'm')
+    assert out['status'] == 'completed'
+
+
+def test_cached_usage_counts_full_context():
+    usage = ks_envelope._usage_fields({
+        'input_tokens': 7, 'output_tokens': 3,
+        'cache_read_input_tokens': 100, 'cache_creation_input_tokens': 20,
+    })
+    assert usage == {'input_tokens': 127, 'output_tokens': 3, 'total_tokens': 130,
+                     'input_tokens_details': {'cached_tokens': 100}}
+
+
 def test_stream_multiple_text_blocks_have_distinct_done_items():
     source = []
     for index, text in enumerate(["first", "second"]):
