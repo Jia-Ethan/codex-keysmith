@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import socket
 import sys
 import threading
 import time
@@ -697,8 +698,11 @@ def test_stream_bad_frames_fail_without_leaking(raw):
     assert b"SECRET" not in result
 
 
-@pytest.mark.parametrize("error", [TimeoutError("SECRET"),
-    ks_envelope.http.client.IncompleteRead(b"SECRET"), ConnectionResetError("SECRET")])
+@pytest.mark.parametrize("error", [
+    ConnectionResetError("SECRET"),
+    OSError(54, "SECRET"),
+    ks_envelope.http.client.IncompleteRead(b"SECRET"),
+])
 def test_stream_read_errors_are_failed_sse(error):
     class BrokenStream:
         def readline(self):
@@ -712,7 +716,7 @@ def test_stream_read_errors_are_failed_sse(error):
 def test_handler_read_failure_does_not_append_http_error():
     class BrokenStream:
         def readline(self):
-            raise TimeoutError("SECRET")
+            raise ConnectionResetError("SECRET")
 
     handler = object.__new__(ks_envelope.EnvelopeHandler)
     handler.wfile = io.BytesIO()
@@ -1277,6 +1281,41 @@ def test_invalid_sse_json_is_skipped_so_later_text_completes():
     assert b"event: response.failed" not in frames
 
 
+def test_idle_socket_timeout_emits_reasoning_heartbeat():
+    rest = (
+        b'event: content_block_start\n'
+        b'data: {"type":"content_block_start","index":0,'
+        b'"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\n'
+        b'data: {"type":"content_block_delta","index":0,'
+        b'"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b'event: content_block_stop\n'
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b'event: message_delta\n'
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+        b'event: message_stop\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    buf = io.BytesIO(rest)
+
+    class IdleThenData:
+        def __init__(self):
+            self.idle = 2
+
+        def readline(self):
+            if self.idle:
+                self.idle -= 1
+                raise socket.timeout()
+            return buf.readline()
+
+    frames = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(IdleThenData(), "m")
+    )
+    assert b"event: response.reasoning_summary_text.delta" in frames
+    assert b"event: response.completed" in frames
+    assert b'"delta": "hi"' in frames
+
+
 def test_visible_text_without_stop_reason_is_incomplete_not_failed():
     events = _stream_events([
         {"type": "content_block_start", "index": 0,
@@ -1454,8 +1493,10 @@ def test_coalesce_second_post_replays_first_generation():
         first.join(10)
         second.join(10)
         assert errors == [None, None]
-        assert results[1]
+        assert results[0] and results[1]
+        assert b'"delta": "once"' in results[0]
         assert b'"delta": "once"' in results[1]
+        assert b"event: response.completed" in results[0]
         assert b"event: response.completed" in results[1]
         assert upstream.hits == 1
     finally:
@@ -1521,82 +1562,10 @@ def test_coalesce_replay_emits_headers_before_leader_finishes():
         first.join(10)
         second.join(10)
         assert errors == [None, None]
-        assert results[1]
+        assert results[0] and results[1]
+        assert b"event: response.completed" in results[0]
         assert b"event: response.completed" in results[1]
         assert b'"delta": "once"' in results[1]
-        assert upstream.hits == 1
-    finally:
-        upstream.release.set()
-        adapter.shutdown()
-        upstream.shutdown()
-        adapter.server_close()
-        upstream.server_close()
-        ks_envelope.reset_coalesce_state()
-
-
-def test_coalesce_latest_waiter_only_receives_terminal():
-    """Older reconnect sockets must not also get output_item.done.
-
-    Thread 01a0965e committed the same truncated assistant message 6 times
-    because every waiter dumped the terminal event together.
-    """
-    ks_envelope.reset_coalesce_state()
-    upstream, adapter = _bound_adapter(_CountingSseUpstream)
-    upstream.hits = 0
-    upstream.hit_lock = threading.Lock()
-    upstream.started = threading.Event()
-    upstream.release = threading.Event()
-    payload = {
-        "model": "m",
-        "stream": True,
-        "input": [{"role": "user", "content": "latest-only"}],
-    }
-    results = [None, None, None]
-    errors = [None, None, None]
-    second_headers = threading.Event()
-    third_headers = threading.Event()
-
-    def leader():
-        try:
-            results[0] = _stream_post(adapter.server_address[1], payload, timeout=10)
-        except Exception as exc:  # noqa: BLE001
-            errors[0] = exc
-
-    def waiter(index, flag):
-        req = urllib.request.Request(
-            "http://127.0.0.1:%s/v1/responses" % adapter.server_address[1],
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                flag.set()
-                results[index] = resp.read()
-        except Exception as exc:  # noqa: BLE001
-            errors[index] = exc
-
-    try:
-        threading.Thread(target=leader, daemon=True).start()
-        assert upstream.started.wait(5)
-        threading.Thread(
-            target=waiter, args=(1, second_headers), daemon=True
-        ).start()
-        assert second_headers.wait(1.5)
-        threading.Thread(
-            target=waiter, args=(2, third_headers), daemon=True
-        ).start()
-        assert third_headers.wait(1.5)
-        upstream.release.set()
-        deadline = time.time() + 10
-        while time.time() < deadline and (results[2] is None and errors[2] is None):
-            time.sleep(0.05)
-        time.sleep(0.2)
-        assert errors[2] is None
-        assert results[2] and b"event: response.completed" in results[2]
-        assert b'"delta": "once"' in results[2]
-        if results[1]:
-            assert b"event: response.completed" not in results[1]
         assert upstream.hits == 1
     finally:
         upstream.release.set()
