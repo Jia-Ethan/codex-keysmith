@@ -1394,11 +1394,149 @@ def test_coalesce_second_post_replays_first_generation():
         first.join(10)
         second.join(10)
         assert errors == [None, None]
-        assert results[0] and results[1]
-        assert b'"delta": "once"' in results[0]
+        assert results[1]
         assert b'"delta": "once"' in results[1]
-        assert b"event: response.completed" in results[0]
         assert b"event: response.completed" in results[1]
+        assert upstream.hits == 1
+    finally:
+        upstream.release.set()
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+        ks_envelope.reset_coalesce_state()
+
+
+def test_coalesce_replay_emits_headers_before_leader_finishes():
+    """Reconnect POSTs must not stay silent until the leader completes.
+
+    Desktop evidence 2026-09-13 thread 01a0965e: Codex showed
+    正在重新連線 5/5 then stream_interrupted because _replay_coalesced
+    waited on slot.done before sending SSE headers.
+    """
+    ks_envelope.reset_coalesce_state()
+    upstream, adapter = _bound_adapter(_CountingSseUpstream)
+    upstream.hits = 0
+    upstream.hit_lock = threading.Lock()
+    upstream.started = threading.Event()
+    upstream.release = threading.Event()
+    payload = {
+        "model": "m",
+        "stream": True,
+        "input": [{"role": "user", "content": "live-tail-retry"}],
+    }
+    headers_seen = threading.Event()
+    results = [None, None]
+    errors = [None, None]
+
+    def leader():
+        try:
+            results[0] = _stream_post(adapter.server_address[1], payload, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            errors[0] = exc
+
+    def waiter():
+        req = urllib.request.Request(
+            "http://127.0.0.1:%s/v1/responses" % adapter.server_address[1],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                headers_seen.set()
+                results[1] = resp.read()
+        except Exception as exc:  # noqa: BLE001
+            errors[1] = exc
+
+    try:
+        first = threading.Thread(target=leader)
+        first.start()
+        assert upstream.started.wait(5)
+        second = threading.Thread(target=waiter)
+        second.start()
+        assert headers_seen.wait(1.5), "replay stayed silent until leader finished"
+        assert not upstream.release.is_set()
+        upstream.release.set()
+        first.join(10)
+        second.join(10)
+        assert errors == [None, None]
+        assert results[1]
+        assert b"event: response.completed" in results[1]
+        assert b'"delta": "once"' in results[1]
+        assert upstream.hits == 1
+    finally:
+        upstream.release.set()
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+        ks_envelope.reset_coalesce_state()
+
+
+def test_coalesce_latest_waiter_only_receives_terminal():
+    """Older reconnect sockets must not also get output_item.done.
+
+    Thread 01a0965e committed the same truncated assistant message 6 times
+    because every waiter dumped the terminal event together.
+    """
+    ks_envelope.reset_coalesce_state()
+    upstream, adapter = _bound_adapter(_CountingSseUpstream)
+    upstream.hits = 0
+    upstream.hit_lock = threading.Lock()
+    upstream.started = threading.Event()
+    upstream.release = threading.Event()
+    payload = {
+        "model": "m",
+        "stream": True,
+        "input": [{"role": "user", "content": "latest-only"}],
+    }
+    results = [None, None, None]
+    errors = [None, None, None]
+    second_headers = threading.Event()
+    third_headers = threading.Event()
+
+    def leader():
+        try:
+            results[0] = _stream_post(adapter.server_address[1], payload, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            errors[0] = exc
+
+    def waiter(index, flag):
+        req = urllib.request.Request(
+            "http://127.0.0.1:%s/v1/responses" % adapter.server_address[1],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                flag.set()
+                results[index] = resp.read()
+        except Exception as exc:  # noqa: BLE001
+            errors[index] = exc
+
+    try:
+        threading.Thread(target=leader, daemon=True).start()
+        assert upstream.started.wait(5)
+        threading.Thread(
+            target=waiter, args=(1, second_headers), daemon=True
+        ).start()
+        assert second_headers.wait(1.5)
+        threading.Thread(
+            target=waiter, args=(2, third_headers), daemon=True
+        ).start()
+        assert third_headers.wait(1.5)
+        upstream.release.set()
+        deadline = time.time() + 10
+        while time.time() < deadline and (results[2] is None and errors[2] is None):
+            time.sleep(0.05)
+        time.sleep(0.2)
+        assert errors[2] is None
+        assert results[2] and b"event: response.completed" in results[2]
+        assert b'"delta": "once"' in results[2]
+        if results[1]:
+            assert b"event: response.completed" not in results[1]
         assert upstream.hits == 1
     finally:
         upstream.release.set()

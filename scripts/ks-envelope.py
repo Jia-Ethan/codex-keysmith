@@ -65,14 +65,77 @@ class EnvelopeError(Exception):
     """Adapter-local failure with a safe, redacted message."""
 
 
+class _FrameBuffer:
+    """Thread-safe SSE capture that reconnect POSTs can tail while the leader is live.
+
+    Codex retries an in-flight turn by opening a new /responses POST. If that
+    POST waits until the leader finishes before sending headers, the desktop
+    client sees a silent socket, counts a reconnect (1/5 … 5/5), and surfaces
+    ``stream_interrupted``. Waiters must emit SSE (keepalives + captured
+    frames) immediately.
+    """
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+        self._cv = threading.Condition()
+        self._done = False
+
+    def extend(self, frame: bytes) -> None:
+        if not frame:
+            return
+        with self._cv:
+            self._data.extend(frame)
+            self._cv.notify_all()
+
+    def mark_done(self) -> None:
+        with self._cv:
+            self._done = True
+            self._cv.notify_all()
+
+    def wait_more(self, offset: int, timeout: float) -> Tuple[bytes, int, bool]:
+        deadline = time.time() + max(0.0, timeout)
+        with self._cv:
+            while True:
+                if offset < len(self._data) or self._done:
+                    chunk = bytes(self._data[offset:])
+                    return chunk, len(self._data), self._done
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return b"", offset, self._done
+                self._cv.wait(remaining)
+
+    def __len__(self) -> int:
+        with self._cv:
+            return len(self._data)
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __bytes__(self) -> bytes:
+        with self._cv:
+            return bytes(self._data)
+
+
 class _CoalescedTurn:
     """One in-flight or recently finished stream, shared across reconnect POSTs."""
 
     def __init__(self) -> None:
         self.done = threading.Event()
-        self.frames = bytearray()
+        self.frames = _FrameBuffer()
         self.error: Optional[BaseException] = None
         self.finished_at = 0.0
+        self._live_lock = threading.Lock()
+        self._live_epoch = 0
+
+    def claim_live(self) -> int:
+        """Make this connection the sole writer. Older sockets become capture-only."""
+        with self._live_lock:
+            self._live_epoch += 1
+            return self._live_epoch
+
+    def is_live(self, epoch: int) -> bool:
+        with self._live_lock:
+            return epoch == self._live_epoch
 
 
 _coalesce_lock = threading.Lock()
@@ -178,6 +241,7 @@ def _coalesce_finish(
         slot.error = error
     slot.finished_at = time.time()
     slot.done.set()
+    slot.frames.mark_done()
 
 
 class _SseKeepalive:
@@ -186,11 +250,13 @@ class _SseKeepalive:
     def __init__(
         self,
         wfile: Any,
-        capture: Optional[bytearray] = None,
+        capture: Any = None,
         interval: Optional[float] = None,
+        should_write: Optional[Any] = None,
     ) -> None:
         self.wfile = wfile
         self.capture = capture
+        self.should_write = should_write
         self.interval = (
             KEEPALIVE_INTERVAL_SECONDS if interval is None else interval
         )
@@ -220,6 +286,8 @@ class _SseKeepalive:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
+            if self.should_write is not None and not self.should_write():
+                return
             if not self.emit(self._progress_frame(), capture=False):
                 return
 
@@ -232,10 +300,14 @@ class _SseKeepalive:
                 end = frame.find(b'"', start)
                 if end > start:
                     self.resp_id = frame[start:end].decode("ascii", errors="replace")
+        # Capture before write so reconnect waiters keep the generation even
+        # after this socket is superseded or the original client hangs up.
+        if capture and self.capture is not None and not frame.startswith(b":"):
+            self.capture.extend(frame)
+        if self.should_write is not None and not self.should_write():
+            return True
         try:
             with self._lock:
-                if capture and self.capture is not None and not frame.startswith(b":"):
-                    self.capture.extend(frame)
                 self.wfile.write(frame)
                 self.wfile.flush()
             return True
@@ -1381,7 +1453,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _reply_sse(
-        self, response: Dict[str, Any], capture: Optional[bytearray] = None
+        self, response: Dict[str, Any], capture: Any = None
     ) -> None:
         frames = stream_response_events(response)
         self.send_response(200)
@@ -1407,20 +1479,8 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-    def _replay_coalesced(self, slot: _CoalescedTurn) -> None:
-        finished = slot.done.wait(UPSTREAM_TIMEOUT_SECONDS)
-        if not finished:
-            self._reject(
-                504,
-                {
-                    "error": {
-                        "code": "timeout",
-                        "message": "coalesced upstream still in flight",
-                    }
-                },
-            )
-            return
-        if not slot.frames:
+    def _replay_coalesced(self, slot: _CoalescedTurn, epoch: int) -> None:
+        if slot.done.is_set() and not slot.frames:
             self._reject(
                 502,
                 {
@@ -1431,13 +1491,35 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        # Send headers immediately so Codex sees a live SSE socket instead of
+        # waiting out the leader. Silent wait-until-done is what produced
+        # desktop "正在重新連線 5/5" + stream_interrupted.
         self._start_sse_headers()
+        gate = _SseKeepalive(
+            self.wfile,
+            capture=None,
+            should_write=lambda e=epoch: slot.is_live(e),
+        )
+        gate.start()
+        offset = 0
+        deadline = time.time() + UPSTREAM_TIMEOUT_SECONDS
         try:
-            self.wfile.write(bytes(slot.frames))
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        self.close_connection = True
+            while slot.is_live(epoch):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                chunk, offset, done = slot.frames.wait_more(
+                    offset, min(1.0, remaining)
+                )
+                if not slot.is_live(epoch):
+                    return
+                if chunk and not gate.emit(chunk, capture=False):
+                    return
+                if done and offset >= len(slot.frames):
+                    return
+        finally:
+            gate.stop()
+            self.close_connection = True
 
     def _pipe_upstream_stream(
         self, resp: Any, model: str, gate: _SseKeepalive
@@ -1461,7 +1543,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self,
         resp: Any,
         model: str,
-        capture: Optional[bytearray] = None,
+        capture: Any = None,
     ) -> None:
         self._start_sse_headers()
         gate = _SseKeepalive(self.wfile, capture=capture)
@@ -1505,10 +1587,12 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         wants_stream = request_body.get("stream") is True
         slot: Optional[_CoalescedTurn] = None
         leader = False
+        live_epoch = 0
         if wants_stream:
             slot, leader = _coalesce_begin(_request_fingerprint(request_body))
+            live_epoch = slot.claim_live()
             if not leader:
-                self._replay_coalesced(slot)
+                self._replay_coalesced(slot, live_epoch)
                 return
         capture = slot.frames if slot is not None else None
 
@@ -1541,7 +1625,15 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         gate: Optional[_SseKeepalive] = None
         if wants_stream:
             self._start_sse_headers()
-            gate = _SseKeepalive(self.wfile, capture=capture)
+            gate = _SseKeepalive(
+                self.wfile,
+                capture=capture,
+                should_write=(
+                    (lambda e=live_epoch: slot.is_live(e))
+                    if slot is not None
+                    else None
+                ),
+            )
             gate.start()
         try:
             with urllib.request.urlopen(
