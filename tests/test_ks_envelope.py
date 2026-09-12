@@ -1060,15 +1060,14 @@ def test_translate_request_forwards_input_image():
     assert content[1]["source"]["data"] == "AAAA"
 
 
-def test_translate_request_reasoning_off_by_default():
+def test_translate_request_high_effort_enables_thinking_by_default():
     body = {
         "model": "m",
         "reasoning": {"effort": "xhigh", "context": "all_turns"},
         "input": [{"role": "user", "content": "x"}],
     }
     out = ks_envelope.translate_request(body)
-    assert "thinking" not in out
-    assert "extra-high depth" in out.get("system", "")
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 4096}
 
 
 def test_translate_request_reasoning_effort_maps_to_thinking():
