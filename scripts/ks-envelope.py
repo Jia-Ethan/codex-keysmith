@@ -24,10 +24,13 @@ Deps: none (stdlib only)
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import http.client
 import json
 import os
+import socket
+import ssl
 import sys
 import threading
 import time
@@ -44,7 +47,8 @@ LOCAL_PREFIX = "/v1"
 UPSTREAM_MESSAGES = "/messages"
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 UPSTREAM_TIMEOUT_SECONDS = 300
-KEEPALIVE_INTERVAL_SECONDS = 2.0
+KEEPALIVE_INTERVAL_SECONDS = 1.0
+SSE_IDLE_TIMEOUT_SECONDS = 1.0
 KEEPALIVE_COMMENT = b": keepalive\n\n"
 COALESCE_TTL_SECONDS = 60.0
 _TOOL_ITEM_TYPES = (
@@ -65,12 +69,63 @@ class EnvelopeError(Exception):
     """Adapter-local failure with a safe, redacted message."""
 
 
+class _FrameBuffer:
+    """Thread-safe SSE capture that reconnect POSTs can tail while the leader is live.
+
+    Codex retries an in-flight turn by opening a new /responses POST. If that
+    POST waits until the leader finishes before sending headers, the desktop
+    client sees a silent socket, counts a reconnect (1/5 … 5/5), and surfaces
+    ``stream_interrupted``. Waiters must emit SSE (keepalives + captured
+    frames) immediately.
+    """
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+        self._cv = threading.Condition()
+        self._done = False
+
+    def extend(self, frame: bytes) -> None:
+        if not frame:
+            return
+        with self._cv:
+            self._data.extend(frame)
+            self._cv.notify_all()
+
+    def mark_done(self) -> None:
+        with self._cv:
+            self._done = True
+            self._cv.notify_all()
+
+    def wait_more(self, offset: int, timeout: float) -> Tuple[bytes, int, bool]:
+        deadline = time.time() + max(0.0, timeout)
+        with self._cv:
+            while True:
+                if offset < len(self._data) or self._done:
+                    chunk = bytes(self._data[offset:])
+                    return chunk, len(self._data), self._done
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return b"", offset, self._done
+                self._cv.wait(remaining)
+
+    def __len__(self) -> int:
+        with self._cv:
+            return len(self._data)
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __bytes__(self) -> bytes:
+        with self._cv:
+            return bytes(self._data)
+
+
 class _CoalescedTurn:
     """One in-flight or recently finished stream, shared across reconnect POSTs."""
 
     def __init__(self) -> None:
         self.done = threading.Event()
-        self.frames = bytearray()
+        self.frames = _FrameBuffer()
         self.error: Optional[BaseException] = None
         self.finished_at = 0.0
 
@@ -178,6 +233,7 @@ def _coalesce_finish(
         slot.error = error
     slot.finished_at = time.time()
     slot.done.set()
+    slot.frames.mark_done()
 
 
 class _SseKeepalive:
@@ -186,11 +242,15 @@ class _SseKeepalive:
     def __init__(
         self,
         wfile: Any,
-        capture: Optional[bytearray] = None,
+        capture: Any = None,
         interval: Optional[float] = None,
+        should_write: Optional[Any] = None,
+        live: Any = None,
     ) -> None:
         self.wfile = wfile
         self.capture = capture
+        self.should_write = should_write
+        self.live = live
         self.interval = (
             KEEPALIVE_INTERVAL_SECONDS if interval is None else interval
         )
@@ -220,6 +280,13 @@ class _SseKeepalive:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
+            if self.should_write is not None and not self.should_write():
+                return
+            if self.live is not None:
+                frame = KEEPALIVE_COMMENT + b"".join(self.live.heartbeat())
+                if not self.emit(frame, capture=True):
+                    return
+                continue
             if not self.emit(self._progress_frame(), capture=False):
                 return
 
@@ -232,10 +299,14 @@ class _SseKeepalive:
                 end = frame.find(b'"', start)
                 if end > start:
                     self.resp_id = frame[start:end].decode("ascii", errors="replace")
+        # Capture before write so reconnect waiters keep the generation even
+        # after this socket is superseded or the original client hangs up.
+        if capture and self.capture is not None and not frame.startswith(b":"):
+            self.capture.extend(frame)
+        if self.should_write is not None and not self.should_write():
+            return True
         try:
             with self._lock:
-                if capture and self.capture is not None and not frame.startswith(b":"):
-                    self.capture.extend(frame)
                 self.wfile.write(frame)
                 self.wfile.flush()
             return True
@@ -413,8 +484,18 @@ def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
         )
         if isinstance(inner, str) and inner.strip():
             return _normalize_tool_call(inner.strip(), inner_args)
-    if label in _EXEC_NESTED_METHODS or label in _COLLAB_METHODS:
+    if label in _EXEC_NESTED_METHODS:
         return "exec", _exec_js_call(label, parsed), "custom"
+    if label in _COLLAB_METHODS:
+        if isinstance(parsed, dict):
+            payload = json.dumps(parsed, ensure_ascii=False)
+        elif isinstance(parsed, str):
+            payload = parsed
+        elif parsed is None:
+            payload = "{}"
+        else:
+            payload = json.dumps(parsed, ensure_ascii=False)
+        return label, payload, "function"
     if label in _CUSTOM_TOOL_NAMES or label == "exec":
         if isinstance(parsed, dict) and "cmd" in parsed:
             return "exec", _exec_js_call("exec_command", parsed), "custom"
@@ -696,6 +777,13 @@ def translate_request(
         budgets = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384}
         if thinking_passthrough and effort in budgets:
             out["thinking"] = {"type": "enabled", "budget_tokens": budgets[effort]}
+        elif effort in ("high", "xhigh", "max"):
+            # Keep LGW SSE alive during gpt-5.6-sol high-effort turns.
+            # Without a thinking block the gateway sits silent ~15s then
+            # drops the stream (envelope e2e: response.incomplete /
+            # stream_interrupted at 16.5s). Cap 4096 so the messages arm
+            # does not hang on the old unbounded budget.
+            out["thinking"] = {"type": "enabled", "budget_tokens": 4096}
         elif depth_label:
             system_parts.append(
                 f"Work this turn at {depth_label} depth. Inspect the named "
@@ -999,7 +1087,63 @@ def _sse_data_payload(parts: List[str]) -> Any:
     try:
         return json.loads(blob)
     except ValueError:
-        raise EnvelopeError("invalid upstream SSE JSON") from None
+        sys.stderr.write(
+            "[ks-envelope] skip invalid SSE JSON (%s bytes) %r\n"
+            % (len(blob), blob[:80])
+        )
+        sys.stderr.flush()
+        return None
+
+
+def _is_timeout_exc(exc: BaseException) -> bool:
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return True
+    msg = str(exc).lower()
+    if "timed out" in msg or "timeout" in msg:
+        return True
+    if isinstance(exc, OSError) and exc.errno in (
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EWOULDBLOCK,
+    ):
+        return True
+    return False
+
+
+def _readline_sse(fp: Any) -> Tuple[Optional[bytes], bool]:
+    """Read one SSE line. Returns (bytes|None, eof).
+
+    None + not-eof means an idle timeout. Do not lower the SSL socket
+    timeout to implement heartbeats: that raises ssl.SSLError/OSError on
+    this host and was logged as stream fail OSError (thread 01a096a2).
+    Heartbeats come from _SseKeepalive + _LiveResponse.heartbeat instead.
+    """
+    try:
+        raw = fp.readline()
+    except (socket.timeout, TimeoutError) as exc:
+        if _is_timeout_exc(exc):
+            return None, False
+        raise
+    except ssl.SSLError as exc:
+        if _is_timeout_exc(exc):
+            return None, False
+        raise
+    except OSError as exc:
+        if _is_timeout_exc(exc):
+            return None, False
+        raise
+    except http.client.IncompleteRead as exc:
+        raw = exc.partial or b""
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        return raw or b"", True
+    except (BrokenPipeError, ConnectionResetError):
+        raise
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not raw:
+        return b"", True
+    return raw, False
 
 
 def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
@@ -1007,47 +1151,65 @@ def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
     event_name: Optional[str] = None
     data_parts: List[str] = []
     while True:
-        raw = fp.readline()
-        if not raw:
+        raw, eof = _readline_sse(fp)
+        if raw is None and not eof:
+            yield "ping", {"type": "ping"}
+            continue
+        if raw:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                if data_parts:
+                    payload = _sse_data_payload(data_parts)
+                    if payload is not None:
+                        yield event_name, payload
+                event_name = None
+                data_parts = []
+            elif line.startswith(":"):
+                pass
+            elif line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_parts.append(line[5:].lstrip())
+        if eof:
             if data_parts:
-                yield event_name, _sse_data_payload(data_parts)
+                payload = _sse_data_payload(data_parts)
+                if payload is not None:
+                    yield event_name, payload
             return
-        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-        line = line.rstrip("\r\n")
-        if not line:
-            if data_parts:
-                yield event_name, _sse_data_payload(data_parts)
-            event_name = None
-            data_parts = []
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[6:].strip()
-            continue
-        if line.startswith("data:"):
-            data_parts.append(line[5:].lstrip())
 
 
 def iter_anthropic_stream_as_responses(
     fp: Any,
     model: str,
+    live: Optional[_LiveResponse] = None,
+    emit_created: bool = True,
 ) -> Iterator[bytes]:
     """Translate an Anthropic /messages SSE stream into Responses SSE frames."""
-    live = _LiveResponse(model)
-    yield live.created_frame()
+    if live is None:
+        live = _LiveResponse(model)
+    if emit_created:
+        yield live.created_frame()
     try:
         yield from _forward_anthropic_stream(fp, live)
-    except (OSError, http.client.HTTPException, EnvelopeError):
+    except (OSError, http.client.HTTPException, EnvelopeError) as exc:
         # Headers are already sent. Never append another HTTP response or
         # expose upstream exception text (which may contain credentials).
+        sys.stderr.write(
+            "[ks-envelope] stream fail %s errno=%s %s\n"
+            % (
+                type(exc).__name__,
+                getattr(exc, "errno", ""),
+                str(exc)[:80].replace("\n", " "),
+            )
+        )
+        sys.stderr.flush()
         yield from live.fail("upstream stream interrupted or invalid")
 
 
 def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
     for _name, payload in iter_sse_events(fp):
         if not isinstance(payload, dict):
-            raise EnvelopeError("invalid upstream SSE payload")
+            continue
         etype = str(payload.get("type") or _name or "")
         if etype == "error":
             yield from live.fail("upstream stream error")
@@ -1065,10 +1227,14 @@ def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
             if isinstance(message, dict) and isinstance(message.get("usage"), dict):
                 live.usage.update(message["usage"])
         elif etype == "ping":
-            yield live.keepalive_frame()
+            yield from live.heartbeat()
         elif etype == "message_stop":
             yield from live.finish()
             return
+    if live.text and not live.tools:
+        live.stop_reason = live.stop_reason or "end_turn"
+        yield from live.finish()
+        return
     yield from live.fail("upstream stream ended before message_stop")
 
 
@@ -1089,6 +1255,11 @@ class _LiveResponse:
         self.text = ""
         self.text_id = "msg_" + self.resp_id[-20:]
         self.tools: Dict[int, Dict[str, Any]] = {}
+        self.reasoning_index: Optional[int] = None
+        self.reasoning_closed = False
+        self.reasoning_text = ""
+        self.reasoning_id = "rs_" + self.resp_id[-20:]
+        self._lock = threading.RLock()
 
     def created_frame(self) -> bytes:
         body = {
@@ -1115,6 +1286,27 @@ class _LiveResponse:
             {"type": "response.in_progress", "response": body},
         )
 
+    def heartbeat(self) -> Iterator[bytes]:
+        """Keep Codex from idle-reconnecting while LGW is silently thinking.
+
+        Desktop first-token timeout is ~15s. LGW often emits no SSE bytes
+        during gpt-5.6-sol high-effort thinking, then dumps thinking_delta.
+        ``response.in_progress`` comments are not first tokens; a reasoning
+        summary delta is. Emitted from the keepalive thread so we never
+        lower the HTTPS socket timeout.
+        """
+        with self._lock:
+            yield self.keepalive_frame()
+            yield from self._ensure_reasoning_item()
+            assert self.reasoning_index is not None
+            yield _sse_event("response.reasoning_summary_text.delta", {
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": self.reasoning_id,
+                "output_index": self.reasoning_index,
+                "summary_index": 0,
+                "delta": "\u200b",
+            })
+
     def snapshot(self, status: str) -> Dict[str, Any]:
         incomplete = None
         if status != "completed" and self.stop_reason:
@@ -1130,6 +1322,37 @@ class _LiveResponse:
             "incomplete_details": incomplete,
         }
         return out
+
+    def _ensure_reasoning_item(self) -> Iterator[bytes]:
+        with self._lock:
+            if self.reasoning_index is not None:
+                return
+            self.reasoning_index = self.next_index
+            self.next_index += 1
+            item = {
+                "id": self.reasoning_id,
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": ""}],
+            }
+            self.output.append(item)
+            yield _sse_event("response.output_item.added", {
+                "type": "response.output_item.added",
+                "output_index": self.reasoning_index,
+                "item": item,
+            })
+
+    def _close_reasoning_item(self) -> Iterator[bytes]:
+        if self.reasoning_index is None or self.reasoning_closed:
+            return
+        item = self.output[self.reasoning_index]
+        if item.get("summary"):
+            item["summary"][0]["text"] = self.reasoning_text
+        self.reasoning_closed = True
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": self.reasoning_index,
+            "item": item,
+        })
 
     def _ensure_text_item(self) -> Iterator[bytes]:
         if self.text_index is not None:
@@ -1169,8 +1392,11 @@ class _LiveResponse:
             return []
         index = payload.get("index")
         btype = block.get("type")
+        if btype == "thinking":
+            return list(self._ensure_reasoning_item())
         if btype == "text" and isinstance(index, int):
             frames: List[bytes] = []
+            frames.extend(self._close_reasoning_item())
             if (
                 self.text_index is not None
                 and not self.text_closed
@@ -1194,12 +1420,14 @@ class _LiveResponse:
                 }}))
             return frames
         elif btype == "tool_use" and isinstance(index, int):
+            frames = list(self._close_reasoning_item())
             self.tools[index] = {
                 "id": block.get("id"),
                 "name": block.get("name") or "",
                 "json": "",
                 "input": block.get("input", {}),
             }
+            return frames
         return []
 
     def block_delta(self, payload: Dict[str, Any]) -> Iterator[bytes]:
@@ -1208,10 +1436,31 @@ class _LiveResponse:
             return
         dtype = delta.get("type")
         index = payload.get("index")
+        if dtype in ("thinking_delta", "reasoning_delta"):
+            chunk = str(delta.get("thinking") or delta.get("text") or "")
+            if not chunk:
+                return
+            yield from self._ensure_reasoning_item()
+            self.reasoning_text += chunk
+            assert self.reasoning_index is not None
+            summary = self.output[self.reasoning_index].get("summary")
+            if summary:
+                summary[0]["text"] = self.reasoning_text
+            yield _sse_event("response.reasoning_summary_text.delta", {
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": self.reasoning_id,
+                "output_index": self.reasoning_index,
+                "summary_index": 0,
+                "delta": chunk,
+            })
+            return
+        if dtype == "signature_delta":
+            return
         if dtype == "text_delta":
             chunk = str(delta.get("text") or "")
             if not chunk:
                 return
+            yield from self._close_reasoning_item()
             yield from self._ensure_text_item()
             self.text += chunk
             assert self.text_index is not None
@@ -1294,9 +1543,10 @@ class _LiveResponse:
             self.usage.update(usage)
 
     def fail(self, message: str) -> Iterator[bytes]:
-        visible = bool(self.text) or any(
-            item.get("type") == "message" for item in self.output
+        visible = bool(self.text) or bool(self.reasoning_text) or any(
+            item.get("type") in ("message", "reasoning") for item in self.output
         )
+        yield from self._close_reasoning_item()
         yield from self._close_text_item()
         if visible:
             # Codex already committed the assistant item. A failed terminal
@@ -1319,6 +1569,7 @@ class _LiveResponse:
         if not self.stop_reason or self.tools:
             yield from self.fail("upstream stream ended without complete message metadata")
             return
+        yield from self._close_reasoning_item()
         yield from self._close_text_item()
         status = "completed" if self.stop_reason in (
             "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
@@ -1332,6 +1583,10 @@ class _LiveResponse:
 
 def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any]:
     """Upstream failure surfaced as a failed response object (Codex-visible)."""
+    message = f"upstream {UPSTREAM_MESSAGES} returned {upstream_status}"
+    extra = " ".join(str(detail or "").split())
+    if extra:
+        message = f"{message}: {extra[:180]}"
     return {
         "id": "resp_" + uuid.uuid4().hex[:24],
         "object": "response",
@@ -1340,7 +1595,7 @@ def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any
         "model": "",
         "error": {
             "code": "upstream_error",
-            "message": f"upstream {UPSTREAM_MESSAGES} returned {upstream_status}",
+            "message": message,
         },
     }
 
@@ -1361,8 +1616,12 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
         if self.verbose:
-            safe = _redact(fmt % args, self.secret_for_redaction)
-            sys.stderr.write("[ks-envelope] " + safe + "\n")
+            self._log_error(fmt, *args)
+
+    def _log_error(self, fmt: str, *args: Any) -> None:
+        safe = _redact(fmt % args, self.secret_for_redaction)
+        sys.stderr.write("[ks-envelope] " + safe + "\n")
+        sys.stderr.flush()
 
     def _reject(self, code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1381,7 +1640,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _reply_sse(
-        self, response: Dict[str, Any], capture: Optional[bytearray] = None
+        self, response: Dict[str, Any], capture: Any = None
     ) -> None:
         frames = stream_response_events(response)
         self.send_response(200)
@@ -1408,19 +1667,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _replay_coalesced(self, slot: _CoalescedTurn) -> None:
-        finished = slot.done.wait(UPSTREAM_TIMEOUT_SECONDS)
-        if not finished:
-            self._reject(
-                504,
-                {
-                    "error": {
-                        "code": "timeout",
-                        "message": "coalesced upstream still in flight",
-                    }
-                },
-            )
-            return
-        if not slot.frames:
+        if slot.done.is_set() and not slot.frames:
             self._reject(
                 502,
                 {
@@ -1431,19 +1678,41 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        # Send headers immediately so Codex sees a live SSE socket instead of
+        # waiting out the leader. Do not mute the leader socket: that is what
+        # turned a 15s LGW think-gap into desktop 正在重新連線 5/5.
         self._start_sse_headers()
+        gate = _SseKeepalive(self.wfile, capture=None)
+        gate.start()
+        offset = 0
+        deadline = time.time() + UPSTREAM_TIMEOUT_SECONDS
         try:
-            self.wfile.write(bytes(slot.frames))
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        self.close_connection = True
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                chunk, offset, done = slot.frames.wait_more(
+                    offset, min(1.0, remaining)
+                )
+                if chunk and not gate.emit(chunk, capture=False):
+                    return
+                if done and offset >= len(slot.frames):
+                    return
+        finally:
+            gate.stop()
+            self.close_connection = True
 
     def _pipe_upstream_stream(
-        self, resp: Any, model: str, gate: _SseKeepalive
+        self,
+        resp: Any,
+        model: str,
+        gate: _SseKeepalive,
+        live: Optional[_LiveResponse] = None,
     ) -> None:
         try:
-            for frame in iter_anthropic_stream_as_responses(resp, model):
+            for frame in iter_anthropic_stream_as_responses(
+                resp, model, live=live, emit_created=live is None
+            ):
                 # Client disconnect still captures frames so a reconnect
                 # POST can replay this generation instead of calling LGW again.
                 gate.emit(frame)
@@ -1461,7 +1730,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self,
         resp: Any,
         model: str,
-        capture: Optional[bytearray] = None,
+        capture: Any = None,
     ) -> None:
         self._start_sse_headers()
         gate = _SseKeepalive(self.wfile, capture=capture)
@@ -1539,46 +1808,67 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         )
         model = str(request_body.get("model") or "")
         gate: Optional[_SseKeepalive] = None
+        live_stream: Optional[_LiveResponse] = None
         if wants_stream:
+            live_stream = _LiveResponse(model)
             self._start_sse_headers()
-            gate = _SseKeepalive(self.wfile, capture=capture)
+            gate = _SseKeepalive(self.wfile, capture=capture, live=live_stream)
             gate.start()
+            gate.emit(live_stream.created_frame())
         try:
-            with urllib.request.urlopen(
-                req, timeout=UPSTREAM_TIMEOUT_SECONDS
-            ) as resp:
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if wants_stream:
-                    assert gate is not None
-                    if "text/event-stream" in ctype:
-                        self._pipe_upstream_stream(resp, model, gate)
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(
+                        req, timeout=UPSTREAM_TIMEOUT_SECONDS
+                    ) as resp:
+                        ctype = (resp.headers.get("Content-Type") or "").lower()
+                        if wants_stream:
+                            assert gate is not None
+                            if "text/event-stream" in ctype:
+                                self._pipe_upstream_stream(
+                                    resp, model, gate, live=live_stream
+                                )
+                            else:
+                                data = json.loads(resp.read().decode("utf-8"))
+                                self._emit_ready_frames(
+                                    translate_response(data, model), gate
+                                )
+                        else:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            self._reply_json(200, translate_response(data, model))
+                    break
+                except urllib.error.HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", errors="replace")[:500]
+                    except Exception:
+                        detail = str(exc)
+                    self._log_error(
+                        "upstream %s: %s",
+                        exc.code,
+                        _redact(detail, self.secret_for_redaction),
+                    )
+                    error_out = translate_error_response(exc.code, detail)
+                    if wants_stream:
+                        assert gate is not None
+                        self._emit_ready_frames(error_out, gate)
                     else:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        self._emit_ready_frames(translate_response(data, model), gate)
-                else:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    self._reply_json(200, translate_response(data, model))
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                detail = str(exc)
-            self.log_message("upstream %s: %s", exc.code, _redact(detail, self.secret_for_redaction))
-            error_out = translate_error_response(exc.code, detail)
-            if wants_stream:
-                assert gate is not None
-                self._emit_ready_frames(error_out, gate)
-            else:
-                self._reply_json(200, error_out)
-        except urllib.error.URLError as exc:
-            reason = str(exc.reason)[:200]
-            self.log_message("upstream urlerror: %s", reason)
-            error_out = translate_error_response(0, reason)
-            if wants_stream:
-                assert gate is not None
-                self._emit_ready_frames(error_out, gate)
-            else:
-                self._reply_json(200, error_out)
+                        self._reply_json(200, error_out)
+                    break
+                except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                    reason = str(getattr(exc, "reason", exc))[:200]
+                    self._log_error(
+                        "upstream urlerror attempt %s: %s",
+                        attempt + 1,
+                        _redact(reason, self.secret_for_redaction),
+                    )
+                    if attempt == 0:
+                        continue
+                    error_out = translate_error_response(0, reason)
+                    if wants_stream:
+                        assert gate is not None
+                        self._emit_ready_frames(error_out, gate)
+                    else:
+                        self._reply_json(200, error_out)
         except EnvelopeError as exc:
             if wants_stream:
                 assert gate is not None
@@ -1588,7 +1878,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             else:
                 self._reject(502, {"error": {"code": "bad_upstream", "message": str(exc)[:300]}})
         except Exception as exc:  # pragma: no cover - defensive
-            self.log_message("internal: %s", _redact(str(exc), self.secret_for_redaction))
+            self._log_error("internal: %s", _redact(str(exc), self.secret_for_redaction))
             if wants_stream:
                 assert gate is not None
                 self._emit_ready_frames(

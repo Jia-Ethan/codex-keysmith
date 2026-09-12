@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import socket
 import sys
 import threading
 import time
@@ -309,6 +310,12 @@ def test_translate_error_response_shape():
     assert out["status"] == "failed"
     assert out["error"]["code"] == "upstream_error"
     assert "401" in out["error"]["message"]
+    assert "nope" in out["error"]["message"]
+
+
+def test_translate_error_response_status_zero_keeps_reason():
+    out = ks_envelope.translate_error_response(0, "timed out")
+    assert out["error"]["message"] == "upstream /messages returned 0: timed out"
 
 
 # --- auth loading --------------------------------------------------------------
@@ -691,8 +698,11 @@ def test_stream_bad_frames_fail_without_leaking(raw):
     assert b"SECRET" not in result
 
 
-@pytest.mark.parametrize("error", [TimeoutError("SECRET"),
-    ks_envelope.http.client.IncompleteRead(b"SECRET"), ConnectionResetError("SECRET")])
+@pytest.mark.parametrize("error", [
+    ConnectionResetError("SECRET"),
+    OSError(54, "SECRET"),
+    ks_envelope.http.client.IncompleteRead(b"SECRET"),
+])
 def test_stream_read_errors_are_failed_sse(error):
     class BrokenStream:
         def readline(self):
@@ -706,7 +716,7 @@ def test_stream_read_errors_are_failed_sse(error):
 def test_handler_read_failure_does_not_append_http_error():
     class BrokenStream:
         def readline(self):
-            raise TimeoutError("SECRET")
+            raise ConnectionResetError("SECRET")
 
     handler = object.__new__(ks_envelope.EnvelopeHandler)
     handler.wfile = io.BytesIO()
@@ -1050,15 +1060,14 @@ def test_translate_request_forwards_input_image():
     assert content[1]["source"]["data"] == "AAAA"
 
 
-def test_translate_request_reasoning_off_by_default():
+def test_translate_request_high_effort_enables_thinking_by_default():
     body = {
         "model": "m",
         "reasoning": {"effort": "xhigh", "context": "all_turns"},
         "input": [{"role": "user", "content": "x"}],
     }
     out = ks_envelope.translate_request(body)
-    assert "thinking" not in out
-    assert "extra-high depth" in out.get("system", "")
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 4096}
 
 
 def test_translate_request_reasoning_effort_maps_to_thinking():
@@ -1215,6 +1224,95 @@ def test_anthropic_ping_emits_in_progress_keepalive():
     assert "response.in_progress" in types
     assert types.index("response.in_progress") < types.index("response.output_text.delta")
     assert types[-1] == "response.completed"
+
+
+def test_thinking_and_signature_deltas_do_not_fail_the_stream():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "plan it"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "gAAAAAsecret"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert "response.reasoning_summary_text.delta" in types
+    assert "response.output_text.delta" in types
+    assert types[-1] == "response.completed"
+    blob = json.dumps(events)
+    assert "gAAAAAsecret" not in blob
+    assert "plan it" in blob
+    assert any(
+        e.get("type") == "response.output_text.delta" and e.get("delta") == "hi"
+        for e in events
+    )
+
+
+def test_invalid_sse_json_is_skipped_so_later_text_completes():
+    raw = (
+        b"data: not-json\n\n"
+        b'event: content_block_start\n'
+        b'data: {"type":"content_block_start","index":0,'
+        b'"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\n'
+        b'data: {"type":"content_block_delta","index":0,'
+        b'"delta":{"type":"text_delta","text":"ok"}}\n\n'
+        b'event: content_block_stop\n'
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b'event: message_delta\n'
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+        b'event: message_stop\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    frames = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m")
+    )
+    assert b"event: response.completed" in frames
+    assert b'"delta": "ok"' in frames
+    assert b"event: response.failed" not in frames
+
+
+def test_idle_socket_timeout_emits_reasoning_heartbeat():
+    rest = (
+        b'event: content_block_start\n'
+        b'data: {"type":"content_block_start","index":0,'
+        b'"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\n'
+        b'data: {"type":"content_block_delta","index":0,'
+        b'"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b'event: content_block_stop\n'
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b'event: message_delta\n'
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+        b'event: message_stop\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    buf = io.BytesIO(rest)
+
+    class IdleThenData:
+        def __init__(self):
+            self.idle = 2
+
+        def readline(self):
+            if self.idle:
+                self.idle -= 1
+                raise socket.timeout()
+            return buf.readline()
+
+    frames = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(IdleThenData(), "m")
+    )
+    assert b"event: response.reasoning_summary_text.delta" in frames
+    assert b"event: response.completed" in frames
+    assert b'"delta": "hi"' in frames
 
 
 def test_visible_text_without_stop_reason_is_incomplete_not_failed():
@@ -1399,6 +1497,74 @@ def test_coalesce_second_post_replays_first_generation():
         assert b'"delta": "once"' in results[1]
         assert b"event: response.completed" in results[0]
         assert b"event: response.completed" in results[1]
+        assert upstream.hits == 1
+    finally:
+        upstream.release.set()
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+        ks_envelope.reset_coalesce_state()
+
+
+def test_coalesce_replay_emits_headers_before_leader_finishes():
+    """Reconnect POSTs must not stay silent until the leader completes.
+
+    Desktop evidence 2026-09-13 thread 01a0965e: Codex showed
+    正在重新連線 5/5 then stream_interrupted because _replay_coalesced
+    waited on slot.done before sending SSE headers.
+    """
+    ks_envelope.reset_coalesce_state()
+    upstream, adapter = _bound_adapter(_CountingSseUpstream)
+    upstream.hits = 0
+    upstream.hit_lock = threading.Lock()
+    upstream.started = threading.Event()
+    upstream.release = threading.Event()
+    payload = {
+        "model": "m",
+        "stream": True,
+        "input": [{"role": "user", "content": "live-tail-retry"}],
+    }
+    headers_seen = threading.Event()
+    results = [None, None]
+    errors = [None, None]
+
+    def leader():
+        try:
+            results[0] = _stream_post(adapter.server_address[1], payload, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            errors[0] = exc
+
+    def waiter():
+        req = urllib.request.Request(
+            "http://127.0.0.1:%s/v1/responses" % adapter.server_address[1],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                headers_seen.set()
+                results[1] = resp.read()
+        except Exception as exc:  # noqa: BLE001
+            errors[1] = exc
+
+    try:
+        first = threading.Thread(target=leader)
+        first.start()
+        assert upstream.started.wait(5)
+        second = threading.Thread(target=waiter)
+        second.start()
+        assert headers_seen.wait(1.5), "replay stayed silent until leader finished"
+        assert not upstream.release.is_set()
+        upstream.release.set()
+        first.join(10)
+        second.join(10)
+        assert errors == [None, None]
+        assert results[0] and results[1]
+        assert b"event: response.completed" in results[0]
+        assert b"event: response.completed" in results[1]
+        assert b'"delta": "once"' in results[1]
         assert upstream.hits == 1
     finally:
         upstream.release.set()
