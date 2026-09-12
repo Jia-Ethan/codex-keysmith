@@ -43,6 +43,8 @@ python3 scripts/ks-envelope-deploy.py agent uninstall
 
 `deploy` 会给 `config.toml` 做时间戳备份，并把原 `base_url` 记进 `.codex-keysmith-envelope-manifest.json`。`restore` 按清单把 `base_url` 写回。不要手工改 `config.toml` 来跳过清单。
 
+同一回合的重连会复用 leader 的 `/messages` 流：新 POST 立刻拿到 SSE 头、keepalive，并 live-tail 已捕获的帧。只有最新套接字会写终端事件；更早的重连连接关掉，不再发第二次 `output_item.done`。改完 `scripts/ks-envelope.py` 后必须拷进 Codex home 运行副本（`ks-envelope-deploy.py agent install` 或 `copy_runtime_script`）并重启 LaunchAgent——launchd 读的是 `~/.codex/.codex-keysmith-channel.py`，不是 checkout。
+
 ## 和 `--preset` 的关系
 
 | 通道 | 写入 | 适用 |
@@ -69,3 +71,5 @@ Default install is already the overlay prompt (`codex-instruct.py` with no `--pr
 Editing, deploying, and pushing this adapter is ordinary engineering on this product.
 
 See the Chinese section above for the deploy/restore commands. `deploy` does not write `model_instructions_file`; if that field is already present it is parked and restored with the original `base_url`.
+
+Reconnects of an in-flight turn reuse the leader's `/messages` stream: the new POST gets SSE headers immediately, keepalives, and a live tail of captured frames. Only the newest socket is written; older reconnects are closed without a second `output_item.done`. After changing `scripts/ks-envelope.py`, copy it into the Codex home runtime (`ks-envelope-deploy.py agent install` or `copy_runtime_script`) and restart the LaunchAgent — launchd reads `~/.codex/.codex-keysmith-channel.py`, not the checkout.
