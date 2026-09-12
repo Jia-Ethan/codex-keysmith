@@ -3,6 +3,7 @@ import io
 import json
 import sys
 import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -1083,3 +1084,326 @@ def test_translate_request_unknown_effort_omits_thinking():
 def test_translate_request_no_reasoning_field():
     out = ks_envelope.translate_request({"model": "m", "input": "x"}, thinking_passthrough=True)
     assert "thinking" not in out
+
+
+def test_fingerprint_ignores_ids_and_developer_churn():
+    first = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "id": "dev-1",
+                "content": [{"type": "input_text", "text": "memory-router-a"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "user-1",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    retry = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "developer",
+                "id": "dev-2",
+                "content": [{"type": "input_text", "text": "memory-router-b"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "user-2",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    with_assistant = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": list(retry["input"])
+        + [
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": "asst-1",
+                "content": [{"type": "output_text", "text": "[P]\nRECONNECT-CHECK-0911\npartial"}],
+            }
+        ],
+    }
+    assert ks_envelope._request_fingerprint(first) == ks_envelope._request_fingerprint(
+        retry
+    )
+    assert ks_envelope._request_fingerprint(first) == ks_envelope._request_fingerprint(
+        with_assistant
+    )
+    agents_then_prompt = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "id": "agents",
+                "content": [{"type": "input_text", "text": "# AGENTS.md instructions\nfoo"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "id": "prompt",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    prompt_only = {
+        "model": "m",
+        "stream": True,
+        "reasoning": {"effort": "high"},
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "id": "prompt-2",
+                "content": [{"type": "input_text", "text": "RECONNECT-CHECK-0911"}],
+            },
+        ],
+    }
+    assert ks_envelope._request_fingerprint(agents_then_prompt) == (
+        ks_envelope._request_fingerprint(prompt_only)
+    )
+
+
+def test_text_item_stays_in_progress_until_terminal():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "shown"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert types.index("response.output_text.delta") < types.index(
+        "response.output_item.done"
+    )
+    assert types.index("response.output_item.done") < types.index("response.completed")
+    assert types.count("response.output_item.done") == 1
+
+
+def test_anthropic_ping_emits_in_progress_keepalive():
+    events = _stream_events([
+        {"type": "ping"},
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "ok"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert "response.in_progress" in types
+    assert types.index("response.in_progress") < types.index("response.output_text.delta")
+    assert types[-1] == "response.completed"
+
+
+def test_visible_text_without_stop_reason_is_incomplete_not_failed():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "shown"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert "response.incomplete" in types
+    assert "response.failed" not in types
+    assert "response.completed" not in types
+    assert any(
+        e["type"] == "response.output_item.done"
+        and e["item"]["content"][0]["text"] == "shown"
+        for e in events
+    )
+
+
+def test_stream_error_after_text_is_incomplete_not_failed():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "shown"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "error", "error": {"message": "SECRET"}},
+    ])
+    types = [e["type"] for e in events]
+    assert types[-1] == "response.incomplete"
+    assert "response.failed" not in types
+    assert "SECRET" not in json.dumps(events)
+
+
+def _bound_adapter(upstream_handler):
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), upstream_handler)
+    upstream.daemon_threads = True
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    handler = type(
+        "BoundSse",
+        (ks_envelope.EnvelopeHandler,),
+        {
+            "upstream_key": "k",
+            "upstream_base": f"http://127.0.0.1:{upstream.server_address[1]}",
+            "secret_for_redaction": "k",
+            "verbose": False,
+            "thinking_passthrough": False,
+            "overlay_text": "",
+        },
+    )
+    adapter = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    adapter.daemon_threads = True
+    threading.Thread(target=adapter.serve_forever, daemon=True).start()
+    return upstream, adapter
+
+
+def _stream_post(port, body, timeout=10):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+class _SlowSseUpstream(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or "0")
+        self.rfile.read(length)
+        time.sleep(0.3)
+        chunks = [
+            'event: content_block_start\ndata: {"type":"content_block_start",'
+            '"index":0,"content_block":{"type":"text","text":""}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            '"index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+            'event: content_block_stop\ndata: {"type":"content_block_stop",'
+            '"index":0}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def test_sse_keepalive_emitted_while_upstream_idle(monkeypatch):
+    monkeypatch.setattr(ks_envelope, "KEEPALIVE_INTERVAL_SECONDS", 0.05)
+    ks_envelope.reset_coalesce_state()
+    upstream, adapter = _bound_adapter(_SlowSseUpstream)
+    try:
+        body = _stream_post(
+            adapter.server_address[1],
+            {"model": "m", "stream": True, "input": [{"role": "user", "content": "idle-ka"}]},
+        )
+        assert b": keepalive" in body
+        assert b"event: response.completed" in body
+        assert body.find(b": keepalive") < body.find(b"event: response.completed")
+    finally:
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+        ks_envelope.reset_coalesce_state()
+
+
+class _CountingSseUpstream(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        with self.server.hit_lock:
+            self.server.hits += 1
+        length = int(self.headers.get("Content-Length") or "0")
+        self.rfile.read(length)
+        self.server.started.set()
+        assert self.server.release.wait(5)
+        chunks = [
+            'event: content_block_start\ndata: {"type":"content_block_start",'
+            '"index":0,"content_block":{"type":"text","text":""}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            '"index":0,"delta":{"type":"text_delta","text":"once"}}\n\n',
+            'event: content_block_stop\ndata: {"type":"content_block_stop",'
+            '"index":0}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta",'
+            '"delta":{"stop_reason":"end_turn"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def test_coalesce_second_post_replays_first_generation():
+    ks_envelope.reset_coalesce_state()
+    upstream, adapter = _bound_adapter(_CountingSseUpstream)
+    upstream.hits = 0
+    upstream.hit_lock = threading.Lock()
+    upstream.started = threading.Event()
+    upstream.release = threading.Event()
+    payload = {
+        "model": "m",
+        "stream": True,
+        "input": [{"role": "user", "content": "same-turn-retry"}],
+    }
+    results = [None, None]
+    errors = [None, None]
+
+    def worker(index):
+        try:
+            results[index] = _stream_post(adapter.server_address[1], payload, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            errors[index] = exc
+
+    try:
+        first = threading.Thread(target=worker, args=(0,))
+        first.start()
+        assert upstream.started.wait(5)
+        second = threading.Thread(target=worker, args=(1,))
+        second.start()
+        time.sleep(0.1)
+        upstream.release.set()
+        first.join(10)
+        second.join(10)
+        assert errors == [None, None]
+        assert results[0] and results[1]
+        assert b'"delta": "once"' in results[0]
+        assert b'"delta": "once"' in results[1]
+        assert b"event: response.completed" in results[0]
+        assert b"event: response.completed" in results[1]
+        assert upstream.hits == 1
+    finally:
+        upstream.release.set()
+        adapter.shutdown()
+        upstream.shutdown()
+        adapter.server_close()
+        upstream.server_close()
+        ks_envelope.reset_coalesce_state()
