@@ -46,6 +46,7 @@ UPSTREAM_MESSAGES = "/messages"
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 UPSTREAM_TIMEOUT_SECONDS = 300
 KEEPALIVE_INTERVAL_SECONDS = 2.0
+SSE_IDLE_TIMEOUT_SECONDS = 1.0
 KEEPALIVE_COMMENT = b": keepalive\n\n"
 COALESCE_TTL_SECONDS = 60.0
 _TOOL_ITEM_TYPES = (
@@ -125,18 +126,6 @@ class _CoalescedTurn:
         self.frames = _FrameBuffer()
         self.error: Optional[BaseException] = None
         self.finished_at = 0.0
-        self._live_lock = threading.Lock()
-        self._live_epoch = 0
-
-    def claim_live(self) -> int:
-        """Make this connection the sole writer. Older sockets become capture-only."""
-        with self._live_lock:
-            self._live_epoch += 1
-            return self._live_epoch
-
-    def is_live(self, epoch: int) -> bool:
-        with self._live_lock:
-            return epoch == self._live_epoch
 
 
 _coalesce_lock = threading.Lock()
@@ -1083,22 +1072,32 @@ def _sse_data_payload(parts: List[str]) -> Any:
         return json.loads(blob)
     except ValueError:
         sys.stderr.write(
-            "[ks-envelope] skip invalid SSE JSON (%s bytes)\n" % len(blob)
+            "[ks-envelope] skip invalid SSE JSON (%s bytes) %r\n"
+            % (len(blob), blob[:80])
         )
         sys.stderr.flush()
         return None
 
 
-def _readline_sse(fp: Any) -> Tuple[bytes, bool]:
-    """Read one SSE line. Returns (bytes, eof). IncompleteRead is EOF."""
+def _readline_sse(fp: Any) -> Tuple[Optional[bytes], bool]:
+    """Read one SSE line. Returns (bytes|None, eof).
+
+    None + not-eof means the upstream socket was idle (short timeout) and
+    the caller should heartbeat so Codex does not reconnect.
+    IncompleteRead is treated as EOF.
+    """
     try:
         raw = fp.readline()
+    except socket.timeout:
+        return None, False
+    except TimeoutError:
+        return None, False
     except http.client.IncompleteRead as exc:
         raw = exc.partial or b""
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
         return raw or b"", True
-    except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
+    except (BrokenPipeError, ConnectionResetError):
         raise
     if isinstance(raw, str):
         raw = raw.encode("utf-8")
@@ -1113,6 +1112,9 @@ def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
     data_parts: List[str] = []
     while True:
         raw, eof = _readline_sse(fp)
+        if raw is None and not eof:
+            yield "ping", {"type": "ping"}
+            continue
         if raw:
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if not line:
@@ -1176,7 +1178,7 @@ def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
             if isinstance(message, dict) and isinstance(message.get("usage"), dict):
                 live.usage.update(message["usage"])
         elif etype == "ping":
-            yield live.keepalive_frame()
+            yield from live.heartbeat()
         elif etype == "message_stop":
             yield from live.finish()
             return
@@ -1229,6 +1231,25 @@ class _LiveResponse:
             "response.in_progress",
             {"type": "response.in_progress", "response": body},
         )
+
+    def heartbeat(self) -> Iterator[bytes]:
+        """Keep Codex from idle-reconnecting while LGW is silently thinking.
+
+        Desktop first-token timeout is ~15s. LGW often emits no SSE bytes
+        during gpt-5.6-sol high-effort thinking, then dumps thinking_delta.
+        ``response.in_progress`` comments are not first tokens; a reasoning
+        summary delta is.
+        """
+        yield self.keepalive_frame()
+        yield from self._ensure_reasoning_item()
+        assert self.reasoning_index is not None
+        yield _sse_event("response.reasoning_summary_text.delta", {
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": self.reasoning_id,
+            "output_index": self.reasoning_index,
+            "summary_index": 0,
+            "delta": "\u200b",
+        })
 
     def snapshot(self, status: str) -> Dict[str, Any]:
         incomplete = None
@@ -1588,7 +1609,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-    def _replay_coalesced(self, slot: _CoalescedTurn, epoch: int) -> None:
+    def _replay_coalesced(self, slot: _CoalescedTurn) -> None:
         if slot.done.is_set() and not slot.frames:
             self._reject(
                 502,
@@ -1601,27 +1622,21 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             )
             return
         # Send headers immediately so Codex sees a live SSE socket instead of
-        # waiting out the leader. Silent wait-until-done is what produced
-        # desktop "正在重新連線 5/5" + stream_interrupted.
+        # waiting out the leader. Do not mute the leader socket: that is what
+        # turned a 15s LGW think-gap into desktop 正在重新連線 5/5.
         self._start_sse_headers()
-        gate = _SseKeepalive(
-            self.wfile,
-            capture=None,
-            should_write=lambda e=epoch: slot.is_live(e),
-        )
+        gate = _SseKeepalive(self.wfile, capture=None)
         gate.start()
         offset = 0
         deadline = time.time() + UPSTREAM_TIMEOUT_SECONDS
         try:
-            while slot.is_live(epoch):
+            while True:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     break
                 chunk, offset, done = slot.frames.wait_more(
                     offset, min(1.0, remaining)
                 )
-                if not slot.is_live(epoch):
-                    return
                 if chunk and not gate.emit(chunk, capture=False):
                     return
                 if done and offset >= len(slot.frames):
@@ -1696,12 +1711,10 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         wants_stream = request_body.get("stream") is True
         slot: Optional[_CoalescedTurn] = None
         leader = False
-        live_epoch = 0
         if wants_stream:
             slot, leader = _coalesce_begin(_request_fingerprint(request_body))
-            live_epoch = slot.claim_live()
             if not leader:
-                self._replay_coalesced(slot, live_epoch)
+                self._replay_coalesced(slot)
                 return
         capture = slot.frames if slot is not None else None
 
@@ -1734,15 +1747,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         gate: Optional[_SseKeepalive] = None
         if wants_stream:
             self._start_sse_headers()
-            gate = _SseKeepalive(
-                self.wfile,
-                capture=capture,
-                should_write=(
-                    (lambda e=live_epoch: slot.is_live(e))
-                    if slot is not None
-                    else None
-                ),
-            )
+            gate = _SseKeepalive(self.wfile, capture=capture)
             gate.start()
         try:
             for attempt in range(2):
@@ -1754,6 +1759,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
                         if wants_stream:
                             assert gate is not None
                             if "text/event-stream" in ctype:
+                                _arm_idle_timeout(resp, SSE_IDLE_TIMEOUT_SECONDS)
                                 self._pipe_upstream_stream(resp, model, gate)
                             else:
                                 data = json.loads(resp.read().decode("utf-8"))
@@ -1819,6 +1825,18 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
             if leader and slot is not None and not slot.done.is_set():
                 _coalesce_finish(slot)
+
+
+def _arm_idle_timeout(resp: Any, seconds: float) -> None:
+    """Shorten the upstream socket timeout so silent thinking can heartbeat."""
+    try:
+        sock = resp.fp.raw._sock  # type: ignore[attr-defined]
+    except AttributeError:
+        return
+    try:
+        sock.settimeout(seconds)
+    except OSError:
+        return
 
 
 def serve(
