@@ -1223,6 +1223,60 @@ def test_anthropic_ping_emits_in_progress_keepalive():
     assert types[-1] == "response.completed"
 
 
+def test_thinking_and_signature_deltas_do_not_fail_the_stream():
+    events = _stream_events([
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "plan it"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "gAAAAAsecret"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ])
+    types = [e["type"] for e in events]
+    assert "response.reasoning_summary_text.delta" in types
+    assert "response.output_text.delta" in types
+    assert types[-1] == "response.completed"
+    blob = json.dumps(events)
+    assert "gAAAAAsecret" not in blob
+    assert "plan it" in blob
+    assert any(
+        e.get("type") == "response.output_text.delta" and e.get("delta") == "hi"
+        for e in events
+    )
+
+
+def test_invalid_sse_json_is_skipped_so_later_text_completes():
+    raw = (
+        b"data: not-json\n\n"
+        b'event: content_block_start\n'
+        b'data: {"type":"content_block_start","index":0,'
+        b'"content_block":{"type":"text","text":""}}\n\n'
+        b'event: content_block_delta\n'
+        b'data: {"type":"content_block_delta","index":0,'
+        b'"delta":{"type":"text_delta","text":"ok"}}\n\n'
+        b'event: content_block_stop\n'
+        b'data: {"type":"content_block_stop","index":0}\n\n'
+        b'event: message_delta\n'
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+        b'event: message_stop\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+    frames = b"".join(
+        ks_envelope.iter_anthropic_stream_as_responses(io.BytesIO(raw), "m")
+    )
+    assert b"event: response.completed" in frames
+    assert b'"delta": "ok"' in frames
+    assert b"event: response.failed" not in frames
+
+
 def test_visible_text_without_stop_reason_is_incomplete_not_failed():
     events = _stream_events([
         {"type": "content_block_start", "index": 0,

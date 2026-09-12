@@ -1082,7 +1082,29 @@ def _sse_data_payload(parts: List[str]) -> Any:
     try:
         return json.loads(blob)
     except ValueError:
-        raise EnvelopeError("invalid upstream SSE JSON") from None
+        sys.stderr.write(
+            "[ks-envelope] skip invalid SSE JSON (%s bytes)\n" % len(blob)
+        )
+        sys.stderr.flush()
+        return None
+
+
+def _readline_sse(fp: Any) -> Tuple[bytes, bool]:
+    """Read one SSE line. Returns (bytes, eof). IncompleteRead is EOF."""
+    try:
+        raw = fp.readline()
+    except http.client.IncompleteRead as exc:
+        raw = exc.partial or b""
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        return raw or b"", True
+    except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
+        raise
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not raw:
+        return b"", True
+    return raw, False
 
 
 def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
@@ -1090,26 +1112,28 @@ def iter_sse_events(fp: Any) -> Iterator[Tuple[Optional[str], Any]]:
     event_name: Optional[str] = None
     data_parts: List[str] = []
     while True:
-        raw = fp.readline()
-        if not raw:
+        raw, eof = _readline_sse(fp)
+        if raw:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                if data_parts:
+                    payload = _sse_data_payload(data_parts)
+                    if payload is not None:
+                        yield event_name, payload
+                event_name = None
+                data_parts = []
+            elif line.startswith(":"):
+                pass
+            elif line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_parts.append(line[5:].lstrip())
+        if eof:
             if data_parts:
-                yield event_name, _sse_data_payload(data_parts)
+                payload = _sse_data_payload(data_parts)
+                if payload is not None:
+                    yield event_name, payload
             return
-        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-        line = line.rstrip("\r\n")
-        if not line:
-            if data_parts:
-                yield event_name, _sse_data_payload(data_parts)
-            event_name = None
-            data_parts = []
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[6:].strip()
-            continue
-        if line.startswith("data:"):
-            data_parts.append(line[5:].lstrip())
 
 
 def iter_anthropic_stream_as_responses(
@@ -1121,16 +1145,20 @@ def iter_anthropic_stream_as_responses(
     yield live.created_frame()
     try:
         yield from _forward_anthropic_stream(fp, live)
-    except (OSError, http.client.HTTPException, EnvelopeError):
+    except (OSError, http.client.HTTPException, EnvelopeError) as exc:
         # Headers are already sent. Never append another HTTP response or
         # expose upstream exception text (which may contain credentials).
+        sys.stderr.write(
+            "[ks-envelope] stream fail %s\n" % type(exc).__name__
+        )
+        sys.stderr.flush()
         yield from live.fail("upstream stream interrupted or invalid")
 
 
 def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
     for _name, payload in iter_sse_events(fp):
         if not isinstance(payload, dict):
-            raise EnvelopeError("invalid upstream SSE payload")
+            continue
         etype = str(payload.get("type") or _name or "")
         if etype == "error":
             yield from live.fail("upstream stream error")
@@ -1172,6 +1200,10 @@ class _LiveResponse:
         self.text = ""
         self.text_id = "msg_" + self.resp_id[-20:]
         self.tools: Dict[int, Dict[str, Any]] = {}
+        self.reasoning_index: Optional[int] = None
+        self.reasoning_closed = False
+        self.reasoning_text = ""
+        self.reasoning_id = "rs_" + self.resp_id[-20:]
 
     def created_frame(self) -> bytes:
         body = {
@@ -1214,6 +1246,36 @@ class _LiveResponse:
         }
         return out
 
+    def _ensure_reasoning_item(self) -> Iterator[bytes]:
+        if self.reasoning_index is not None:
+            return
+        self.reasoning_index = self.next_index
+        self.next_index += 1
+        item = {
+            "id": self.reasoning_id,
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": ""}],
+        }
+        self.output.append(item)
+        yield _sse_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.reasoning_index,
+            "item": item,
+        })
+
+    def _close_reasoning_item(self) -> Iterator[bytes]:
+        if self.reasoning_index is None or self.reasoning_closed:
+            return
+        item = self.output[self.reasoning_index]
+        if item.get("summary"):
+            item["summary"][0]["text"] = self.reasoning_text
+        self.reasoning_closed = True
+        yield _sse_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": self.reasoning_index,
+            "item": item,
+        })
+
     def _ensure_text_item(self) -> Iterator[bytes]:
         if self.text_index is not None:
             return
@@ -1252,8 +1314,11 @@ class _LiveResponse:
             return []
         index = payload.get("index")
         btype = block.get("type")
+        if btype == "thinking":
+            return list(self._ensure_reasoning_item())
         if btype == "text" and isinstance(index, int):
             frames: List[bytes] = []
+            frames.extend(self._close_reasoning_item())
             if (
                 self.text_index is not None
                 and not self.text_closed
@@ -1277,12 +1342,14 @@ class _LiveResponse:
                 }}))
             return frames
         elif btype == "tool_use" and isinstance(index, int):
+            frames = list(self._close_reasoning_item())
             self.tools[index] = {
                 "id": block.get("id"),
                 "name": block.get("name") or "",
                 "json": "",
                 "input": block.get("input", {}),
             }
+            return frames
         return []
 
     def block_delta(self, payload: Dict[str, Any]) -> Iterator[bytes]:
@@ -1291,10 +1358,31 @@ class _LiveResponse:
             return
         dtype = delta.get("type")
         index = payload.get("index")
+        if dtype in ("thinking_delta", "reasoning_delta"):
+            chunk = str(delta.get("thinking") or delta.get("text") or "")
+            if not chunk:
+                return
+            yield from self._ensure_reasoning_item()
+            self.reasoning_text += chunk
+            assert self.reasoning_index is not None
+            summary = self.output[self.reasoning_index].get("summary")
+            if summary:
+                summary[0]["text"] = self.reasoning_text
+            yield _sse_event("response.reasoning_summary_text.delta", {
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": self.reasoning_id,
+                "output_index": self.reasoning_index,
+                "summary_index": 0,
+                "delta": chunk,
+            })
+            return
+        if dtype == "signature_delta":
+            return
         if dtype == "text_delta":
             chunk = str(delta.get("text") or "")
             if not chunk:
                 return
+            yield from self._close_reasoning_item()
             yield from self._ensure_text_item()
             self.text += chunk
             assert self.text_index is not None
@@ -1377,9 +1465,10 @@ class _LiveResponse:
             self.usage.update(usage)
 
     def fail(self, message: str) -> Iterator[bytes]:
-        visible = bool(self.text) or any(
-            item.get("type") == "message" for item in self.output
+        visible = bool(self.text) or bool(self.reasoning_text) or any(
+            item.get("type") in ("message", "reasoning") for item in self.output
         )
+        yield from self._close_reasoning_item()
         yield from self._close_text_item()
         if visible:
             # Codex already committed the assistant item. A failed terminal
@@ -1402,6 +1491,7 @@ class _LiveResponse:
         if not self.stop_reason or self.tools:
             yield from self.fail("upstream stream ended without complete message metadata")
             return
+        yield from self._close_reasoning_item()
         yield from self._close_text_item()
         status = "completed" if self.stop_reason in (
             "stop", "tool_calls", "end_turn", "tool_use", "stop_sequence"
