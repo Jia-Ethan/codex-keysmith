@@ -182,7 +182,11 @@ def test_exec_command_nested_name_rewrites_to_exec():
     assert "ls /tmp" in call["input"]
 
 
-def test_spawn_agent_rewrites_to_exec_custom_tool():
+def test_spawn_agent_emits_function_call_not_exec_js():
+    # Desktop thread 01a0967b: wrapping spawn_agent as
+    # text(await tools.spawn_agent(...)) made Codex exec throw
+    # "tools.spawn_agent is not a function" eight times, then the
+    # follow-up stream died with "upstream /messages returned 0".
     reply = {
         "content": [
             {
@@ -195,10 +199,11 @@ def test_spawn_agent_rewrites_to_exec_custom_tool():
         "stop_reason": "tool_use",
     }
     call = ks_envelope.translate_response(reply, "m")["output"][0]
-    assert call["type"] == "custom_tool_call"
-    assert call["name"] == "exec"
-    assert "spawn_agent" in call["input"]
-    assert "audit envelope" in call["input"]
+    assert call["type"] == "function_call"
+    assert call["name"] == "spawn_agent"
+    args = json.loads(call["arguments"])
+    assert args["message"] == "audit envelope"
+    assert "tools.spawn_agent" not in json.dumps(call)
 
 
 def test_wait_function_tool_emits_function_call_not_custom():
