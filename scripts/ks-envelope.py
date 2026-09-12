@@ -28,6 +28,7 @@ import hashlib
 import http.client
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -485,8 +486,18 @@ def _normalize_tool_call(name: str, arguments: Any) -> Tuple[str, str, str]:
         )
         if isinstance(inner, str) and inner.strip():
             return _normalize_tool_call(inner.strip(), inner_args)
-    if label in _EXEC_NESTED_METHODS or label in _COLLAB_METHODS:
+    if label in _EXEC_NESTED_METHODS:
         return "exec", _exec_js_call(label, parsed), "custom"
+    if label in _COLLAB_METHODS:
+        if isinstance(parsed, dict):
+            payload = json.dumps(parsed, ensure_ascii=False)
+        elif isinstance(parsed, str):
+            payload = parsed
+        elif parsed is None:
+            payload = "{}"
+        else:
+            payload = json.dumps(parsed, ensure_ascii=False)
+        return label, payload, "function"
     if label in _CUSTOM_TOOL_NAMES or label == "exec":
         if isinstance(parsed, dict) and "cmd" in parsed:
             return "exec", _exec_js_call("exec_command", parsed), "custom"
@@ -1404,6 +1415,10 @@ class _LiveResponse:
 
 def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any]:
     """Upstream failure surfaced as a failed response object (Codex-visible)."""
+    message = f"upstream {UPSTREAM_MESSAGES} returned {upstream_status}"
+    extra = " ".join(str(detail or "").split())
+    if extra:
+        message = f"{message}: {extra[:180]}"
     return {
         "id": "resp_" + uuid.uuid4().hex[:24],
         "object": "response",
@@ -1412,7 +1427,7 @@ def translate_error_response(upstream_status: int, detail: str) -> Dict[str, Any
         "model": "",
         "error": {
             "code": "upstream_error",
-            "message": f"upstream {UPSTREAM_MESSAGES} returned {upstream_status}",
+            "message": message,
         },
     }
 
@@ -1433,8 +1448,12 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802
         if self.verbose:
-            safe = _redact(fmt % args, self.secret_for_redaction)
-            sys.stderr.write("[ks-envelope] " + safe + "\n")
+            self._log_error(fmt, *args)
+
+    def _log_error(self, fmt: str, *args: Any) -> None:
+        safe = _redact(fmt % args, self.secret_for_redaction)
+        sys.stderr.write("[ks-envelope] " + safe + "\n")
+        sys.stderr.flush()
 
     def _reject(self, code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1636,41 +1655,57 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             )
             gate.start()
         try:
-            with urllib.request.urlopen(
-                req, timeout=UPSTREAM_TIMEOUT_SECONDS
-            ) as resp:
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                if wants_stream:
-                    assert gate is not None
-                    if "text/event-stream" in ctype:
-                        self._pipe_upstream_stream(resp, model, gate)
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(
+                        req, timeout=UPSTREAM_TIMEOUT_SECONDS
+                    ) as resp:
+                        ctype = (resp.headers.get("Content-Type") or "").lower()
+                        if wants_stream:
+                            assert gate is not None
+                            if "text/event-stream" in ctype:
+                                self._pipe_upstream_stream(resp, model, gate)
+                            else:
+                                data = json.loads(resp.read().decode("utf-8"))
+                                self._emit_ready_frames(
+                                    translate_response(data, model), gate
+                                )
+                        else:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            self._reply_json(200, translate_response(data, model))
+                    break
+                except urllib.error.HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", errors="replace")[:500]
+                    except Exception:
+                        detail = str(exc)
+                    self._log_error(
+                        "upstream %s: %s",
+                        exc.code,
+                        _redact(detail, self.secret_for_redaction),
+                    )
+                    error_out = translate_error_response(exc.code, detail)
+                    if wants_stream:
+                        assert gate is not None
+                        self._emit_ready_frames(error_out, gate)
                     else:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        self._emit_ready_frames(translate_response(data, model), gate)
-                else:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    self._reply_json(200, translate_response(data, model))
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                detail = str(exc)
-            self.log_message("upstream %s: %s", exc.code, _redact(detail, self.secret_for_redaction))
-            error_out = translate_error_response(exc.code, detail)
-            if wants_stream:
-                assert gate is not None
-                self._emit_ready_frames(error_out, gate)
-            else:
-                self._reply_json(200, error_out)
-        except urllib.error.URLError as exc:
-            reason = str(exc.reason)[:200]
-            self.log_message("upstream urlerror: %s", reason)
-            error_out = translate_error_response(0, reason)
-            if wants_stream:
-                assert gate is not None
-                self._emit_ready_frames(error_out, gate)
-            else:
-                self._reply_json(200, error_out)
+                        self._reply_json(200, error_out)
+                    break
+                except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+                    reason = str(getattr(exc, "reason", exc))[:200]
+                    self._log_error(
+                        "upstream urlerror attempt %s: %s",
+                        attempt + 1,
+                        _redact(reason, self.secret_for_redaction),
+                    )
+                    if attempt == 0:
+                        continue
+                    error_out = translate_error_response(0, reason)
+                    if wants_stream:
+                        assert gate is not None
+                        self._emit_ready_frames(error_out, gate)
+                    else:
+                        self._reply_json(200, error_out)
         except EnvelopeError as exc:
             if wants_stream:
                 assert gate is not None
@@ -1680,7 +1715,7 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             else:
                 self._reject(502, {"error": {"code": "bad_upstream", "message": str(exc)[:300]}})
         except Exception as exc:  # pragma: no cover - defensive
-            self.log_message("internal: %s", _redact(str(exc), self.secret_for_redaction))
+            self._log_error("internal: %s", _redact(str(exc), self.secret_for_redaction))
             if wants_stream:
                 assert gate is not None
                 self._emit_ready_frames(

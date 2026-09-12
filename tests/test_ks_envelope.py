@@ -309,6 +309,12 @@ def test_translate_error_response_shape():
     assert out["status"] == "failed"
     assert out["error"]["code"] == "upstream_error"
     assert "401" in out["error"]["message"]
+    assert "nope" in out["error"]["message"]
+
+
+def test_translate_error_response_status_zero_keeps_reason():
+    out = ks_envelope.translate_error_response(0, "timed out")
+    assert out["error"]["message"] == "upstream /messages returned 0: timed out"
 
 
 # --- auth loading --------------------------------------------------------------
