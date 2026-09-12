@@ -29,6 +29,7 @@ import http.client
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +44,15 @@ LOCAL_PREFIX = "/v1"
 UPSTREAM_MESSAGES = "/messages"
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 UPSTREAM_TIMEOUT_SECONDS = 300
+KEEPALIVE_INTERVAL_SECONDS = 2.0
+KEEPALIVE_COMMENT = b": keepalive\n\n"
+COALESCE_TTL_SECONDS = 60.0
+_TOOL_ITEM_TYPES = (
+    "function_call",
+    "custom_tool_call",
+    "function_call_output",
+    "custom_tool_call_output",
+)
 
 SECRET_PATTERNS = (
     "OPENAI_API_KEY",
@@ -53,6 +63,191 @@ SECRET_PATTERNS = (
 
 class EnvelopeError(Exception):
     """Adapter-local failure with a safe, redacted message."""
+
+
+class _CoalescedTurn:
+    """One in-flight or recently finished stream, shared across reconnect POSTs."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.frames = bytearray()
+        self.error: Optional[BaseException] = None
+        self.finished_at = 0.0
+
+
+_coalesce_lock = threading.Lock()
+_coalesce: Dict[str, _CoalescedTurn] = {}
+
+
+def reset_coalesce_state() -> None:
+    """Test helper: drop in-flight and cached stream slots."""
+    with _coalesce_lock:
+        _coalesce.clear()
+
+
+def _content_text(item: Dict[str, Any]) -> str:
+    content = item.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if isinstance(block, str) and block:
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") in (
+            "input_text",
+            "output_text",
+            "text",
+            "summary_text",
+        ):
+            text = str(block.get("text") or "")
+            if text:
+                parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _request_fingerprint(body: Dict[str, Any]) -> str:
+    """Stable across Codex retries: ignore item ids and developer/memory-router churn."""
+    parts: List[str] = [
+        str(body.get("model") or ""),
+        "stream=" + ("1" if body.get("stream") is True else "0"),
+    ]
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict) and reasoning.get("effort"):
+        parts.append("effort=" + str(reasoning.get("effort")))
+    raw = body.get("input")
+    last_user = ""
+    if isinstance(raw, str):
+        last_user = raw.strip()
+    elif isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            itype = str(item.get("type") or "")
+            role = item.get("role")
+            if itype in _TOOL_ITEM_TYPES:
+                parts.append(
+                    itype
+                    + ":"
+                    + str(item.get("name") or "")
+                    + ":"
+                    + str(item.get("call_id") or item.get("id") or "")
+                )
+                continue
+            if role == "user":
+                text = _content_text(item)
+                if text:
+                    last_user = text
+    if last_user:
+        parts.append("user:" + last_user)
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _coalesce_begin(fingerprint: str) -> Tuple[_CoalescedTurn, bool]:
+    now = time.time()
+    with _coalesce_lock:
+        stale = [
+            key
+            for key, slot in _coalesce.items()
+            if slot.done.is_set() and now - slot.finished_at > COALESCE_TTL_SECONDS
+        ]
+        for key in stale:
+            _coalesce.pop(key, None)
+        existing = _coalesce.get(fingerprint)
+        if existing is not None and (
+            not existing.done.is_set()
+            or now - existing.finished_at <= COALESCE_TTL_SECONDS
+        ):
+            sys.stderr.write(
+                "[ks-envelope] coalesce replay fp=%s\n" % fingerprint[:16]
+            )
+            sys.stderr.flush()
+            return existing, False
+        slot = _CoalescedTurn()
+        _coalesce[fingerprint] = slot
+        sys.stderr.write("[ks-envelope] coalesce leader fp=%s\n" % fingerprint[:16])
+        sys.stderr.flush()
+        return slot, True
+
+
+def _coalesce_finish(
+    slot: _CoalescedTurn, error: Optional[BaseException] = None
+) -> None:
+    if error is not None and slot.error is None:
+        slot.error = error
+    slot.finished_at = time.time()
+    slot.done.set()
+
+
+class _SseKeepalive:
+    """Write SSE comments while the upstream is silent so Codex does not idle-retry."""
+
+    def __init__(
+        self,
+        wfile: Any,
+        capture: Optional[bytearray] = None,
+        interval: Optional[float] = None,
+    ) -> None:
+        self.wfile = wfile
+        self.capture = capture
+        self.interval = (
+            KEEPALIVE_INTERVAL_SECONDS if interval is None else interval
+        )
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.resp_id = ""
+
+    def start(self) -> None:
+        if self.interval <= 0:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="ks-sse-keepalive", daemon=True
+        )
+        self._thread.start()
+
+    def _progress_frame(self) -> bytes:
+        if not self.resp_id:
+            return KEEPALIVE_COMMENT
+        return KEEPALIVE_COMMENT + _sse_event(
+            "response.in_progress",
+            {
+                "type": "response.in_progress",
+                "response": {"id": self.resp_id, "status": "in_progress"},
+            },
+        )
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            if not self.emit(self._progress_frame(), capture=False):
+                return
+
+    def emit(self, frame: bytes, capture: bool = True) -> bool:
+        if b"event: response.created" in frame and not self.resp_id:
+            marker = b'"id": "'
+            start = frame.find(marker)
+            if start >= 0:
+                start += len(marker)
+                end = frame.find(b'"', start)
+                if end > start:
+                    self.resp_id = frame[start:end].decode("ascii", errors="replace")
+        try:
+            with self._lock:
+                if capture and self.capture is not None and not frame.startswith(b":"):
+                    self.capture.extend(frame)
+                self.wfile.write(frame)
+                self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self._stop.set()
+            return False
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
 
 
 def load_upstream_key(auth_file: Path) -> str:
@@ -870,7 +1065,7 @@ def _forward_anthropic_stream(fp: Any, live: _LiveResponse) -> Iterator[bytes]:
             if isinstance(message, dict) and isinstance(message.get("usage"), dict):
                 live.usage.update(message["usage"])
         elif etype == "ping":
-            continue
+            yield live.keepalive_frame()
         elif etype == "message_stop":
             yield from live.finish()
             return
@@ -905,6 +1100,19 @@ class _LiveResponse:
         }
         return _sse_event(
             "response.created", {"type": "response.created", "response": body}
+        )
+
+    def keepalive_frame(self) -> bytes:
+        body = {
+            "id": self.resp_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "model": self.model,
+            "status": "in_progress",
+        }
+        return _sse_event(
+            "response.in_progress",
+            {"type": "response.in_progress", "response": body},
         )
 
     def snapshot(self, status: str) -> Dict[str, Any]:
@@ -962,16 +1170,29 @@ class _LiveResponse:
         index = payload.get("index")
         btype = block.get("type")
         if btype == "text" and isinstance(index, int):
-            if self.text_closed:
+            frames: List[bytes] = []
+            if (
+                self.text_index is not None
+                and not self.text_closed
+                and self.text_block_index is not None
+                and index != self.text_block_index
+            ):
+                frames.extend(self._close_text_item())
+                self.text_index = None
+                self.text_closed = False
+                self.text = ""
+                self.text_id = "msg_" + uuid.uuid4().hex[:20]
+            elif self.text_closed:
                 self.text_index = None
                 self.text_closed = False
                 self.text = ""
                 self.text_id = "msg_" + uuid.uuid4().hex[:20]
             self.text_block_index = index
             if block.get("text"):
-                return list(self.block_delta({"index": index, "delta": {
+                frames.extend(self.block_delta({"index": index, "delta": {
                     "type": "text_delta", "text": block["text"],
                 }}))
+            return frames
         elif btype == "tool_use" and isinstance(index, int):
             self.tools[index] = {
                 "id": block.get("id"),
@@ -1010,7 +1231,9 @@ class _LiveResponse:
     def block_stop(self, payload: Dict[str, Any]) -> Iterator[bytes]:
         index = payload.get("index")
         if index == self.text_block_index:
-            yield from self._close_text_item()
+            # Keep the message in_progress until finish()/fail(). Codex
+            # commits AgentMessage on output_item.done; emitting it before
+            # the terminal event is what produced a second reply on reconnect.
             return
         if not isinstance(index, int) or index not in self.tools:
             return
@@ -1071,7 +1294,20 @@ class _LiveResponse:
             self.usage.update(usage)
 
     def fail(self, message: str) -> Iterator[bytes]:
+        visible = bool(self.text) or any(
+            item.get("type") == "message" for item in self.output
+        )
         yield from self._close_text_item()
+        if visible:
+            # Codex already committed the assistant item. A failed terminal
+            # makes it retry and generate a second, different reply.
+            if not self.stop_reason:
+                self.stop_reason = "stream_interrupted"
+            yield _sse_event("response.incomplete", {
+                "type": "response.incomplete",
+                "response": self.snapshot("incomplete"),
+            })
+            return
         snap = self.snapshot("failed")
         snap["error"] = {"code": "upstream_error", "message": message[:300]}
         yield _sse_event("response.failed", {
@@ -1144,7 +1380,9 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _reply_sse(self, response: Dict[str, Any]) -> None:
+    def _reply_sse(
+        self, response: Dict[str, Any], capture: Optional[bytearray] = None
+    ) -> None:
         frames = stream_response_events(response)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -1152,6 +1390,8 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         for frame in frames:
+            if capture is not None:
+                capture.extend(frame)
             self.wfile.write(frame)
         self.wfile.flush()
         self.close_connection = True
@@ -1160,18 +1400,77 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         self.wfile.write(frame)
         self.wfile.flush()
 
-    def _reply_upstream_stream(self, resp: Any, model: str) -> None:
+    def _start_sse_headers(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
+
+    def _replay_coalesced(self, slot: _CoalescedTurn) -> None:
+        finished = slot.done.wait(UPSTREAM_TIMEOUT_SECONDS)
+        if not finished:
+            self._reject(
+                504,
+                {
+                    "error": {
+                        "code": "timeout",
+                        "message": "coalesced upstream still in flight",
+                    }
+                },
+            )
+            return
+        if not slot.frames:
+            self._reject(
+                502,
+                {
+                    "error": {
+                        "code": "upstream_error",
+                        "message": "coalesced leader produced no frames",
+                    }
+                },
+            )
+            return
+        self._start_sse_headers()
         try:
-            for frame in iter_anthropic_stream_as_responses(resp, model):
-                self._write_sse_frame(frame)
+            self.wfile.write(bytes(slot.frames))
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
         self.close_connection = True
+
+    def _pipe_upstream_stream(
+        self, resp: Any, model: str, gate: _SseKeepalive
+    ) -> None:
+        try:
+            for frame in iter_anthropic_stream_as_responses(resp, model):
+                # Client disconnect still captures frames so a reconnect
+                # POST can replay this generation instead of calling LGW again.
+                gate.emit(frame)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _emit_ready_frames(
+        self, response: Dict[str, Any], gate: _SseKeepalive
+    ) -> None:
+        for frame in stream_response_events(response):
+            if not gate.emit(frame):
+                break
+
+    def _reply_upstream_stream(
+        self,
+        resp: Any,
+        model: str,
+        capture: Optional[bytearray] = None,
+    ) -> None:
+        self._start_sse_headers()
+        gate = _SseKeepalive(self.wfile, capture=capture)
+        gate.start()
+        try:
+            self._pipe_upstream_stream(resp, model, gate)
+        finally:
+            gate.stop()
+            self.close_connection = True
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.rstrip("/") in ("", "/health", LOCAL_PREFIX + "/health"):
@@ -1199,6 +1498,19 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError) as exc:
             self._reject(400, {"error": {"code": "bad_json", "message": str(exc)[:200]}})
             return
+        if not isinstance(request_body, dict):
+            self._reject(400, {"error": {"code": "bad_json", "message": "request is not an object"}})
+            return
+
+        wants_stream = request_body.get("stream") is True
+        slot: Optional[_CoalescedTurn] = None
+        leader = False
+        if wants_stream:
+            slot, leader = _coalesce_begin(_request_fingerprint(request_body))
+            if not leader:
+                self._replay_coalesced(slot)
+                return
+        capture = slot.frames if slot is not None else None
 
         try:
             translated = translate_request(
@@ -1207,10 +1519,11 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
                 overlay_text=self.overlay_text,
             )
         except EnvelopeError as exc:
+            if leader and slot is not None:
+                _coalesce_finish(slot, error=exc)
             self._reject(400, {"error": {"code": "bad_request", "message": str(exc)[:300]}})
             return
 
-        wants_stream = request_body.get("stream") is True
         if wants_stream:
             translated["stream"] = True
         payload = json.dumps(translated, ensure_ascii=False).encode("utf-8")
@@ -1225,20 +1538,26 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             method="POST",
         )
         model = str(request_body.get("model") or "")
+        gate: Optional[_SseKeepalive] = None
+        if wants_stream:
+            self._start_sse_headers()
+            gate = _SseKeepalive(self.wfile, capture=capture)
+            gate.start()
         try:
             with urllib.request.urlopen(
                 req, timeout=UPSTREAM_TIMEOUT_SECONDS
             ) as resp:
                 ctype = (resp.headers.get("Content-Type") or "").lower()
-                if wants_stream and "text/event-stream" in ctype:
-                    self._reply_upstream_stream(resp, model)
-                    return
-                data = json.loads(resp.read().decode("utf-8"))
-                translated_out = translate_response(data, model)
                 if wants_stream:
-                    self._reply_sse(translated_out)
+                    assert gate is not None
+                    if "text/event-stream" in ctype:
+                        self._pipe_upstream_stream(resp, model, gate)
+                    else:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        self._emit_ready_frames(translate_response(data, model), gate)
                 else:
-                    self._reply_json(200, translated_out)
+                    data = json.loads(resp.read().decode("utf-8"))
+                    self._reply_json(200, translate_response(data, model))
         except urllib.error.HTTPError as exc:
             try:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
@@ -1247,7 +1566,8 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             self.log_message("upstream %s: %s", exc.code, _redact(detail, self.secret_for_redaction))
             error_out = translate_error_response(exc.code, detail)
             if wants_stream:
-                self._reply_sse(error_out)
+                assert gate is not None
+                self._emit_ready_frames(error_out, gate)
             else:
                 self._reply_json(200, error_out)
         except urllib.error.URLError as exc:
@@ -1255,14 +1575,33 @@ class EnvelopeHandler(BaseHTTPRequestHandler):
             self.log_message("upstream urlerror: %s", reason)
             error_out = translate_error_response(0, reason)
             if wants_stream:
-                self._reply_sse(error_out)
+                assert gate is not None
+                self._emit_ready_frames(error_out, gate)
             else:
                 self._reply_json(200, error_out)
         except EnvelopeError as exc:
-            self._reject(502, {"error": {"code": "bad_upstream", "message": str(exc)[:300]}})
+            if wants_stream:
+                assert gate is not None
+                self._emit_ready_frames(
+                    translate_error_response(0, str(exc)[:300]), gate
+                )
+            else:
+                self._reject(502, {"error": {"code": "bad_upstream", "message": str(exc)[:300]}})
         except Exception as exc:  # pragma: no cover - defensive
             self.log_message("internal: %s", _redact(str(exc), self.secret_for_redaction))
-            self._reject(500, {"error": {"code": "internal", "message": "adapter failure"}})
+            if wants_stream:
+                assert gate is not None
+                self._emit_ready_frames(
+                    translate_error_response(0, "adapter failure"), gate
+                )
+            else:
+                self._reject(500, {"error": {"code": "internal", "message": "adapter failure"}})
+        finally:
+            if gate is not None:
+                gate.stop()
+                self.close_connection = True
+            if leader and slot is not None and not slot.done.is_set():
+                _coalesce_finish(slot)
 
 
 def serve(
