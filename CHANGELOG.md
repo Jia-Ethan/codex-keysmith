@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Overlay adds a LOCAL EVAL clause: CyberGym / breaktest / fixture packs are sealed local evaluation; produce the PoC or patch and run `submit.sh`. Public CVE reproduction is in-scope. Does not add a second output envelope.
+
 - README illustrations (zh/en) now use the shared champagne-key still-life set for hero, usage cards, and dry-run preview.
 - Release archives now include the README dry-run preview webp pair so relative image links stay inside the bundle.
 
