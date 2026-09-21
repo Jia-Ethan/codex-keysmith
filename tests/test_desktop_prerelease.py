@@ -16,13 +16,14 @@ COMMIT = "a" * 40
 TAG = f"desktop-v{prerelease.VERSION}-beta.1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION = prerelease.VERSION
-PUBLISHED_DESKTOP_VERSION = "0.3.9"
+PUBLISHED_DESKTOP_VERSION = "0.6.0"
 PUBLISHED_DESKTOP_TAG = f"desktop-v{PUBLISHED_DESKTOP_VERSION}-beta.1"
-PUBLISHED_SOURCE_VERSION = "0.5.1"
+PUBLISHED_SOURCE_VERSION = "0.6.0"
 HISTORICAL_DESKTOP_VERSION = "0.3.5"
 HISTORICAL_DESKTOP_TAG = f"desktop-v{HISTORICAL_DESKTOP_VERSION}-beta.1"
 PREVIOUS_DESKTOP_VERSION = "0.3.8"
 PREVIOUS_DESKTOP_TAG = f"desktop-v{PREVIOUS_DESKTOP_VERSION}-beta.1"
+FROZEN_DESKTOP_039_TAG = "desktop-v0.3.9-beta.1"
 
 
 def _sha256(path: Path) -> str:
@@ -610,15 +611,52 @@ def test_previous_desktop_v038_notes_remain_unchanged():
     assert release_notes == expected
 
 
-def test_published_prerelease_release_notes_match_approved_compact_copy():
-    release_notes = (
-        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
-    ).read_text(encoding="utf-8")
+def test_historical_desktop_v039_notes_remain_unchanged():
+    release_notes = (REPO_ROOT / f"docs/releases/{FROZEN_DESKTOP_039_TAG}.md").read_text(
+        encoding="utf-8"
+    )
     expected = textwrap.dedent(
         """\
         # codex-keysmith 桌面测试版
 
         新增“恢复配置引用”入口。
+        """
+    )
+    assert release_notes == expected
+
+
+def test_published_prerelease_release_notes_match_approved_copy():
+    release_notes = (
+        REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith v0.6.0 Desktop Beta
+
+        <!-- WINDOWS_FRESH_DEPLOYMENT_POLICY: EXPLICIT_BETA -->
+
+        Unsigned Desktop on source `v0.6.0`. Sidecar is the `0.6.0` CLI with the scenario bundle and embedded `fixture_packs/`. Deploy's built-in prompt is overlay-only (#76). GUI timeouts cover the case where the leader has exited but pipes remain occupied, and the sidecar process tree is killed (#80). No Apple or Authenticode signature. No new Linux or Intel Mac installer.
+
+        ## Download
+
+        - macOS Apple Silicon: `codex-keysmith-0.6.0-macos-arm64-unsigned.dmg`
+        - Windows x64: `codex-keysmith-0.6.0-windows-x64-unsigned-setup.exe`
+        - Standalone CLI and source archives: see [v0.6.0](https://github.com/Jia-Ethan/codex-keysmith/releases/tag/v0.6.0)
+        - Checksums: `SHA256SUMS`
+
+        ## What this build adds
+
+        - Deploy wizard: the only bundled prompt is overlay. External `--file` still cannot be combined with `--preset`.
+        - Fixtures page: list, preview, write, and delete isolated fixture workspaces. The GUI never writes `~/.codex`.
+        - Frozen sidecar `--version` is `0.6.0`. `--scaffold-list` works without a source checkout because `fixture_packs/` is embedded.
+        - Closing the window kills the sidecar process tree. Timeouts still fire when the leader has exited but a descendant holds the pipes.
+
+        ## What this build does not do
+
+        - It does not overwrite `desktop-v0.3.9-beta.1`.
+        - It does not sign, notarize, or ship a Linux/Intel Mac installer.
+        - It does not add `--json` to the Codex CLI. The GUI still parses `--lang en` text.
+        - It does not change the default CLI Release behavior. Latest stable CLI remains `v0.6.0`.
         """
     )
     assert release_notes == expected

@@ -75,7 +75,7 @@ Keysmith 给本机的 AI 编程工具装指令：先预览，再写入，能验�
 
 ## 开始使用
 
-本机需要已经装好 Codex。稳妥路径是 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) 的单文件脚本（当前公开稳定脚本包括 `codex-instruct-v0.5.1.py`）。也有未签名桌面版。
+本机需要已经装好 Codex。稳妥路径是 [最新稳定 Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) 的单文件脚本（当前公开稳定脚本包括 `codex-instruct-v0.6.0.py`）。也有未签名桌面版。
 
 ```bash
 # 把 vX.Y.Z 换成 Releases 页的最新稳定 tag
