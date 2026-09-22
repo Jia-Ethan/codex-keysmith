@@ -976,8 +976,9 @@ jobs:
             exit 1
           fi
           source_tag="v${version}"
-          if [ "$(git cat-file -t "refs/tags/${source_tag}" 2>/dev/null || true)" != "tag" ]; then
-            echo "Desktop line requires annotated source tag ${source_tag}." >&2
+          source_kind="$(git cat-file -t "refs/tags/${source_tag}" 2>/dev/null || true)"
+          if [ "$source_kind" != "tag" ] && [ "$source_kind" != "commit" ]; then
+            echo "Desktop line requires source tag ${source_tag}." >&2
             exit 1
           fi
           if ! git merge-base --is-ancestor "${source_tag}^{commit}" "$EXPECTED_COMMIT"; then
