@@ -75,7 +75,7 @@ One installer per tool. An unsigned desktop build is also available for Apple Si
 
 ## Get started
 
-Codex must already be installed. The conservative path is the single-file script from the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) (published scripts include `codex-instruct-v0.5.1.py`). An unsigned desktop build is also available.
+Codex must already be installed. The conservative path is the single-file script from the [latest stable Release](https://github.com/Jia-Ethan/codex-keysmith/releases/latest) (published scripts include `codex-instruct-v0.6.0.py`). An unsigned desktop build is also available.
 
 ```bash
 # replace vX.Y.Z with the latest stable tag on the Releases page
