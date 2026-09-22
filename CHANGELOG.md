@@ -118,6 +118,10 @@ Envelope tool-fidelity (2026-09-10, gpt-6-astra, isolated `CODEX_HOME`, `ks-enve
 - `codex-instruct.py`: manifest `md.preset` recorded at deploy; `infer_instruction_preset` reads the manifest field before sha fallback; `_require_manifest_object` supports optional keys. No CLI semantics changed.
 - `bump_version.py set 0.6.0` across VERSION, CLI, and GUI sources.
 
+### Desktop
+
+- Target unsigned Desktop Beta `desktop-v0.6.0-beta.1` for macOS Apple Silicon and Windows x64 with the matching `0.6.0` CLI sidecar (scenario bundle + embedded `fixture_packs/`). Deploy's built-in prompt is overlay-only (#76). GUI timeouts cover pipes still held after the leader exits, and closing the window kills the sidecar process tree (#80). Public assets remain the unsigned DMG, NSIS setup executable, two candidate ZIPs, and `SHA256SUMS`; stable Latest remains `v0.6.0`. Publication is a later main-only `workflow_dispatch` and is not part of this source change.
+
 ## [0.5.1] - 2026-09-05
 
 ### Added

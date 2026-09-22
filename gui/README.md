@@ -43,7 +43,7 @@ npm run tauri build
 | macOS Apple Silicon | `codex-keysmith-cli-aarch64-apple-darwin` | `.app` + ARM64 `.dmg` |
 | Windows x64 | `codex-keysmith-cli-x86_64-pc-windows-msvc.exe` | current-user NSIS `.exe` |
 
-当前公开的 `desktop-v0.3.9-beta.1` 提供 macOS Apple Silicon unsigned DMG 与 Windows x64 unsigned NSIS，包含场景库页、双 preset 部署、四个 fixture 包与受约束的配置引用恢复；冻结 sidecar 与 `0.3.9` CLI 保持同版本。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均尚未进行正式签名、公证或实体设备验收。普通用户按平台下载已发布的 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。
+当前桌面包线是 unsigned `desktop-v0.6.0-beta.1`：macOS Apple Silicon DMG 与 Windows x64 NSIS，冻结 sidecar 与 `0.6.0` CLI 同版本，内嵌场景库与 `fixture_packs/`。Deploy 内置稿只有 overlay；本地文件模式不传 `--preset`。关闭窗口会杀掉 sidecar 进程树；超时覆盖「leader 已退出但管道仍被占用」。Windows 安装器使用 WebView2 download bootstrapper、禁止降级，当前不生成 MSI；两平台均尚未进行正式签名、公证或实体设备验收。普通用户按平台下载 DMG 或 setup EXE；正式 Authenticode 发行仍待 SignPath Foundation 审核和独立签名流程。历史公开包 `desktop-v0.3.9-beta.1` 不再描述当前源码。
 
 图标以 `src-tauri/icons/source.png` 为唯一源文件。修改后运行：
 
