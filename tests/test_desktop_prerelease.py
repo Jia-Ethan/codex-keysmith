@@ -625,6 +625,20 @@ def test_historical_desktop_v039_notes_remain_unchanged():
     assert release_notes == expected
 
 
+def test_desktop_v060_beta2_notes_match_approved_copy():
+    release_notes = (
+        REPO_ROOT / "docs/releases/desktop-v0.6.0-beta.2.md"
+    ).read_text(encoding="utf-8")
+    expected = textwrap.dedent(
+        """\
+        # codex-keysmith 桌面测试版
+
+        优化了安装包与部署。
+        """
+    )
+    assert release_notes == expected
+
+
 def test_published_prerelease_release_notes_match_approved_copy():
     release_notes = (
         REPO_ROOT / f"docs/releases/{PUBLISHED_DESKTOP_TAG}.md"
