@@ -1,5 +1,9 @@
 # codex-keysmith GUI 客户端
 
+## 桌面停更
+
+這個獨立桌面不再發新的安裝包。已發出的版本保持原樣，不撤回，也不改成 Latest。之後的桌面只維護 [Keysmith Switch](https://github.com/Jia-Ethan/keysmith-switch)。範圍與進度見 [keysmith-switch#6](https://github.com/Jia-Ethan/keysmith-switch/issues/6)。
+
 面向普通用户的 codex-keysmith 可视化客户端。基于 **Tauri 2 + React + Tailwind 4 + shadcn/ui + Motion**，复用根目录 `codex-instruct.py` 的部署、回滚与恢复逻辑，不在 GUI 中重实现文件操作。
 
 > 技术方案与解析规范见 [SPEC.md](./SPEC.md)。
