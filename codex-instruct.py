@@ -15458,6 +15458,35 @@ def infer_instruction_preset(codex_dir: Path) -> str:
     return bundled_preset_for_sha256(sha256)
 
 
+ENVELOPE_UNSTACK_PREFIX = "# keysmith-envelope-unstack: "
+
+
+def instruction_mode_report(codex_dir: Path, config_text: str, preset: str) -> Dict[str, object]:
+    """Classify the live instruction slot versus the measured overlay default."""
+    envelope = ENVELOPE_UNSTACK_PREFIX in (config_text or "")
+    competing: List[str] = []
+    agents = Path(codex_dir) / "AGENTS.md"
+    if agents.is_file():
+        try:
+            if agents.read_text(encoding="utf-8").strip():
+                competing.append("AGENTS.md")
+        except OSError:
+            competing.append("AGENTS.md")
+    if envelope:
+        slot = "envelope-append"
+        on_measured_default = True
+    else:
+        slot = "model_instructions_file"
+        on_measured_default = preset == PRESET_OVERLAY
+    return {
+        "slot": slot,
+        "preset": preset,
+        "measured_default_preset": PRESET_OVERLAY,
+        "on_measured_default": on_measured_default,
+        "competing_files": competing,
+    }
+
+
 def resolve_bundled_prompt(preset: str) -> Tuple[str, str]:
     if preset == PRESET_OVERLAY:
         return BUILTIN_GPT_OVERLAY_MD, "examples/gpt-overlay.md"
@@ -15589,7 +15618,35 @@ def show_status(codex_dirs: List[str]) -> None:
             "    model_instructions_file: "
             f"{plan.config_reference if plan.config_reference is not None else '<未设置或无法识别>'}"
         )
-        _print(f"    preset: {infer_instruction_preset(codex_root)}")
+        preset_name = infer_instruction_preset(codex_root)
+        _print(f"    preset: {preset_name}")
+        config_text = ""
+        if plan.config.regular:
+            try:
+                config_text = plan.config.path.read_text(encoding="utf-8")
+            except OSError:
+                config_text = ""
+        mode = instruction_mode_report(codex_root, config_text, preset_name)
+        _print(f"    instruction_slot: {mode['slot']}")
+        if mode["on_measured_default"]:
+            _print(
+                _localized(
+                    "    measured_default: overlay（当前匹配）",
+                    "    measured_default: overlay (current match)",
+                )
+            )
+        else:
+            _print(
+                _localized(
+                    f"    measured_default: overlay（当前 preset={mode['preset']}，建议改回 overlay 或 envelope-append）",
+                    f"    measured_default: overlay (current preset={mode['preset']}; switch to overlay or envelope-append)",
+                )
+            )
+        competing_files = mode["competing_files"]
+        _print(
+            "    competing_files: "
+            + (", ".join(competing_files) if competing_files else "none")
+        )
         activation_labels = {
             "active": _localized("active（当前配置已加载受管提示词）", "active (the current config loads the managed prompt)"),
             "inactive": _localized("inactive-by-config（已安装，当前配置未加载受管提示词）", "inactive-by-config (installed, but the current config does not load the managed prompt)"),

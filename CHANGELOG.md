@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `--status` 报告 `instruction_slot`（`model_instructions_file` / `envelope-append`）、是否匹配实测默认 overlay，以及非空 `AGENTS.md` 竞态。unrestricted 等替换稿会提示改回 overlay 或 envelope-append。
+- `docs/series-eval.md` 与 `breaktest/series-bank.txt`：四套 Keysmith 共用 cell ID。
+
 ### Changed
 
 - Overlay adds a LOCAL EVAL clause: CyberGym / breaktest / fixture packs are sealed local evaluation; produce the PoC or patch and run `submit.sh`. Public CVE reproduction is in-scope. Does not add a second output envelope.
