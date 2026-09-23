@@ -454,6 +454,34 @@ def test_status_rejects_preset_flag(tmp_path):
     assert result.returncode == 2
 
 
+def test_instruction_mode_report_marks_unrestricted_off_default(tmp_path):
+    overlay_dir = _make_codex_dir(tmp_path, name="overlay")
+    (overlay_dir / "AGENTS.md").write_text("", encoding="utf-8")
+    overlay_mode = codex_instruct.instruction_mode_report(
+        overlay_dir, 'model_instructions_file = "./gpt-overlay.md"\n', "overlay"
+    )
+    assert overlay_mode["slot"] == "model_instructions_file"
+    assert overlay_mode["on_measured_default"] is True
+    assert overlay_mode["competing_files"] == []
+
+    un_dir = _make_codex_dir(tmp_path, name="unrestricted")
+    (un_dir / "AGENTS.md").write_text("competing\n", encoding="utf-8")
+    un_mode = codex_instruct.instruction_mode_report(
+        un_dir, 'model_instructions_file = "./gpt-unrestricted.md"\n', "unrestricted"
+    )
+    assert un_mode["on_measured_default"] is False
+    assert un_mode["competing_files"] == ["AGENTS.md"]
+
+    env_dir = _make_codex_dir(tmp_path, name="envelope")
+    env_mode = codex_instruct.instruction_mode_report(
+        env_dir,
+        '# keysmith-envelope-unstack: "./gpt-overlay.md"\n',
+        "overlay",
+    )
+    assert env_mode["slot"] == "envelope-append"
+    assert env_mode["on_measured_default"] is True
+
+
 def test_overlay_sha_classifies_without_manifest_preset():
     sha256 = hashlib.sha256(
         codex_instruct.BUILTIN_GPT_OVERLAY_MD.encode("utf-8")
