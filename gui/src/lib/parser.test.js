@@ -91,7 +91,7 @@ const STATUS_INACTIVE = `── Status directory: /tmp/fake-codex ──
     Hooks restore: available (restore will overwrite neither file)
     Structural health: healthy
     Uninstall readiness: ready (current config.toml will be left unchanged)
-    Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)`;
+    Deployability: blocked (do not redeploy; use --repair-instructions to restore only the missing field, or switch back to an active profile)`;
 
 // ── SPEC §5.2 真实 dry-run 输出 ──
 const DRY_RUN_OK = `[Prompt] Source: bundled examples/gpt-unrestricted.md; SHA-256: 2c2c9f0e008c492bfc9487170a7a08daedeb8b0625af1f85617ab2d1bd3f35c0

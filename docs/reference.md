@@ -66,7 +66,7 @@ CCSwitch 普通模式会在切走时把 live Codex config 回填到当前 Provid
 | `conflict` | 字段改指其他路径，或目标语句重复/歧义/不支持 | 失败 | fail closed |
 | `not-installed` | 无 manifest | 正常未安装状态 | 可部署；卸载 / `--reactivate` 为 no-op |
 
-这不是 manifest profile schema，也不把任意缺字段写成持久化的“已授权暂停”；它只让 status 准确解释外部配置切换。deploy 仍 fail closed，直到切回引用受管 MD 的 On 副本，或对当前 live config 显式运行 `--reactivate`。在 Off 副本上卸载会保留当前 live `config.toml`，因此 On 副本里可能仍引用已删除的提示词文件，卸载后需在 On 副本中删除该字段。CCSwitch v3.18.0（`ff3bc242`）会在写入 Provider 前合并启用的 Codex 通用配置片段，因此该片段不得包含 `model_instructions_file`；否则 Off Provider 的有效 live config 仍会是 active。普通模式切离时，live config 读取失败可让 backfill 被跳过，数据库保存失败也只产生 warning，所以卸载后必须检查切换提示与 Provider 保存内容，不能把一次切换当成回填成功证明。该版本代理接管热切换也可能按目标 Provider 的有效配置重建 live config，但还涉及 restore backup、通用配置合并和代理字段覆盖，Keysmith 不将其视为稳定契约。默认 hook isolation 是 `.codex` 目录级全局状态，不会跟随 Provider config 切换；需要纯提示词 On/Off 时，在首次部署使用 `--skip-hooks-isolation`。任何切换只对新 Codex 会话生效。
+这不是 manifest profile schema，也不把任意缺字段写成持久化的“已授权暂停”；它只让 status 准确解释外部配置切换。deploy 仍 fail closed，直到切回引用受管 MD 的 On 副本，或对当前 live config 显式运行 `--reactivate`。在 Off 副本上卸载会保留当前 live `config.toml`，因此 On 副本里可能仍引用已删除的提示词文件，卸载后需在 On 副本中删除该字段。CCSwitch v3.18.0（`ff3bc242`）会在写入 Provider 前合并启用的 Codex 通用配置片段，同名键以片段为准，且 `model_instructions_file` 不在供应商字段剥离名单里。要保持 On/Off 时，该片段不得包含 `model_instructions_file`，否则 Off Provider 的有效 live config 仍会是 active。若用户在 CCSwitch 里把该字段放进片段，并为 Provider 打开「应用通用配置」，则每次普通切换都会把引用写回 live，Off 不再成立；Keysmith 不写 `~/.cc-switch`。操作步骤见 [`ccswitch.md`](ccswitch.md)。ChatGPT 客户端在 CCSwitch 不参与时整文件替换 `config.toml`，这一次引用仍会丢，下次切换再由片段写回；在那之前用 `--repair-instructions`。普通模式切离时，live config 读取失败可让 backfill 被跳过，数据库保存失败也只产生 warning，所以卸载后必须检查切换提示与 Provider 保存内容，不能把一次切换当成回填成功证明。该版本代理接管热切换也可能按目标 Provider 的有效配置重建 live config，但还涉及 restore backup、通用配置合并和代理字段覆盖，Keysmith 不将其视为稳定契约。默认 hook isolation 是 `.codex` 目录级全局状态，不会跟随 Provider config 切换；需要纯提示词 On/Off 时，在首次部署使用 `--skip-hooks-isolation`。任何切换只对新 Codex 会话生效。
 
 ### 内部工作流程
 
@@ -156,13 +156,14 @@ python3 codex-instruct.py --codex-dir ~/.codex --uninstall --yes --lang zh-CN  #
 - 如果该层覆盖了上一份 manifest，则恢复上一层。再次运行 uninstall 才会继续撤销下一层；
 - 找不到 manifest 是成功 no-op。v0.1.0 之前没有 manifest 的部署不属于自动所有权范围。
 
-`--restore-hooks` 只恢复 hooks；`--uninstall` 按 manifest 恢复整层用户配置。`--reactivate` 只把缺失的顶层 `model_instructions_file` 补回当前 live `config.toml`。
+`--restore-hooks` 只恢复 hooks；`--uninstall` 按 manifest 恢复整层用户配置。`--reactivate` 只把缺失的顶层 `model_instructions_file` 补回当前 live `config.toml`。`--repair-instructions` 是同一条写入路径的别名，给 CCSwitch 改配置或 ChatGPT 客户端整文件覆盖之后的代装修复用；不是重新部署。
 
 ### 从 inactive-by-config 恢复配置引用
 
 ```bash
-python3 codex-instruct.py --codex-dir ~/.codex --reactivate --lang zh-CN        # 预览
-python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN  # 只补回字段
+python3 codex-instruct.py --codex-dir ~/.codex --repair-instructions --lang zh-CN        # 预览
+python3 codex-instruct.py --codex-dir ~/.codex --repair-instructions --yes --lang zh-CN  # 只补回字段
+python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN          # 同义词
 ```
 
 仅在以下条件同时成立时写入：
@@ -171,9 +172,9 @@ python3 codex-instruct.py --codex-dir ~/.codex --reactivate --yes --lang zh-CN  
 - 当前 `config.toml` 可被零依赖扫描器解析，且顶层 `model_instructions_file` 缺失而不是指向其他路径；
 - 没有事务残留或其他所有权冲突。
 
-写入前先为全部参与目录备份当前 `config.toml`，再逐目录插入 manifest 期望的顶层字段，并在结束前复核全部参与目录。可捕获异常、`Ctrl-C` 或 `SystemExit` 会反序恢复本次已发布的目录；并发替换会被保留，原备份也会保留供人工核对。不改写 Markdown、hooks 或 manifest。字段已存在且指向受管文件时是成功 no-op。这不会把 CCSwitch Off 副本变成持久 On；它只修改当前 live config。
+写入前先为全部参与目录备份当前 `config.toml`，再逐目录插入 manifest 期望的顶层字段，并在结束前复核全部参与目录。可捕获异常、`Ctrl-C` 或 `SystemExit` 会反序恢复本次已发布的目录；并发替换会被保留，原备份也会保留供人工核对。不改写 Markdown、hooks 或 manifest，也不写 `~/.cc-switch`。字段已存在且指向受管文件时是成功 no-op。这不会把 CCSwitch Off 副本变成持久 On；它只修改当前 live config。下一次 CCSwitch 普通模式切走仍可能把当时的 live 文件回填成 Off。要让切换之后引用还在，只能由用户把该字段放进 CCSwitch 的 Codex 通用配置片段（见 [`ccswitch.md`](ccswitch.md)）；那会放弃 Off。需要 On/Off 时，片段仍不得包含 `model_instructions_file`。`inactive-by-config` 上不要跑部署 `--yes`。
 
-`--reactivate` 没有 deploy/uninstall 的 durable journal：`SIGKILL`、进程丢失或断电可能让部分目录已 active、其余仍 inactive，`--recover` 不处理该状态。没有冲突或异常残留时，重新运行 `--reactivate --yes` 会跳过已 active 目录并完成其余目录；否则保留时间戳备份，先用 `--status` 核对并人工恢复。
+`--repair-instructions` / `--reactivate` 没有 deploy/uninstall 的 durable journal：`SIGKILL`、进程丢失或断电可能让部分目录已 active、其余仍 inactive，`--recover` 不处理该状态。没有冲突或异常残留时，重新运行 `--repair-instructions --yes`（或 `--reactivate --yes`）会跳过已 active 目录并完成其余目录；否则保留时间戳备份，先用 `--status` 核对并人工恢复。
 
 ### 升级工具与回滚
 
