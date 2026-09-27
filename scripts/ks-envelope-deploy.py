@@ -43,7 +43,9 @@ from typing import Any, Dict, List, Optional, Tuple
 MANIFEST_NAME = ".codex-keysmith-envelope-manifest.json"
 LAUNCH_AGENT_LABEL = "com.jia.codex-keysmith.envelope"
 DEFAULT_PORT = 8091
-DEFAULT_UPSTREAM = "https://gateway.example.test/v1"
+# No baked-in gateway. agent install and the loopback fallback both require
+# an explicit upstream (flag or manifest original_base_url).
+DEFAULT_UPSTREAM = ""
 SCRIPT_DIR = Path(__file__).resolve().parent
 RUNTIME_SCRIPT_NAME = ".codex-keysmith-channel.py"
 RUNTIME_OVERLAY_NAME = ".codex-keysmith-overlay.md"
@@ -594,7 +596,9 @@ def sync_on_deploy(codex_home: Path, port: int = DEFAULT_PORT) -> bool:
     manifest = read_manifest(codex_home)
     already = current_url.startswith("http://127.0.0.1:")
     if already:
-        upstream = str((manifest or {}).get("original_base_url") or DEFAULT_UPSTREAM)
+        upstream = str((manifest or {}).get("original_base_url") or "").strip()
+        if not upstream:
+            return False
         original_url = upstream
     else:
         upstream = current_url
@@ -769,6 +773,13 @@ def cmd_agent(args: argparse.Namespace) -> int:
     action = args.agent_action
     port = args.port
     if action == "install":
+        upstream = (args.upstream or "").strip()
+        if not upstream.startswith(("http://", "https://")):
+            raise DeployError(
+                "--upstream is required for agent install "
+                "(or set KS_UPSTREAM); refusing to install without an explicit gateway"
+            )
+        args.upstream = upstream
         overlay = Path(args.overlay).expanduser() if args.overlay else None
         if overlay is not None and not overlay.is_file():
             raise DeployError(f"overlay file not found: {overlay}")
@@ -877,7 +888,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("agent", help="manage the ks-envelope LaunchAgent (macOS)")
     p.add_argument("agent_action", choices=["install", "uninstall", "status"])
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
-    p.add_argument("--upstream", default=DEFAULT_UPSTREAM)
+    p.add_argument(
+        "--upstream",
+        default=os.environ.get("KS_UPSTREAM", DEFAULT_UPSTREAM),
+        help="real gateway base URL (required for install; or set KS_UPSTREAM)",
+    )
     p.add_argument("--overlay")
     add_codex_home(p)
     p.set_defaults(func=cmd_agent)

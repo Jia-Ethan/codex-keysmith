@@ -63,7 +63,7 @@ SUBSET_TASKS = [
 ARMS = ["stock", "gi-v45", "gi-astra", "ks-direct", "ks-envelope"]
 
 KEYSMITH_ROOT = Path(__file__).resolve().parent.parent
-GATEWAY = os.environ.get("CYBERGYM_RUN_GATEWAY", "https://gateway.example.test/v1")
+GATEWAY = os.environ.get("CYBERGYM_RUN_GATEWAY", "").strip()
 AUTH_FILE = Path(
     os.environ.get("CODEX_KEYSMITH_AUTH", str(Path.home() / ".codex" / "auth.json"))
 )
@@ -316,6 +316,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="only score from the existing poc.db")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
+
+    if not args.validate_only and not args.skip_run:
+        if not GATEWAY.startswith(("http://", "https://")):
+            parser.error(
+                "CYBERGYM_RUN_GATEWAY is required; refusing to call a default gateway"
+            )
 
     cybergym_repo = Path(args.cybergym_repo).expanduser()
     venv_python = cybergym_repo / ".venv" / "bin" / "python"

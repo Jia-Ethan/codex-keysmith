@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES_PATH = REPO_ROOT / "tests" / "prompt_bank" / "cases.json"
 MAX_ATTEMPTS = 2
-DEFAULT_GATEWAY = "https://gateway.example.test/v1"
+DEFAULT_GATEWAY = ""
 MAX_TIMEOUT_SECONDS = 600
 REPORT_SNIPPET_LENGTH = 500
 REPORT_ERROR_LENGTH = 500
@@ -1200,6 +1200,8 @@ def _run_case_http(
     prompt rides the system surface of each wire format.
     """
     base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or DEFAULT_GATEWAY
+    if not base_url.startswith(("http://", "https://")):
+        return None, "", "OPENAI_BASE_URL is required; refusing to call a default gateway"
     auth_path = Path(
         os.environ.get("CODEX_KEYSMITH_AUTH")
         or (Path.home() / ".codex" / "auth.json")

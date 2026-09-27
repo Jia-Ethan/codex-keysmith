@@ -8,6 +8,7 @@ the original base_url back exactly.
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -247,6 +248,48 @@ def test_restore_preserves_changed_provider(entrypoint):
                 helper.restore_provider_url(sb.home)
         assert config.read_bytes() == before
         assert sb.manifest() == manifest
+    finally:
+        sb.cleanup()
+
+
+def test_envelope_refuses_to_start_without_upstream():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "ks-envelope.py"
+    env = os.environ.copy()
+    env.pop("KS_UPSTREAM", None)
+    r = subprocess.run(
+        [sys.executable, str(script), "--port", "8091"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 2
+    assert "--upstream is required" in r.stderr
+
+
+def test_agent_install_refuses_without_upstream():
+    sb = Sandbox()
+    try:
+        env = os.environ.copy()
+        env.pop("KS_UPSTREAM", None)
+        r = sb.run(
+            "agent", "install", "--codex-home", str(sb.home), "--port", "8091",
+            env=env,
+        )
+        assert r.returncode == 2
+        assert "--upstream is required" in r.stderr
+    finally:
+        sb.cleanup()
+
+
+def test_sync_on_deploy_refuses_loopback_without_manifest():
+    fixture = FIXTURE.replace(
+        'base_url = "https://gateway.example.test/v1"',
+        'base_url = "http://127.0.0.1:8091/v1"',
+    )
+    sb = Sandbox(fixture=fixture)
+    helper = _load_deploy_module()
+    try:
+        assert helper.sync_on_deploy(sb.home, port=8091) is False
+        assert 'base_url = "http://127.0.0.1:8091/v1"' in sb.config()
+        assert sb.manifest() is None
     finally:
         sb.cleanup()
 

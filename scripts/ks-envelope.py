@@ -41,7 +41,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-DEFAULT_UPSTREAM = "https://gateway.example.test/v1"
+# No baked-in gateway. Pass --upstream or KS_UPSTREAM. A missing upstream
+# fails closed; this tool must not ship anyone's private endpoint.
+DEFAULT_UPSTREAM = ""
 DEFAULT_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 LOCAL_PREFIX = "/v1"
 UPSTREAM_MESSAGES = "/messages"
@@ -1946,7 +1948,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--upstream",
         default=os.environ.get("KS_UPSTREAM", DEFAULT_UPSTREAM),
-        help="gateway base URL ending in /v1 (default: the configured gateway)",
+        help="gateway base URL ending in /v1 (required; or set KS_UPSTREAM)",
     )
     parser.add_argument(
         "--auth-file",
@@ -1961,7 +1963,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help=(
             "map codex reasoning.effort onto the anthropic thinking block "
-            "(experimental; measured to hang the configured gateway messages arm "
+            "(experimental; measured to hang some gateways' messages arm "
             "intermittently, so it is off by default)"
         ),
     )
@@ -1978,7 +1980,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not (0 < args.port < 65536):
         parser.error("--port must be within 1-65535")
-    upstream = args.upstream.strip()
+    upstream = (args.upstream or "").strip()
+    if not upstream:
+        parser.error(
+            "--upstream is required (or set KS_UPSTREAM); "
+            "refusing to start without an explicit gateway"
+        )
     if not upstream.startswith(("http://", "https://")):
         parser.error("--upstream must start with http:// or https://")
 
