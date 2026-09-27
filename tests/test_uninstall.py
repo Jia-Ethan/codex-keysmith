@@ -468,7 +468,7 @@ def test_ccswitch_missing_reference_is_inactive_deploy_blocked_and_uninstall_lea
     assert "配置激活状态: inactive-by-config" in status.stdout
     assert "结构健康: healthy" in status.stdout
     assert "卸载就绪度: ready（将保留当前 config.toml）" in status.stdout
-    assert "可部署性: blocked（先切回 active 配置，或使用 --reactivate 只恢复字段）" in status.stdout
+    assert "可部署性: blocked（不要重新部署；用 --repair-instructions 只恢复字段，或切回 active 配置）" in status.stdout
     assert "hooks 隔离不随 config.toml 配置切换" in status.stdout
     assert deploy.returncode == 1
     assert preview.returncode == 0, preview.stdout + preview.stderr
@@ -565,9 +565,9 @@ def test_english_ccswitch_inactive_status_and_deploy_blockers_are_fully_localize
     assert status.returncode == 0, status.stdout + status.stderr
     assert "Config activation: inactive-by-config" in status.stdout
     assert "Uninstall readiness: ready (current config.toml will be left unchanged)" in status.stdout
-    assert "Deployability: blocked (switch back to an active profile first, or use --reactivate to restore only the missing field)" in status.stdout
+    assert "Deployability: blocked (do not redeploy; use --repair-instructions to restore only the missing field, or switch back to an active profile)" in status.stdout
     assert "Hook isolation does not follow config.toml profile switches" in status.stdout
-    assert "or use --reactivate to restore only the missing field" in status.stdout
+    assert "use --repair-instructions" in status.stdout
     assert preview.returncode == 1
     assert deploy.returncode == 1
     assert "existing deployment manifest ownership conflict" in preview.stdout
@@ -666,6 +666,67 @@ def test_reactivate_skips_active_and_blocks_conflict_or_damaged_markdown(tmp_pat
     assert conflict_result.returncode == 1
     assert _snapshot_files(drifted) == drifted_before
     assert _snapshot_files(conflict) == conflict_before
+
+
+def test_repair_instructions_matches_reactivate_and_leaves_other_live_lines(tmp_path):
+    codex_dir = _make_codex_dir(tmp_path)
+    (codex_dir / "hooks.json").write_text("active hook\n", encoding="utf-8")
+    _deploy(codex_dir)
+    config = codex_dir / "config.toml"
+    inactive_config = (
+        'model = "ccswitch-off"\n'
+        'approval_policy = "on-request"\n'
+    )
+    config.write_text(inactive_config, encoding="utf-8")
+    md_path = codex_dir / "gpt-unrestricted.md"
+    manifest_path = codex_dir / codex_instruct.MANIFEST_FILENAME
+    md_before = md_path.read_bytes()
+    manifest_before = manifest_path.read_bytes()
+    owned = 'model_instructions_file = "./gpt-unrestricted.md"'
+    backups_before = set(codex_dir.glob("config.toml.bak_*"))
+
+    preview = _run("--codex-dir", codex_dir, "--repair-instructions")
+    assert preview.returncode == 0, preview.stdout + preview.stderr
+    assert owned in preview.stdout
+    assert "确认重新激活请添加 --yes" in preview.stdout
+    assert config.read_text(encoding="utf-8") == inactive_config
+    assert set(codex_dir.glob("config.toml.bak_*")) == backups_before
+
+    result = _run("--codex-dir", codex_dir, "--repair-instructions", "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    restored = config.read_text(encoding="utf-8")
+    assert owned in restored
+    assert 'model = "ccswitch-off"' in restored
+    assert 'approval_policy = "on-request"' in restored
+    assert restored != inactive_config
+    assert md_path.read_bytes() == md_before
+    assert manifest_path.read_bytes() == manifest_before
+    assert set(codex_dir.glob("config.toml.bak_*")) - backups_before
+
+    again = _run("--codex-dir", codex_dir, "--repair-instructions", "--yes")
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "没有需要重新激活的 inactive-by-config 目录" in again.stdout
+    assert config.read_text(encoding="utf-8") == restored
+
+    conflict_dir = _make_codex_dir(tmp_path, name=".codex-repair-conflict")
+    _deploy(conflict_dir)
+    conflict_config = 'model_instructions_file = "./other.md"\n'
+    (conflict_dir / "config.toml").write_text(conflict_config, encoding="utf-8")
+    conflict_backups = set(conflict_dir.glob("config.toml.bak_*"))
+    conflict = _run("--codex-dir", conflict_dir, "--repair-instructions", "--yes")
+    assert conflict.returncode == 1
+    assert (conflict_dir / "config.toml").read_text(encoding="utf-8") == conflict_config
+    assert set(conflict_dir.glob("config.toml.bak_*")) == conflict_backups
+
+
+def test_agent_install_prompt_repairs_inactive_config_without_redeploy():
+    text = (
+        Path(__file__).resolve().parents[1] / "docs" / "agent-install.md"
+    ).read_text(encoding="utf-8")
+    assert "--repair-instructions" in text
+    assert "do not run deploy --yes" in text
+    assert "不要运行部署 --yes" in text
+    assert "inactive-by-config" in text
 
 
 def test_cli_rejects_reactivate_with_file_or_preset(tmp_path):

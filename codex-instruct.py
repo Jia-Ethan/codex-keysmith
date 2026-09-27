@@ -15660,15 +15660,18 @@ def show_status(codex_dirs: List[str]) -> None:
         if inactive_by_config:
             _print(
                 _localized(
-                    "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致。"
-                    "部署仍保持 blocked。若只要把缺失的顶层字段补回当前 live config，"
-                    "请使用 --reactivate：它会先备份 config.toml，不改写受管提示词、hooks 或 manifest。"
+                    "    [提示] 这与 CCSwitch 普通模式切到未携带该字段的配置一致，"
+                    "也与 ChatGPT 客户端整文件覆盖 config.toml 后的结果一致。"
+                    "部署仍保持 blocked，不要重新部署。若只要把缺失的顶层字段补回当前 live config，"
+                    "请使用 --repair-instructions（与 --reactivate 相同）：它会先备份 config.toml，"
+                    "不改写受管提示词、hooks 或 manifest。"
                     "卸载会保留当前 config.toml，只撤销提示词文件与部署清单；"
                     "若 On 副本仍引用该文件，请稍后在 On 副本中删除该字段。",
-                    "    [Notice] This matches a normal-mode CCSwitch profile without the field. "
-                    "Deploy stays blocked. To restore only the missing top-level field into the "
-                    "current live config, use --reactivate; it backs up config.toml and does not "
-                    "rewrite the managed prompt, hooks, or manifest. "
+                    "    [Notice] This matches a normal-mode CCSwitch profile without the field, "
+                    "and a ChatGPT client rewrite that replaces config.toml. "
+                    "Deploy stays blocked; do not redeploy. To restore only the missing top-level "
+                    "field into the current live config, use --repair-instructions "
+                    "(same as --reactivate); it backs up config.toml and does not "
                     "Uninstall will leave the current config.toml unchanged and only revert "
                     "the managed prompt and manifest; if an On profile still references that file, "
                     "remove the field from the On copy afterwards.",
@@ -15737,9 +15740,9 @@ def show_status(codex_dirs: List[str]) -> None:
         elif inactive_by_config:
             _print(
                 _localized(
-                    "    可部署性: blocked（先切回 active 配置，或使用 --reactivate 只恢复字段）",
-                    "    Deployability: blocked (switch back to an active profile first, "
-                    "or use --reactivate to restore only the missing field)",
+                    "    可部署性: blocked（不要重新部署；用 --repair-instructions 只恢复字段，或切回 active 配置）",
+                    "    Deployability: blocked (do not redeploy; use --repair-instructions "
+                    "to restore only the missing field, or switch back to an active profile)",
                 )
             )
         else:
@@ -17174,6 +17177,10 @@ def main() -> None:
   %(prog)s --codex-dir ~/.codex --recover --yes    执行部署/卸载事务恢复
   %(prog)s --codex-dir ~/.codex --reactivate       预览只恢复缺失的顶层字段
   %(prog)s --codex-dir ~/.codex --reactivate --yes 补回 inactive-by-config 的字段
+  %(prog)s --codex-dir ~/.codex --repair-instructions
+                                                同上；CCSwitch / ChatGPT 覆盖后的修复入口
+  %(prog)s --codex-dir ~/.codex --repair-instructions --yes
+                                                只补回缺失字段，不重新部署
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 部署但保持 hooks 活跃
   %(prog)s --scenario-list                    静态列出源码场景库
@@ -17200,6 +17207,10 @@ Examples:
   %(prog)s --codex-dir ~/.codex --recover --yes    Recover an interrupted deploy/uninstall
   %(prog)s --codex-dir ~/.codex --reactivate       Preview restoring the missing top-level field
   %(prog)s --codex-dir ~/.codex --reactivate --yes Restore the inactive-by-config field only
+  %(prog)s --codex-dir ~/.codex --repair-instructions
+                                                Same repair after a CCSwitch / ChatGPT rewrite
+  %(prog)s --codex-dir ~/.codex --repair-instructions --yes
+                                                Restore only the missing field; do not redeploy
   %(prog)s --codex-dir ~/.codex --skip-hooks-isolation --yes
                                                 Deploy while leaving hooks active
   %(prog)s --scenario-list                    Statically list source scenarios
@@ -17294,6 +17305,17 @@ Examples:
         help=_localized(
             "预览或只把缺失的顶层 model_instructions_file 补回当前 config.toml",
             "Preview or restore only the missing top-level model_instructions_file",
+        ),
+    )
+    operation_group.add_argument(
+        "--repair-instructions",
+        action="store_true",
+        help=_localized(
+            "与 --reactivate 相同：CCSwitch 或 ChatGPT 整文件覆盖丢掉 "
+            "model_instructions_file 之后，只把缺失的顶层字段补回当前 config.toml；不是重新部署",
+            "Same as --reactivate: after CCSwitch or the ChatGPT client rewrites "
+            "config.toml and drops model_instructions_file, restore only that missing "
+            "top-level field; this is not a redeploy",
         ),
     )
     operation_group.add_argument(
@@ -17586,16 +17608,19 @@ Examples:
                 "--recover conflicts with --file, --name, --preset, and --skip-hooks-isolation",
             )
         )
+    if args.repair_instructions:
+        args.reactivate = True
     if args.reactivate and (
         hasattr(args, "file")
         or hasattr(args, "name")
         or explicit_preset is not None
         or args.skip_hooks_isolation
     ):
+        flag = "--repair-instructions" if args.repair_instructions else "--reactivate"
         parser.error(
             _localized(
-                "--reactivate 不能与 --file、--name、--preset 或 --skip-hooks-isolation 同时使用",
-                "--reactivate conflicts with --file, --name, --preset, and --skip-hooks-isolation",
+                f"{flag} 不能与 --file、--name、--preset 或 --skip-hooks-isolation 同时使用",
+                f"{flag} conflicts with --file, --name, --preset, and --skip-hooks-isolation",
             )
         )
 
