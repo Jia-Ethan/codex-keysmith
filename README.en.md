@@ -15,6 +15,7 @@
   <img alt="Source version v0.6.0" src="https://img.shields.io/badge/source-v0.6.0-0099CC">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/license-MIT-6DB33F?style=flat-square" alt="MIT License" />
+  <a href="https://t.me/+xBqLYA65JPU1NjFk"><img src="https://img.shields.io/badge/Telegram-group-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram" /></a>
 </p>
 
 <p>
@@ -129,4 +130,4 @@ macOS and Linux are the primary targets. Windows fresh deploy is still a test ch
 - [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) — for Grok Build
 - [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — for ZCode
 
-Feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions) · Community: [LINUX DO](https://linux.do)
+Feedback: [GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions) · Community: [LINUX DO](https://linux.do) · Group: [Telegram](https://t.me/+xBqLYA65JPU1NjFk)
