@@ -15,6 +15,7 @@
   <img alt="Source version v0.6.0" src="https://img.shields.io/badge/source-v0.6.0-0099CC">
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/license-MIT-6DB33F?style=flat-square" alt="MIT License" />
+  <a href="https://t.me/+xBqLYA65JPU1NjFk"><img src="https://img.shields.io/badge/Telegram-%E4%BA%A4%E6%B5%81%E7%BE%A4-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram" /></a>
 </p>
 
 <p>
@@ -129,4 +130,4 @@ macOS 与 Linux 为主要支持。Windows 新鲜部署仍是测试通道。需�
 - [grok-keysmith](https://github.com/Jia-Ethan/grok-keysmith) — 给 Grok Build
 - [zcode-keysmith](https://github.com/Jia-Ethan/zcode-keysmith) — 给 ZCode
 
-官方反馈：[GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions) · 社区：[LINUX DO](https://linux.do)
+官方反馈：[GitHub Discussions](https://github.com/Jia-Ethan/codex-keysmith/discussions) · 社区：[LINUX DO](https://linux.do) · 交流群：[Telegram](https://t.me/+xBqLYA65JPU1NjFk)
